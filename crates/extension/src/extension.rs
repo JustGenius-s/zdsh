@@ -1,3 +1,6 @@
+mod agent_tools;
+pub use agent_tools::*;
+
 mod capabilities;
 pub mod extension_builder;
 mod extension_events;
@@ -48,6 +51,15 @@ pub trait KeyValueStoreDelegate: Send + Sync + 'static {
 
 #[async_trait]
 pub trait Extension: Send + Sync + 'static {
+    async fn run_agent_tool(
+        &self,
+        _name: String,
+        _arguments: serde_json::Value,
+        _cancellation: AgentToolCancellation,
+    ) -> Result<serde_json::Value> {
+        bail!("extension does not implement Agent tools")
+    }
+
     /// Returns the [`ExtensionManifest`] for this extension.
     fn manifest(&self) -> Arc<ExtensionManifest>;
 

@@ -122,6 +122,9 @@ pub struct ExtensionManifest {
     pub debug_locators: BTreeMap<Arc<str>, DebugLocatorManifestEntry>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub language_model_providers: BTreeMap<Arc<str>, LanguageModelProviderManifestEntry>,
+    /// Optional Agent capabilities contributed by this same extension package.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agent_tools: BTreeMap<String, crate::AgentToolDefinition>,
 }
 
 impl ExtensionManifest {
@@ -388,6 +391,7 @@ fn manifest_from_old_manifest(
         debug_adapters: Default::default(),
         debug_locators: Default::default(),
         language_model_providers: Default::default(),
+        agent_tools: Default::default(),
     }
 }
 
@@ -422,6 +426,7 @@ mod tests {
             debug_adapters: Default::default(),
             debug_locators: Default::default(),
             language_model_providers: BTreeMap::default(),
+            agent_tools: Default::default(),
         }
     }
 

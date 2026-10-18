@@ -1,0 +1,34 @@
+[package]
+name = "dsh_zed"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/dsh_zed.rs"
+
+[dependencies]
+acp_thread.workspace = true
+action_log.workspace = true
+agent-client-protocol.workspace = true
+agent_servers.workspace = true
+anyhow.workspace = true
+dsh_agent.workspace = true
+dsh_runtime.workspace = true
+extension.workspace = true
+futures.workspace = true
+gpui.workspace = true
+gpui_tokio.workspace = true
+language_model.workspace = true
+log.workspace = true
+project.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "macros"] }
+ui.workspace = true
+util.workspace = true
+uuid.workspace = true
+watch.workspace = true

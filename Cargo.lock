@@ -475,6 +475,7 @@ dependencies = [
  "component",
  "context_server",
  "db",
+ "dsh_zed",
  "editor",
  "eval_utils",
  "extension",
@@ -5201,6 +5202,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh_agent"
+version = "0.1.0"
+dependencies = [
+ "dsh_runtime",
+ "futures 0.3.34",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+]
+
+[[package]]
+name = "dsh_runtime"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
+name = "dsh_zed"
+version = "0.1.0"
+dependencies = [
+ "acp_thread",
+ "action_log",
+ "agent-client-protocol",
+ "agent_servers",
+ "anyhow",
+ "dsh_agent",
+ "dsh_runtime",
+ "extension",
+ "futures 0.3.34",
+ "gpui",
+ "gpui_tokio",
+ "language_model",
+ "log",
+ "project",
+ "serde_json",
+ "tokio",
+ "ui",
+ "util",
+ "uuid",
+ "watch",
+]
+
+[[package]]
 name = "dtoa"
 version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6070,6 +6116,7 @@ dependencies = [
  "heck 0.5.0",
  "http_client",
  "indoc",
+ "jsonschema",
  "language",
  "log",
  "lsp",
@@ -22570,6 +22617,7 @@ dependencies = [
  "debugger_ui",
  "dev_container",
  "diagnostics",
+ "dsh_zed",
  "edit_prediction",
  "edit_prediction_ui",
  "editor",

@@ -1217,9 +1217,12 @@ impl AgentPanel {
                 })
         };
 
+        let last_active_thread =
+            last_active_thread.filter(|thread| thread.agent_type != Agent::Dsh);
         let new_draft_thread_id = self
             .draft_thread
             .as_ref()
+            .filter(|draft| draft.read(cx).agent_key() != &Agent::Dsh)
             .map(|draft| draft.read(cx).thread_id);
 
         let kvp = KeyValueStore::global(cx);
@@ -5952,6 +5955,35 @@ impl AgentPanel {
                                     }
                                 }),
                         )
+                        .when(!is_via_collab, |menu| {
+                            menu.item(
+                                ContextMenuEntry::new("DSH Preview")
+                                    .icon(IconName::Sparkle)
+                                    .icon_color(Color::Muted)
+                                    .handler({
+                                        let workspace = workspace.clone();
+                                        move |window, cx| {
+                                            if let Some(workspace) = workspace.upgrade() {
+                                                workspace.update(cx, |workspace, cx| {
+                                                    if let Some(panel) =
+                                                        workspace.panel::<AgentPanel>(cx)
+                                                    {
+                                                        panel.update(cx, |panel, cx| {
+                                                            panel.selected_agent = Agent::Dsh;
+                                                            panel.activate_new_thread(
+                                                                true,
+                                                                AgentThreadSource::AgentPanel,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        });
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    }),
+                            )
+                        })
                         .when(supports_terminal, |menu| {
                             menu.item(
                                 ContextMenuEntry::new("Terminal")

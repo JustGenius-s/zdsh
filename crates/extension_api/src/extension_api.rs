@@ -1,5 +1,8 @@
 //! The Zed Rust Extension API allows you write extensions for [Zed](https://zed.dev/) in Rust.
 
+#[cfg(feature = "agent-tools")]
+pub mod agent_tools;
+
 pub mod http_client;
 pub mod process;
 pub mod settings;
@@ -67,6 +70,17 @@ pub fn set_language_server_installation_status(
 
 /// A Zed extension.
 pub trait Extension: Send + Sync {
+    /// Runs a tool declared in `extension.toml`. Validate arguments before side effects,
+    /// and check `agent_tools::is_cancelled()` during long operations.
+    #[cfg(feature = "agent-tools")]
+    fn run_agent_tool(
+        &mut self,
+        _name: String,
+        _arguments: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        Err("agent tool is not implemented".into())
+    }
+
     /// Returns a new instance of the extension.
     fn new() -> Self
     where

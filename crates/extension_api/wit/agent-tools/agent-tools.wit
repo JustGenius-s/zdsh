@@ -1,0 +1,15 @@
+package zdsh:agent@0.1.0;
+
+interface cancellation {
+    is-cancelled: func() -> bool;
+}
+
+interface tools {
+    /// Arguments and successful results are JSON. Errors are user-visible text.
+    execute: func(name: string, arguments: string) -> result<string, string>;
+}
+
+world agent-extension {
+    import cancellation;
+    export tools;
+}

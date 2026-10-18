@@ -24,6 +24,7 @@ pub type LanguageModelProviderRegistration = Box<dyn FnOnce(&mut App) + Send>;
 
 #[derive(Default)]
 pub struct ExtensionHostProxy {
+    pub agent_tools: crate::ExtensionAgentTools,
     theme_proxy: RwLock<Option<Arc<dyn ExtensionThemeProxy>>>,
     grammar_proxy: RwLock<Option<Arc<dyn ExtensionGrammarProxy>>>,
     language_proxy: RwLock<Option<Arc<dyn ExtensionLanguageProxy>>>,
@@ -49,6 +50,7 @@ impl ExtensionHostProxy {
 
     pub fn new() -> Self {
         Self {
+            agent_tools: Default::default(),
             theme_proxy: RwLock::default(),
             grammar_proxy: RwLock::default(),
             language_proxy: RwLock::default(),

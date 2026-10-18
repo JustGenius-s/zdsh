@@ -46,6 +46,8 @@ pub fn new_linker(
 ) -> Linker<WasmState> {
     let mut linker = Linker::new(&wasm_engine(executor));
     wasmtime_wasi::p2::add_to_linker_async(&mut linker).unwrap();
+    super::agent_tools::AgentExtension::add_to_linker::<_, WasmState>(&mut linker, |state| state)
+        .unwrap();
     f(&mut linker).unwrap();
     linker
 }
@@ -118,11 +120,19 @@ impl Extension {
         if version >= latest::MIN_VERSION {
             authorize_access_to_unreleased_wasm_api_version(release_channel)?;
 
+            let instance = latest::linker(executor)
+                .instantiate_async(&mut *store, component)
+                .await
+                .map_err(anyhow::Error::from)
+                .context("failed to instantiate wasm extension")?;
             let extension =
-                latest::Extension::instantiate_async(store, component, latest::linker(executor))
-                    .await
+                latest::Extension::new(&mut *store, &instance).map_err(anyhow::Error::from)?;
+            if !store.data().manifest.agent_tools.is_empty() {
+                let tools = super::agent_tools::AgentExtension::new(&mut *store, &instance)
                     .map_err(anyhow::Error::from)
-                    .context("failed to instantiate wasm extension")?;
+                    .context("missing ZDSH Agent tool exports")?;
+                store.data_mut().agent_tools = Some(Arc::new(tools));
+            }
             Ok(Self::V0_8_0(extension))
         } else if version >= since_v0_6_0::MIN_VERSION {
             let extension = since_v0_6_0::Extension::instantiate_async(

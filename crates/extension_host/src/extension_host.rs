@@ -1400,6 +1400,11 @@ impl ExtensionStore {
             let Some(extension) = old_index.extensions.get(extension_id) else {
                 continue;
             };
+            let removal = self.proxy.agent_tools.unregister(extension_id);
+            server_removal_tasks.push(cx.background_spawn(async move {
+                removal.await;
+                Ok(())
+            }));
             grammars_to_remove.extend(extension.manifest.grammars.keys().cloned());
             for (language_server_name, config) in &extension.manifest.language_servers {
                 for language in config.languages() {
@@ -1641,6 +1646,16 @@ impl ExtensionStore {
             let mut wasm_extensions = Vec::new();
             for extension in extension_entries {
                 if extension.manifest.lib.kind.is_none() {
+                    if !extension.manifest.agent_tools.is_empty() {
+                        log::error!(
+                            "Extension {} declares Agent tools without a Wasm library",
+                            extension.manifest.id
+                        );
+                        this.update(cx, |_, cx| {
+                            cx.emit(Event::ExtensionFailedToLoad(extension.manifest.id.clone()))
+                        })
+                        .log_err();
+                    }
                     continue;
                 };
 
@@ -1677,6 +1692,14 @@ impl ExtensionStore {
 
                 for (manifest, wasm_extension) in &wasm_extensions {
                     let extension = Arc::new(wasm_extension.clone());
+                    if let Err(error) = this.proxy.agent_tools.register(extension.clone()) {
+                        log::error!(
+                            "Failed to register Agent tools for {}: {error:#}",
+                            manifest.id
+                        );
+                        cx.emit(Event::ExtensionFailedToLoad(manifest.id.clone()));
+                        continue;
+                    }
 
                     for (language_server_id, language_server_config) in &manifest.language_servers {
                         for language in language_server_config.languages() {

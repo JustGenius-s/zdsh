@@ -1,3 +1,4 @@
+mod agent_tools;
 pub mod wit;
 
 use crate::capability_granter::CapabilityGranter;
@@ -77,6 +78,40 @@ impl Drop for WasmExtension {
 
 #[async_trait]
 impl extension::Extension for WasmExtension {
+    async fn run_agent_tool(
+        &self,
+        name: String,
+        arguments: serde_json::Value,
+        cancellation: extension::AgentToolCancellation,
+    ) -> Result<serde_json::Value> {
+        self.call(move |_, store| {
+            async move {
+                anyhow::ensure!(
+                    !cancellation.is_cancelled(),
+                    "extension tool cancelled before dispatch"
+                );
+                let tools = store
+                    .data()
+                    .agent_tools
+                    .clone()
+                    .context("extension has no Agent tool exports")?;
+                let arguments = serde_json::to_string(&arguments)?;
+                store.data_mut().agent_tool_cancellation = Some(cancellation);
+                let result = tools
+                    .zdsh_agent_tools()
+                    .call_execute(&mut *store, &name, &arguments)
+                    .await;
+                store.data_mut().agent_tool_cancellation = None;
+                let output = result
+                    .map_err(anyhow::Error::from)?
+                    .map_err(|message| anyhow!("{message}"))?;
+                serde_json::from_str(&output).context("extension returned invalid tool result JSON")
+            }
+            .boxed()
+        })
+        .await?
+    }
+
     fn manifest(&self) -> Arc<ExtensionManifest> {
         self.manifest.clone()
     }
@@ -546,6 +581,8 @@ pub struct WasmState {
     pub host: Arc<WasmHost>,
     pub(crate) capability_granter: CapabilityGranter,
     pub(crate) language_server_status_source: Option<gpui::EntityId>,
+    agent_tools: Option<Arc<agent_tools::AgentExtension>>,
+    agent_tool_cancellation: Option<extension::AgentToolCancellation>,
 }
 
 type MainThreadCall = Box<dyn Send + for<'a> FnOnce(&'a mut AsyncApp) -> LocalBoxFuture<'a, ()>>;
@@ -680,6 +717,8 @@ impl WasmHost {
                         manifest.clone(),
                     ),
                     language_server_status_source: None,
+                    agent_tools: None,
+                    agent_tool_cancellation: None,
                 },
             );
             // Store will yield after 1 tick, and get a new deadline of 1 tick after each yield.
@@ -695,6 +734,10 @@ impl WasmHost {
             )
             .await?;
 
+            anyhow::ensure!(
+                manifest.agent_tools.is_empty() || store.data().agent_tools.is_some(),
+                "extension declares Agent tools but has no compatible exports"
+            );
             extension
                 .call_init_extension(&mut store)
                 .await

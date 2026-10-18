@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> Remove this line to confirm you've reviewed this PR before submitting.
+
 # Zed
 
 [![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
@@ -14,6 +17,26 @@ On macOS, Linux, and Windows you can [download Zed directly](https://zed.dev/dow
 Other platforms are not yet available:
 
 - Web ([tracking discussion](https://github.com/zed-industries/zed/discussions/26195))
+
+### Developing zdsh on macOS
+
+zdsh starts from Zed's source tree. The application crate and binary are currently named `zed`.
+
+The DSH Rust port lives in `crates/dsh_runtime`, `crates/dsh_agent`, and `crates/dsh_zed`. See [DSH architecture](./docs/src/development/dsh.md) for component responsibilities and integration scope.
+
+Install Xcode with the macOS components, select its developer directory, and install CMake with `brew install cmake`. The repository's `rust-toolchain.toml` selects the Rust version, development components, and cross-compilation targets; install them with `rustup show` from the repository root. Check that `xcrun metal --version` succeeds before building; see the [macOS build guide](./docs/src/development/macos.md) for Metal toolchain setup.
+
+Run these commands from the repository root:
+
+```sh
+cargo build --locked -p zed --bin zed
+cargo check --locked -p zed --bin zed
+cargo run --locked -p zed --bin zed -- --user-data-dir .local-zdsh .
+```
+
+The run command stores development settings, databases, and extensions under the Git-ignored `.local-zdsh/` directory. This directory is separate from the installed Zed application's default data directory. On macOS, logs still use `~/Library/Logs/Zed/`.
+
+The project task menu includes `zdsh: build`, `zdsh: check`, and `zdsh: run (isolated data)`. For linting a changed crate, use `./script/clippy --locked -p <crate>`; for its library tests, use `cargo test --locked -p <crate> --lib`.
 
 ### Developing Zed
 

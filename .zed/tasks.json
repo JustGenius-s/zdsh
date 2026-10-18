@@ -1,5 +1,29 @@
 [
   {
+    "label": "zdsh: build",
+    "command": "cargo",
+    "args": ["build", "--locked", "-p", "zed", "--bin", "zed"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "allow_concurrent_runs": false,
+    "use_new_terminal": false,
+  },
+  {
+    "label": "zdsh: check",
+    "command": "cargo",
+    "args": ["check", "--locked", "-p", "zed", "--bin", "zed"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "allow_concurrent_runs": false,
+    "use_new_terminal": false,
+  },
+  {
+    "label": "zdsh: run (isolated data)",
+    "command": "cargo",
+    "args": ["run", "--locked", "-p", "zed", "--bin", "zed", "--", "--user-data-dir", ".local-zdsh", "."],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "allow_concurrent_runs": false,
+    "use_new_terminal": false,
+  },
+  {
     "label": "clippy",
     "command": "./script/clippy",
     "args": [],

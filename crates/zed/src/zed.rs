@@ -342,7 +342,7 @@ fn bind_on_window_closed(cx: &mut App) -> Option<gpui::Subscription> {
             .then(|| {
                 cx.on_window_closed(|cx, _window_id| {
                     if cx.windows().is_empty() {
-                        cx.quit();
+                        quit_after_dsh_shutdown(cx);
                     }
                 })
             })
@@ -351,7 +351,7 @@ fn bind_on_window_closed(cx: &mut App) -> Option<gpui::Subscription> {
     {
         Some(cx.on_window_closed(|cx, _window_id| {
             if cx.windows().is_empty() {
-                cx.quit();
+                quit_after_dsh_shutdown(cx);
             }
         }))
     }
@@ -1798,6 +1798,17 @@ fn quit(_: &Quit, cx: &mut App) {
             return Ok(());
         }
 
+        cx.update(dsh_zed::shutdown).await?;
+        cx.update(|cx| cx.quit());
+        anyhow::Ok(())
+    })
+    .detach_and_log_err(cx);
+}
+
+fn quit_after_dsh_shutdown(cx: &mut App) {
+    let shutdown = dsh_zed::shutdown(cx);
+    cx.spawn(async move |cx| {
+        shutdown.await?;
         cx.update(|cx| cx.quit());
         anyhow::Ok(())
     })

@@ -114,3 +114,7 @@ zed::register_extension!(MyExtension);
 ### Debugging your Rust extension
 
 `stdout`/`stderr` is forwarded directly to the Zed process. In order to see `println!`/`dbg!` output from your extension, you can start Zed in your terminal with a `--foreground` flag.
+
+## ZDSH Agent tools
+
+This fork also supports [Agent tools](./agent-tools.md) in the same extension package and Wasm instance. These exports require the optional `agent-tools` API feature and a ZDSH development build.

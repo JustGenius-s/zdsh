@@ -229,6 +229,7 @@
   - [Windows](./development/windows.md)
   - [FreeBSD](./development/freebsd.md)
   - [Using Debuggers](./development/debuggers.md)
+  - [DSH Architecture](./development/dsh.md)
   - [Performance](./performance.md)
   - [UI/UX Checklist](./development/ui-checklist.md)
   - [Glossary](./development/glossary.md)

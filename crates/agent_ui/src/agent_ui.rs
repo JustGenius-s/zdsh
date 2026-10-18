@@ -502,6 +502,7 @@ where
         AgentIdOrLegacyAgent::AgentId(agent_id) => Ok(agent_id),
         AgentIdOrLegacyAgent::LegacyAgent(Agent::Custom { id }) => Ok(id),
         AgentIdOrLegacyAgent::LegacyAgent(Agent::NativeAgent) => Ok(Agent::NativeAgent.id()),
+        AgentIdOrLegacyAgent::LegacyAgent(Agent::Dsh) => Ok(Agent::Dsh.id()),
         #[cfg(any(test, feature = "test-support"))]
         AgentIdOrLegacyAgent::LegacyAgent(Agent::Stub) => Ok(Agent::Stub.id()),
     }
@@ -521,6 +522,7 @@ pub enum Agent {
     #[default]
     #[serde(alias = "NativeAgent", alias = "TextThread")]
     NativeAgent,
+    Dsh,
     #[serde(alias = "Custom")]
     Custom {
         #[serde(rename = "name")]
@@ -535,6 +537,9 @@ impl From<AgentId> for Agent {
         if id.as_ref() == agent::ZED_AGENT_ID.as_ref() {
             return Self::NativeAgent;
         }
+        if id.as_ref() == dsh_zed::DSH_AGENT_ID {
+            return Self::Dsh;
+        }
         #[cfg(any(test, feature = "test-support"))]
         if id.as_ref() == "stub" {
             return Self::Stub;
@@ -547,6 +552,7 @@ impl Agent {
     pub fn id(&self) -> AgentId {
         match self {
             Self::NativeAgent => agent::ZED_AGENT_ID.clone(),
+            Self::Dsh => dsh_zed::DSH_AGENT_ID.into(),
             Self::Custom { id } => id.clone(),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => "stub".into(),
@@ -560,6 +566,7 @@ impl Agent {
     pub fn label(&self) -> SharedString {
         match self {
             Self::NativeAgent => "Zed Agent".into(),
+            Self::Dsh => "DSH Preview".into(),
             Self::Custom { id, .. } => id.0.clone(),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => "Stub Agent".into(),
@@ -569,7 +576,7 @@ impl Agent {
     pub fn icon(&self) -> Option<IconName> {
         match self {
             Self::NativeAgent => None,
-            Self::Custom { .. } => Some(IconName::Sparkle),
+            Self::Custom { .. } | Self::Dsh => Some(IconName::Sparkle),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => None,
         }
@@ -582,6 +589,7 @@ impl Agent {
     ) -> Rc<dyn agent_servers::AgentServer> {
         match self {
             Self::NativeAgent => Rc::new(agent::NativeAgentServer::new(fs, thread_store)),
+            Self::Dsh => Rc::new(dsh_zed::DshAgentServer),
             Self::Custom { id: name } => {
                 Rc::new(agent_servers::CustomAgentServer::new(name.clone()))
             }

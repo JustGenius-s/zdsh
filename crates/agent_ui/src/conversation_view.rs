@@ -2237,6 +2237,9 @@ impl ConversationView {
     }
 
     fn schedule_draft_prompt_persist(&mut self, cx: &mut Context<Self>) {
+        if self.agent_key() == &Agent::Dsh {
+            return;
+        }
         let thread_id = self.thread_id;
         self.draft_prompt_persist_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
