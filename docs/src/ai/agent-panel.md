@@ -10,6 +10,20 @@ It's the core of Zed's AI code editing experience — use it for code generation
 
 Open it with {#action agent::NewThread} from [the Command Palette](../command-palette.md) or click the ✨ icon in the status bar.
 
+## Agent tabs in zdsh
+
+In zdsh, each Agent conversation opens in a central editor tab. The project file tree can stay open beside it. This applies to the Zed Agent, DSH, and external ACP agents; terminal entries retain their existing panel behavior.
+
+Use the existing New Thread action, Agent button, or thread history to open a conversation. Opening an already open conversation activates its tab. Drag tabs to reorder them or move them into a split pane to work beside code. Each conversation has one tab; splitting does not duplicate the conversation.
+
+The tab displays its title and connection, generation, approval, or error status. Its toolbar provides the agent picker and chat options, and files can still be dragged into the conversation as context.
+
+Use the double speech bubble button in the conversation toolbar to open **Thread History** inside the tab. The list retains project grouping, search, archive, and restore actions. It shares the existing history data across tabs. Only one tab presents the list at a time; opening it in another tab moves the list there. File tabs and the project file tree keep their full layout.
+
+On wide panes, history sits to the right of the conversation with a draggable divider. On narrow panes, it overlays the right side of the conversation; click outside it or use the toolbar button to close it. The existing Toggle Threads Sidebar and Focus Sidebar shortcuts target this tab-local history. From a file tab, they open a conversation tab first. History starts collapsed after restarting zdsh.
+
+Switching tabs keeps work running. Closing a conversation tab requests cancellation and releases its session. Saved conversations remain available through the agent's history support; DSH conversations are currently in memory and cannot be restored after closing. Central Agent tab positions are not restored when restarting zdsh.
+
 ## Getting Started {#getting-started}
 
 If you're using the Agent Panel for the first time, configure either a model for the [Zed Agent](./zed-agent.md) or an [External Agent](./external-agents.md).

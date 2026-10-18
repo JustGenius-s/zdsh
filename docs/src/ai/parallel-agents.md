@@ -7,9 +7,9 @@ description: Run multiple agent threads and Terminal Threads concurrently using 
 
 Parallel Agents lets you run multiple agent threads and Terminal Threads at once from the Threads Sidebar. Each thread works independently with its own agent, context window, and conversation history. Terminal Threads appear alongside agent threads in the same sidebar, so you can switch between them without leaving the Agent Panel.
 
-Open the Threads Sidebar with {#kb multi_workspace::ToggleWorkspaceSidebar}.
+In zdsh, open the thread list inside a conversation tab with the double speech bubble **Thread History** button or {#kb multi_workspace::ToggleWorkspaceSidebar}. Opening an existing conversation activates its central tab. File tabs and the Project Panel keep their layout.
 
-Use **Panel Layout > Agentic** from the user menu in the title bar (or the {#action workspace::UseAgenticLayout} action) to place the Agent Panel and Threads Sidebar on the left, with the Project Panel, Git Panel, and other panels on the right. Use **Panel Layout > Classic** (or {#action workspace::UseClassicLayout}) to restore the editor-oriented layout. You can still rearrange individual panels by right-clicking any panel icon.
+Panel layout presets still arrange dock panels. In zdsh, conversations and thread history remain in central tabs with either preset. You can rearrange dock panels by right-clicking their icons.
 
 ## Threads Sidebar {#threads-sidebar}
 
@@ -19,7 +19,7 @@ Terminal Threads also appear as entries in the sidebar alongside agent threads, 
 
 To focus the sidebar without toggling it, use {#kb multi_workspace::FocusWorkspaceSidebar}. To search your threads, press {#kb agents_sidebar::FocusSidebarFilter} while the sidebar is focused.
 
-To change the sidebar’s position, open the Settings Editor and search for “Threads Sidebar Position”, which writes `agent.threads_sidebar.position`. To change its default width, search for “Threads Sidebar Default Width”. See [`agent.threads_sidebar.default_width`](../reference/all-settings.md#agent-threads-sidebar-default-width) for values and a configuration example.
+History appears on the right inside the conversation tab; `agent.threads_sidebar.position` does not change its location in zdsh. To change its default width, open the Settings Editor and search for “Threads Sidebar Default Width”. See [`agent.threads_sidebar.default_width`](../reference/all-settings.md#agent-threads-sidebar-default-width) for values and a configuration example.
 
 Drag the divider to resize the sidebar. Changing the default width updates even a manually resized sidebar. Double-click the divider to return to the configured width.
 

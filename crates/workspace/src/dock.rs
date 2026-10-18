@@ -44,6 +44,10 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn activation_focus_handle(&self, cx: &App) -> FocusHandle {
         self.focus_handle(cx)
     }
+    /// Returns true when activation is handled by an item in the workspace center.
+    fn focus_in_center(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
+        false
+    }
     fn position(&self, window: &Window, cx: &App) -> DockPosition;
     fn position_is_valid(&self, position: DockPosition) -> bool;
     fn set_position(&mut self, position: DockPosition, window: &mut Window, cx: &mut Context<Self>);
@@ -759,6 +763,9 @@ impl Dock {
                             .ok();
                     }
                     PanelEvent::Activate => {
+                        if panel.update(cx, |panel, cx| panel.focus_in_center(window, cx)) {
+                            return;
+                        }
                         if let Some(ix) = this
                             .panel_entries
                             .iter()

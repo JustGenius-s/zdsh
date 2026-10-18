@@ -8,7 +8,7 @@ use futures::{
 use gpui::{App, Task};
 use language_model::{
     LanguageModel, LanguageModelCompletionError, LanguageModelCompletionStream,
-    LanguageModelProvider, LanguageModelRequest,
+    LanguageModelRegistry, LanguageModelRequest,
 };
 use std::{num::NonZeroUsize, sync::Arc};
 use tokio::sync::{mpsc, oneshot};
@@ -18,8 +18,9 @@ type Completion =
 
 struct Request {
     request: LanguageModelRequest,
+    model: String,
     cancellation: Cancellation,
-    reply: oneshot::Sender<Completion>,
+    reply: oneshot::Sender<Result<(Completion, String), ModelError>>,
 }
 
 pub(super) struct Bridge {
@@ -30,8 +31,6 @@ pub(super) struct Bridge {
 
 pub(super) struct Adapter {
     sender: mpsc::Sender<Request>,
-    route: String,
-    provider: String,
     stop: Cancellation,
 }
 
@@ -40,18 +39,11 @@ pub fn model_key(model: &LanguageModel) -> String {
 }
 
 impl Bridge {
-    pub fn new(
-        model: LanguageModel,
-        provider: Arc<dyn LanguageModelProvider>,
-        capacity: NonZeroUsize,
-        cx: &mut App,
-    ) -> Self {
+    pub fn new(capacity: NonZeroUsize, cx: &mut App) -> Self {
         let (sender, mut receiver) = mpsc::channel::<Request>(capacity.get());
         let stop = CancellationSource::default();
         let adapter = Arc::new(Adapter {
             sender,
-            route: model_key(&model),
-            provider: model.provider_id.to_string(),
             stop: stop.token(),
         });
         let mut cancellation = stop.token();
@@ -63,7 +55,21 @@ impl Bridge {
                     request = receiver.recv() => match request { Some(request) => request, None => break },
                 };
                 if request.reply.is_closed() || request.cancellation.is_cancelled() { continue; }
-                let completion = provider.stream_completion(&model, request.request, cx);
+                let binding = cx.update(|cx| {
+                    let registry = LanguageModelRegistry::read_global(cx);
+                    let model = registry.visible_providers().iter()
+                        .flat_map(|provider| provider.provided_models(cx))
+                        .find(|model| model_key(model) == request.model)
+                        .ok_or_else(|| ModelError("Selected model is no longer available".into()))?;
+                    if model.is_disabled().is_some() { return Err(ModelError("Selected model is disabled".into())); }
+                    let provider = registry.provider_for_model(&model).map_err(|error| ModelError(error.to_string()))?;
+                    if !provider.is_authenticated(cx) { return Err(ModelError("Authenticate this model provider in Zed settings".into())); }
+                    Ok((model, provider))
+                });
+                let completion = binding.map(|(model, provider)| {
+                    let provider_id = model.provider_id.to_string();
+                    (provider.stream_completion(&model, request.request, cx), provider_id)
+                });
                 if let Err(_abandoned_completion) = request.reply.send(completion) {
                     // Dropping the undelivered future cancels a request whose caller has gone away.
                 }
@@ -89,11 +95,7 @@ impl ModelProvider for Adapter {
         mut cancellation: Cancellation,
     ) -> BoxFuture<'_, Result<ModelStream, ModelError>> {
         Box::pin(async move {
-            if request.model != self.route {
-                return Err(ModelError(
-                    "request model differs from the bound Zed model".into(),
-                ));
-            }
+            let model = request.model.clone();
             let request = mapping::request(request)?;
             let mut stop = self.stop.clone();
             let request_cancellation = cancellation.clone();
@@ -102,18 +104,19 @@ impl ModelProvider for Adapter {
                 self.sender
                     .send(Request {
                         request,
+                        model,
                         cancellation: request_cancellation,
                         reply,
                     })
                     .await
                     .map_err(|_| ModelError("Zed model bridge is closed".into()))?;
-                let completion = result
+                let (completion, provider) = result
                     .await
-                    .map_err(|_| ModelError("Zed model bridge closed before dispatch".into()))?;
+                    .map_err(|_| ModelError("Zed model bridge closed before dispatch".into()))??;
                 let stream = completion
                     .await
                     .map_err(|error| ModelError(error.to_string()))?;
-                Ok(mapping::response(stream, self.provider.clone()))
+                Ok(mapping::response(stream, provider))
             };
             tokio::select! {
                 biased;

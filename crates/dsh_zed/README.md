@@ -4,19 +4,23 @@ The adapter between Zed and the DSH Rust core. It reuses providers, authenticati
 
 ## Code organization
 
-`dsh_zed.rs` exports the host API. `host.rs` manages sessions and shutdown; `model.rs` and `model/mapping.rs` dispatch and translate model requests and responses; `agent_server.rs` implements Agent connections, with `model_selector.rs` and `transcript.rs` handling model selection and ACP event projection. `extension_tools.rs` adapts extension tools and authorization. See [DSH architecture](../../docs/src/development/dsh.md) for component dependencies.
+`dsh_zed.rs` exports the host API. `host.rs` manages sessions and shutdown; `model.rs` and `model/mapping.rs` dispatch and translate model requests and responses; `agent_server.rs` implements Agent connections, with `model_selector.rs` and `transcript.rs` handling model selection and ACP event projection. `controls.rs` owns per-conversation model, thinking, and profile preferences. `extension_tools.rs` adapts extension tools and authorization. See [DSH architecture](../../docs/src/development/dsh.md) for component dependencies.
 
-## Panel preview
+## Agent conversations
 
-Choose **DSH Preview** from the Agent panel's new-chat menu, select a configured Zed model through the existing model picker, and send text. Responses and thinking stream into the panel, and trailing token usage updates its statistics. The stop button requests cancellation; closing a chat waits for DSH cleanup. Zed Agent remains the default.
+Choose **DSH** from the Agent panel's new-chat menu, select a configured Zed model through the existing model picker, and send text. Responses and thinking stream into the panel, and trailing token usage updates its statistics. The stop button requests cancellation; closing a chat waits for DSH cleanup. Zed Agent remains the default.
 
-The preview accepts text and loads Agent tools declared by installed extensions. Every invocation requires panel approval. Built-in file and command tools are not available; attachments are rejected before submission. The model is fixed after the first successful DSH runtime creation, so changing models requires a new chat. Authentication uses the selected Zed provider. Conversations, sidebar entries, and drafts remain in memory and cannot be restored after closing or quitting. The preview is unavailable in collaborative projects.
+DSH accepts text and loads Agent tools declared by installed extensions. Every invocation requires panel approval. Built-in file and command tools are not available; attachments are rejected before submission. Model, profile, and thinking selections apply to the next submitted turn without clearing the conversation. Authentication uses the selected Zed provider. Conversations, sidebar entries, and drafts remain in memory and cannot be restored after closing or quitting. DSH is unavailable in collaborative projects.
+
+DSH and Zed Agent share the authenticated model catalog, recommended/provider groups, favorites, and model-picker footer. DSH reuses the profile selector and thinking controls, including model-specific effort levels and mandatory-thinking rules. Registry events refresh the picker when provider availability changes.
+
+Write, Ask, Minimal, and custom profiles use the existing Zed settings. DSH checks the profile's `tools` entry for each extension-qualified tool name; absent an explicit entry, `enable_all_context_servers` controls availability. The default Write profile enables extension tools, while Ask and Minimal do not. Restricted workspaces use Minimal and expose no extension tools. The core filters both advertised tools and actual execution against the captured allowlist, including calls to a hidden tool name. Changing profiles does not add Zed's built-in tools to DSH.
 
 `DshAgentServer` implements Zed's in-process `AgentServer` and `AgentConnection` interfaces without launching an ACP subprocess. Log subscriptions use append cursors to catch up after coalesced notifications. Shutdown retains ownership of pending startup tasks so abandoning a UI wait does not leave an unmanaged session.
 
 ## Invocation and ownership
 
-The application calls `init(cx)` after initializing model providers. Initialization neither creates Agent sessions nor sends model requests. Callers select an existing `LanguageModel`, set `AgentConfig.model` to `model_key(&model)`, explicitly supply `ModelOptions`, budgets, queue capacity, and a `ToolRegistry`, then await `start_session(model, config, tools, cx)?.await`. Missing authentication, a mismatched model key, or supplying tools to a model without tool support fails before session creation.
+The application calls `init(cx)` after initializing model providers. Initialization neither creates Agent sessions nor sends model requests. Callers select an existing `LanguageModel`, set `AgentConfig.model` to `model_key(&model)`, explicitly supply `ModelOptions`, budgets, queue capacity, and a `ToolRegistry`, then await `start_session(model, config, tools, cx)?.await`. Missing initial authentication or a mismatched initial model key fails before session creation. `submit_with_options` supplies a model, inference options, and an explicit tool allowlist for each turn; callers must omit tools for models without tool support.
 
 `Session::agent()` returns the DSH Agent service for submitting turns and reading the log. `Session::close(cx).await` cancels and waits for the Agent and tools before stopping GPUI model dispatch. Dropping the Session handle does not unload it; the host retains ownership until explicit close or application shutdown. Failed closes can be retried, and interrupting a close wait preserves pending runtime cleanup.
 
@@ -44,13 +48,13 @@ cargo fmt -p dsh_zed -p dsh_agent -p dsh_runtime -p zed -- --check
 ./script/clippy --locked -p dsh_zed -p dsh_agent -p dsh_runtime
 ```
 
-Built-in file and command tools, model changes during a conversation, and disk session recovery are not available. Streaming, conversation continuation, cancellation, and tool approval require manual UI verification. Real model API calls have not been verified.
+Built-in file and command tools, attachments, and disk session recovery are not available. Streaming, conversation continuation, cancellation, and tool approval require manual UI verification. Real model API calls have not been verified.
 
 ## Unified extension tools
 
 Agent tools share Zed's `extension.toml`, development extension installer, and Wasm instance with language, theme, and other editor extensions. The `extension` crate owns tool contributions; `dsh_zed` adapts them for DSH without a separate installer or plugin directory. See [Agent tools](../../docs/src/extensions/agent-tools.md) for the extension interface.
 
-The tool list is captured when the session runtime is first created. Start a new chat after changing the model or installing or updating extensions. Tool names include the extension identifier, and arguments are validated against the manifest's JSON Schema. Each execution requests approval or denial for that invocation only. Arguments, results, and failures enter the DSH log and appear in native tool cards. The preview permits at most eight model requests per turn.
+The tool list is captured when the session runtime is first created. Start a new chat after installing or updating extensions. Tool names include the extension identifier, and arguments are validated against the manifest's JSON Schema. Each execution requests approval or denial for that invocation only. Arguments, results, and failures enter the DSH log and appear in native tool cards. DSH permits at most eight model requests per turn.
 
 Unloading synchronously revokes new calls and requests cancellation of active tools. The host waits for those calls to return before completing reload and working-directory cleanup. Cancellation is cooperative: extensions must inspect the cancellation flag and finish using resources before returning. Unresponsive extensions can block unloading and normal application exit. Existing sessions hold revocable tool references; they cannot invoke old code after unloading or silently switch to a replacement version.
 

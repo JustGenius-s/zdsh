@@ -90,7 +90,8 @@ pub fn init(cx: &mut App) {
 }
 
 /// Uses an already authenticated Zed provider. The caller selects the model and
-/// inference options; `config.model` must equal `model_key(model)`.
+/// initial inference options; `config.model` must equal `model_key(model)`.
+/// Later turns can select another authenticated model through `submit_with_options`.
 /// Await the returned task; dropping it leaves cleanup owned by the host.
 pub fn start_session(
     model: LanguageModel,
@@ -110,15 +111,12 @@ pub fn start_session(
     if config.queue_capacity.get() > tokio::sync::Semaphore::MAX_PERMITS {
         bail!("DSH queue capacity exceeds Tokio channel limit");
     }
-    if !tools.definitions().is_empty() && !model.supports_tools {
-        bail!("selected model does not support tools");
-    }
     let executor = host.executor.clone();
     let provider = LanguageModelRegistry::read_global(cx).provider_for_model(&model)?;
     if !provider.is_authenticated(cx) {
         bail!("authenticate the selected model provider in Zed settings first");
     }
-    let bridge = model::Bridge::new(model, provider, config.queue_capacity, cx);
+    let bridge = model::Bridge::new(config.queue_capacity, cx);
     let owner = Rc::new(Owner {
         runtime: Mutex::new(Some(Runtime::with_executor(executor))),
         bridge,

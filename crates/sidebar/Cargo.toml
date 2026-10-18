@@ -35,7 +35,6 @@ language_model.workspace = true
 log.workspace = true
 menu.workspace = true
 notifications.workspace = true
-platform_title_bar.workspace = true
 project.workspace = true
 recent_projects.workspace = true
 remote.workspace = true

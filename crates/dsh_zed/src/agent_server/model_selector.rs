@@ -1,78 +1,86 @@
 use super::SessionState;
-use crate::model_key;
-use acp_thread::{AgentModelId, AgentModelInfo, AgentModelList, AgentModelSelector};
+use acp_thread::{AgentModelId, AgentModelInfo, AgentModelList, AgentModelSelector, model_catalog};
+use agent_settings::{AgentSettings, language_model_to_selection};
 use anyhow::{Context as _, Result, bail};
+use collections::HashSet;
 use gpui::{App, Task};
-use language_model::{LanguageModel, LanguageModelRegistry};
+use language_model::LanguageModelRegistry;
+use settings::{Settings, update_settings_file};
 use std::rc::Rc;
 
 pub(super) struct Selector(pub(super) Rc<SessionState>);
-fn model_info(model: &LanguageModel) -> AgentModelInfo {
-    AgentModelInfo {
-        id: model_key(model).into(),
-        name: model.name.0.clone(),
-        description: Some(model.provider_name.0.clone()),
-        icon: None,
-        is_latest: false,
-        cost: None,
-        disabled: model.is_disabled(),
-    }
-}
-
 impl AgentModelSelector for Selector {
     fn list_models(&self, cx: &mut App) -> Task<Result<AgentModelList>> {
-        let models = if self.0.runtime.borrow().is_some() {
-            self.0.selected.borrow().iter().map(model_info).collect()
-        } else {
-            LanguageModelRegistry::read_global(cx)
-                .visible_providers()
-                .iter()
-                .flat_map(|provider| provider.provided_models(cx))
-                .map(|model| model_info(&model))
-                .collect()
-        };
-        Task::ready(Ok(AgentModelList::Flat(models)))
+        Task::ready(Ok(model_catalog::catalog(cx).1))
     }
-    fn selected_model(&self, _: &mut App) -> Task<Result<AgentModelInfo>> {
-        Task::ready(
-            self.0
-                .selected
-                .borrow()
-                .as_ref()
-                .map(model_info)
-                .context("Choose a configured Zed model"),
-        )
+    fn selected_model(&self, cx: &mut App) -> Task<Result<AgentModelInfo>> {
+        Task::ready((|| {
+            let model = self
+                .0
+                .controls
+                .read(cx)
+                .model()
+                .context("Choose a configured Zed model")?;
+            let provider = LanguageModelRegistry::read_global(cx).provider_for_model(model)?;
+            Ok(model_catalog::model_info(model, &provider))
+        })())
     }
     fn select_model(&self, id: AgentModelId, cx: &mut App) -> Task<Result<()>> {
-        let result = (|| {
+        Task::ready((|| {
             if self.0.closed.get() {
                 bail!("DSH session is closed");
             }
-            if self
+            let model = model_catalog::catalog(cx)
                 .0
-                .selected
-                .borrow()
-                .as_ref()
-                .is_some_and(|model| model_key(model) == id.as_str())
-            {
-                return Ok(());
-            }
-            if self.0.running.get() || self.0.runtime.borrow().is_some() {
-                bail!("Start a new DSH chat to change its model");
-            }
-            let model = LanguageModelRegistry::read_global(cx)
-                .visible_providers()
-                .iter()
-                .flat_map(|provider| provider.provided_models(cx))
-                .find(|model| model_key(model) == id.as_str())
+                .remove(&id)
                 .context("Model is unavailable; configure its provider in Zed settings")?;
-            self.0.selected.replace(Some(model));
-            self.0.notify_model();
+            anyhow::ensure!(
+                model.is_disabled().is_none(),
+                "This model is currently unavailable"
+            );
+            self.0
+                .controls
+                .update(cx, |controls, cx| controls.select_model(model, true, cx));
             Ok(())
-        })();
-        Task::ready(result)
+        })())
     }
-    fn watch(&self, _: &mut App) -> Option<watch::Receiver<()>> {
-        Some(self.0.model_changes.borrow().receiver())
+    fn watch(&self, cx: &mut App) -> Option<watch::Receiver<()>> {
+        Some(self.0.controls.read(cx).watch())
+    }
+    fn favorite_model_ids(&self, cx: &mut App) -> HashSet<AgentModelId> {
+        AgentSettings::get_global(cx)
+            .favorite_model_ids()
+            .into_iter()
+            .map(AgentModelId::from)
+            .collect()
+    }
+    fn toggle_favorite_model(&self, id: AgentModelId, favorite: bool, cx: &App) {
+        let Some(model) = model_catalog::catalog(cx).0.remove(&id) else {
+            return;
+        };
+        let controls = self.0.controls.read(cx);
+        let mut selection = language_model_to_selection(&model, None);
+        if controls
+            .model()
+            .is_some_and(|selected| crate::model_key(selected) == crate::model_key(&model))
+        {
+            selection.enable_thinking = controls.thinking_enabled();
+            selection.effort = controls.thinking_effort().cloned();
+        }
+        update_settings_file(
+            controls.project().read(cx).fs().clone(),
+            cx,
+            move |settings, _| {
+                let agent = settings.agent.get_or_insert_default();
+                if favorite {
+                    agent.add_favorite_model(selection.clone());
+                } else {
+                    agent.remove_favorite_model(&selection);
+                }
+            },
+        );
+    }
+    fn should_render_footer(&self) -> bool {
+        true
     }
 }

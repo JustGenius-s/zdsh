@@ -7,6 +7,7 @@ pub mod content;
 mod diff;
 pub mod elicitation;
 mod mention;
+pub mod model_catalog;
 pub mod notices;
 pub mod prompt_capabilities;
 mod submission;

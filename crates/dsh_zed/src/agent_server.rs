@@ -1,13 +1,13 @@
 mod model_selector;
 mod transcript;
 
-use crate::{Session, model_key, start_session};
+use crate::{Session, SessionControls, start_session};
 use acp_thread::{AcpThread, AgentConnection, AgentModelSelector};
 use action_log::ActionLog;
 use agent_client_protocol::schema::{v1 as acp_v1, v2 as acp_v2};
 use agent_servers::{AgentServer, AgentServerDelegate};
 use anyhow::{Context as _, Result, anyhow, bail};
-use dsh_agent::{AgentConfig, ModelOptions};
+use dsh_agent::AgentConfig;
 use dsh_runtime::CancellationSource;
 use futures::FutureExt;
 use gpui::{App, AppContext, Entity, SharedString, Task, TaskExt, WeakEntity};
@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 pub const DSH_AGENT_ID: &str = "zdsh.dsh";
 
-/// In-process panel backend. The preview accepts text and exposes no file or command tools.
+/// In-process DSH backend using Zed model providers and extension tools.
 pub struct DshAgentServer;
 
 impl AgentServer for DshAgentServer {
@@ -62,29 +62,34 @@ type Startup = futures::future::Shared<
 
 struct SessionState {
     thread: WeakEntity<AcpThread>,
-    selected: RefCell<Option<LanguageModel>>,
+    controls: Entity<SessionControls>,
+    active_model: RefCell<Option<LanguageModel>>,
     runtime: RefCell<Option<Rc<Session>>>,
     starting: RefCell<Option<Startup>>,
     tool_approvals: RefCell<Option<Task<()>>>,
     running: Cell<bool>,
     closed: Cell<bool>,
     cancellation: RefCell<Option<CancellationSource>>,
-    model_changes: RefCell<watch::Sender<()>>,
     _capabilities: watch::Sender<acp_v2::PromptCapabilities>,
 }
 
-impl SessionState {
-    fn notify_model(&self) {
-        if let Err(_no_picker) = self.model_changes.borrow_mut().send(()) {
-            // A picker opened later reads the current selection directly.
-        }
-    }
+/// Returns the Zed controls for a DSH session; other Agent connections return None.
+pub fn session_controls(
+    connection: Rc<dyn AgentConnection>,
+    id: &acp_v2::SessionId,
+) -> Option<Entity<SessionControls>> {
+    connection
+        .downcast::<Connection>()?
+        .session(id)
+        .ok()
+        .map(|session| session.controls.clone())
 }
 
 struct PromptGuard(Rc<SessionState>);
 impl Drop for PromptGuard {
     fn drop(&mut self) {
         self.0.running.set(false);
+        self.0.active_model.borrow_mut().take();
         self.0.cancellation.borrow_mut().take();
     }
 }
@@ -127,36 +132,47 @@ impl AgentConnection for Connection {
     ) -> Task<Result<Entity<AcpThread>>> {
         if project.read(cx).is_via_collab() {
             return Task::ready(Err(anyhow!(
-                "DSH preview is not available in collaborative projects"
+                "DSH is not available in collaborative projects"
             )));
         }
         let id = acp_v2::SessionId::new(Uuid::new_v4().to_string());
-        let selected = LanguageModelRegistry::read_global(cx).default_model();
+        let controls = cx.new(|cx| SessionControls::new(project.clone(), cx));
         let (capabilities, capabilities_rx) = watch::channel(acp_v2::PromptCapabilities::default());
-        let (model_changes, _) = watch::channel(());
         let action_log = cx.new(|_| ActionLog::new(project.clone()));
         let thread = cx.new(|cx| {
-            let mut thread = AcpThread::new(None, None, Some(work_dirs), self.clone(), project, action_log, id.clone(), capabilities_rx, cx);
-            thread.push_notice(acp_v2::Notice::new(acp_v2::NoticeSeverity::Info, "DSH Preview: installed extensions can provide tools, each requiring approval. Chats are not saved after closing. Start a new chat after changing the model or installed tools. Built-in file, terminal, and attachment support is not available yet."), cx);
+            let thread = AcpThread::new(
+                None,
+                None,
+                Some(work_dirs),
+                self.clone(),
+                project,
+                action_log,
+                id.clone(),
+                capabilities_rx,
+                cx,
+            );
             cx.on_release({
                 let connection = self.clone();
                 let id = id.clone();
-                move |_, cx| { connection.close_session(&id, cx).detach_and_log_err(cx); }
-            }).detach();
+                move |_, cx| {
+                    connection.close_session(&id, cx).detach_and_log_err(cx);
+                }
+            })
+            .detach();
             thread
         });
         self.sessions.borrow_mut().insert(
             id,
             Rc::new(SessionState {
                 thread: thread.downgrade(),
-                selected: RefCell::new(selected),
+                controls,
+                active_model: RefCell::new(None),
                 runtime: RefCell::new(None),
                 starting: RefCell::new(None),
                 tool_approvals: RefCell::new(None),
                 running: Cell::new(false),
                 closed: Cell::new(false),
                 cancellation: RefCell::new(None),
-                model_changes: RefCell::new(model_changes),
                 _capabilities: capabilities,
             }),
         );
@@ -213,15 +229,20 @@ impl AgentConnection for Connection {
             if session.running.get() {
                 bail!("DSH is still finishing the previous turn");
             }
-            let model = session.selected.borrow().clone().context(
-                "Configure a model provider in Zed settings and choose a model before sending",
-            )?;
+            let options = session.controls.read(cx).turn_options(cx)?;
+            let model = session
+                .controls
+                .read(cx)
+                .model()
+                .cloned()
+                .context("Choose a model for DSH")?;
+            session.active_model.replace(Some(model.clone()));
             session.running.set(true);
             let cancellation = CancellationSource::default();
             session.cancellation.replace(Some(cancellation.clone()));
-            Ok((input, session, model, cancellation))
+            Ok((input, session, model, options, cancellation))
         })();
-        let (input, session, model, cancellation) = match prepared {
+        let (input, session, model, options, cancellation) = match prepared {
             Ok(value) => value,
             Err(error) => return Task::ready(Err(error)),
         };
@@ -232,8 +253,8 @@ impl AgentConnection for Connection {
             let existing = session.runtime.borrow().clone();
             let runtime = if let Some(runtime) = existing { runtime } else {
                 let config = AgentConfig {
-                    model: model_key(&model),
-                    model_options: ModelOptions { thinking_allowed: model.supports_thinking, thinking_effort: None, max_output_tokens: None },
+                    model: options.model.clone(),
+                    model_options: options.model_options.clone(),
                     system_prompt: "You are DSH, an assistant in a code editor. Use only the tools supplied in this request. Extension tools require user approval. Do not claim to inspect or modify the project without a tool result supporting that claim.".into(),
                     max_steps: NonZeroUsize::new(8).context("invalid step limit")?, queue_capacity: NonZeroUsize::MIN,
                 };
@@ -267,7 +288,6 @@ impl AgentConnection for Connection {
                     return Ok(acp_v1::PromptResponse::new(acp_v1::StopReason::Cancelled));
                 }
                 session.runtime.replace(Some(runtime.clone()));
-                session.notify_model();
                 runtime
             };
             if cancellation.token().is_cancelled() { return Ok(acp_v1::PromptResponse::new(acp_v1::StopReason::Cancelled)); }
@@ -275,7 +295,7 @@ impl AgentConnection for Connection {
             let log = agent.session();
             let mut changes = log.subscribe();
             let mut cursor = *changes.borrow_and_update();
-            let turn = agent.submit(input).await?;
+            let turn = agent.submit_with_options(input, options).await?;
             let cancel_turn = turn.cancellation_handle();
             let completion = turn.wait();
             tokio::pin!(completion);
@@ -322,7 +342,7 @@ fn text_prompt(content: &[acp_v2::ContentBlock]) -> Result<String> {
     let mut parts = Vec::new();
     for block in content {
         let acp_v2::ContentBlock::Text(text) = block else {
-            bail!("DSH Preview accepts text only; remove attachments or use Zed Agent");
+            bail!("DSH accepts text only; remove attachments or use Zed Agent");
         };
         parts.push(text.text.as_str());
     }

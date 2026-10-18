@@ -292,6 +292,29 @@ impl ProfileProvider for Entity<agent::Thread> {
     }
 }
 
+impl ProfileProvider for Entity<dsh_zed::SessionControls> {
+    fn profile_id(&self, cx: &App) -> AgentProfileId {
+        self.read(cx).profile(cx)
+    }
+    fn set_profile(&self, profile: AgentProfileId, cx: &mut App) {
+        self.update(cx, |controls, cx| controls.set_profile(profile, cx));
+    }
+    fn profiles_supported(&self, cx: &App) -> bool {
+        self.read(cx)
+            .model()
+            .is_some_and(|model| model.supports_tools)
+    }
+    fn model_selected(&self, cx: &App) -> bool {
+        self.read(cx).model().is_some()
+    }
+    fn is_restricted(&self, cx: &App) -> bool {
+        self.read(cx).is_restricted(cx)
+    }
+    fn profile_downgraded(&self, cx: &App) -> bool {
+        self.read(cx).profile_downgraded(cx)
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Conversation {
     threads: HashMap<acp_v2::SessionId, Entity<AcpThread>>,
@@ -1621,26 +1644,32 @@ impl ConversationView {
             .detach();
         }
 
-        let profile_selector: Option<Rc<agent::NativeAgentConnection>> =
-            connection.clone().downcast();
-        let profile_selector = profile_selector
-            .and_then(|native_connection| native_connection.thread(&session_id, cx))
-            .map(|native_thread| {
-                cx.new(|cx| {
-                    ProfileSelector::new(
-                        <dyn Fs>::global(cx),
-                        Arc::new(native_thread),
-                        self.focus_handle(cx),
-                        cx,
-                    )
-                })
+        let profile_provider: Option<Arc<dyn ProfileProvider>> = connection
+            .clone()
+            .downcast::<agent::NativeAgentConnection>()
+            .and_then(|connection| connection.thread(&session_id, cx))
+            .map(|thread| Arc::new(thread) as Arc<dyn ProfileProvider>)
+            .or_else(|| {
+                dsh_zed::session_controls(connection.clone(), &session_id)
+                    .map(|controls| Arc::new(controls) as Arc<dyn ProfileProvider>)
             });
+        let profile_selector = profile_provider.map(|provider| {
+            cx.new(|cx| {
+                ProfileSelector::new(<dyn Fs>::global(cx), provider, self.focus_handle(cx), cx)
+            })
+        });
 
         let agent_display_name = self
             .agent_server_store
             .read(cx)
             .agent_display_name(&agent_id.clone())
-            .unwrap_or_else(|| agent_id.0.clone());
+            .unwrap_or_else(|| {
+                if agent_id.0.as_ref() == dsh_zed::DSH_AGENT_ID {
+                    "DSH".into()
+                } else {
+                    agent_id.0.clone()
+                }
+            });
 
         let agent_icon = self.agent.logo();
         let agent_icon_from_external_svg = self
@@ -1785,7 +1814,7 @@ impl ConversationView {
     /// User renames are stored in ThreadMetadataStore.
     /// Some agents can't set titles directly, so this should be checked
     /// when rendering the thread's title.
-    fn title_override(&self, cx: &App) -> Option<SharedString> {
+    pub(crate) fn title_override(&self, cx: &App) -> Option<SharedString> {
         ThreadMetadataStore::try_global(cx).and_then(|store| {
             store
                 .read(cx)
@@ -1814,6 +1843,21 @@ impl ConversationView {
                 LoadError::Exited { .. } => format!("{} Exited", self.agent.agent_id()).into(),
                 LoadError::Other(_) => format!("Error Loading {}", self.agent.agent_id()).into(),
             },
+        }
+    }
+
+    pub(crate) fn cancel_all_generation(&mut self, cx: &mut Context<Self>) {
+        if let Some(connected) = self.as_connected() {
+            let threads = connected
+                .threads
+                .values()
+                .map(|view| view.read(cx).thread.clone())
+                .collect::<Vec<_>>();
+            for thread in threads {
+                thread
+                    .update(cx, |thread, cx| thread.cancel(cx))
+                    .detach_and_log_err(cx);
+            }
         }
     }
 
@@ -3213,23 +3257,34 @@ impl ConversationView {
         };
 
         let multi_workspace = multi_workspace.read(cx);
-        multi_workspace.sidebar_open() && multi_workspace.is_threads_list_view_active(cx)
+        multi_workspace.sidebar_visible(cx) && multi_workspace.is_threads_list_view_active(cx)
             || multi_workspace.workspace() == &workspace
                 && self.is_visible_in_agent_panel(&workspace, cx)
     }
 
     fn is_visible_in_agent_panel(&self, workspace: &Entity<Workspace>, cx: &Context<Self>) -> bool {
-        AgentPanel::is_visible(workspace, cx)
-            && workspace
-                .read(cx)
-                .panel::<AgentPanel>(cx)
-                .is_some_and(|panel| {
-                    panel
-                        .read(cx)
-                        .visible_conversation_view()
-                        .map(|conversation_view| conversation_view.entity_id())
-                        == Some(cx.entity_id())
-                })
+        if workspace.read(cx).panes().iter().any(|pane| {
+            pane.read(cx)
+                .active_item()
+                .and_then(|item| item.downcast::<crate::conversation_item::ConversationItem>())
+                .is_some_and(|item| item.read(cx).conversation_id() == cx.entity_id())
+        }) {
+            return true;
+        }
+        workspace.read(cx).all_docks().iter().any(|dock| {
+            dock.read(cx)
+                .visible_panel()
+                .is_some_and(|panel| panel.to_any().downcast::<AgentPanel>().is_ok())
+        }) && workspace
+            .read(cx)
+            .panel::<AgentPanel>(cx)
+            .is_some_and(|panel| {
+                panel
+                    .read(cx)
+                    .visible_conversation_view()
+                    .map(|conversation_view| conversation_view.entity_id())
+                    == Some(cx.entity_id())
+            })
     }
 
     fn agent_status_visible(&self, window: &Window, cx: &Context<Self>) -> bool {

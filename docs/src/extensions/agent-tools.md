@@ -28,7 +28,7 @@ Build with `wasm32-wasip2` and install using **zed: install dev extension**.
 
 ## Invocation and lifecycle
 
-Choose DSH Preview and a tool-capable model. A chat captures installed tool definitions when its first message starts. Start a new chat after installing or updating tools. Each invocation requests explicit approval through the existing Agent panel. The tool receives validated JSON arguments; its result or error is recorded in the DSH session and displayed in the tool card.
+Choose DSH, the Write mode (or a custom profile enabling the extension tool), and a tool-capable model. A chat captures installed tool definitions when its first message starts. Start a new chat after installing or updating tools. Each invocation requests explicit approval through the existing Agent panel. The tool receives validated JSON arguments; its result or error is recorded in the DSH session and displayed in the tool card.
 
 Call `zed_extension_api::agent_tools::is_cancelled()` during long operations. Cancellation is cooperative: release resources before returning. Unloading revokes new calls, requests cancellation and waits for admitted calls before completing the reload. Old chat references never start using replacement code. A tool that ignores cancellation can block unloading or normal application shutdown.
 

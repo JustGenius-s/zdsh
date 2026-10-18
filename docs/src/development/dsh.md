@@ -23,6 +23,10 @@ Third-party tools and editor features share `extension.toml`, the installer, and
 
 ## Current scope
 
-The Agent panel offers an optional DSH Preview; Zed Agent remains the default. DSH supports text conversations and extension-tool approval. Built-in file and command tools, attachments, disk session recovery, and context compaction are not available. Real model API calls have not been verified.
+The Agent picker offers DSH; Zed Agent remains the default. Conversations open as central workspace items, with `ConversationItem` owning each view and `AgentPanel` routing existing actions and history. Closing a tab cancels its conversation and removes the controller's retained references; moving a tab between panes preserves its session. See [Agent tabs](../ai/agent-panel.md#agent-tabs-in-zdsh) for behavior and restoration limits. DSH supports text conversations and extension-tool approval. Built-in file and command tools, attachments, disk session recovery, and context compaction are not available. Real model API calls have not been verified. DSH shares the native Agent model catalog and favorites, profile selector, and model-specific thinking controls. Model, profile, and inference choices are captured per turn without resetting the in-memory conversation.
 
 TypeScript Cordis plugins and historical DSH Session files are not compatible. Third-party extensions do not expose Cordis service injection, plugin trees, or waterfall middleware. Future editor tools should reuse Zed's project, buffer, and terminal capabilities, with adaptations for each tool's execution context.
+
+### Thread history placement
+
+`ConversationItem` presents the existing Threads sidebar inside its tab. `MultiWorkspace` keeps one shared list controller and records its owning item, so project observers, metadata writes, and restore operations are not duplicated for each tab. The global window layout and status bar do not render a Threads sidebar. History switches between an inline column and an overlay based on the conversation pane width. Closing its owning item releases the presentation; the shared history store remains available.

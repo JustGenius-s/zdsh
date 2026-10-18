@@ -8,19 +8,36 @@ use futures::{StreamExt, future::BoxFuture};
 use std::{collections::BTreeSet, sync::Arc};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::TurnOptions;
+
 struct Client {
+    options: TurnOptions,
     sender: mpsc::Sender<Command>,
     session: Arc<Session>,
 }
 
 impl Agent for Client {
     fn submit(&self, input: String) -> BoxFuture<'_, Result<Turn, AgentError>> {
+        self.submit_with_options(input, self.options.clone())
+    }
+
+    fn submit_with_options(
+        &self,
+        input: String,
+        options: TurnOptions,
+    ) -> BoxFuture<'_, Result<Turn, AgentError>> {
         Box::pin(async move {
+            if options.model.trim().is_empty() {
+                return Err(AgentError::Protocol(
+                    "turn model name cannot be empty".into(),
+                ));
+            }
             let cancellation = CancellationSource::default();
             let (reply, result) = oneshot::channel();
             self.sender
                 .send(Command {
                     input,
+                    options,
                     cancellation: cancellation.clone(),
                     reply,
                 })
@@ -39,6 +56,7 @@ impl Agent for Client {
 }
 
 struct Command {
+    options: TurnOptions,
     input: String,
     cancellation: CancellationSource,
     reply: oneshot::Sender<Result<String, AgentError>>,
@@ -59,6 +77,15 @@ pub fn install(context: &mut Context<'_>, config: AgentConfig) -> Result<(), Plu
     let session = Arc::new(Session::new(config.system_prompt.clone()));
     let (sender, receiver) = mpsc::channel(config.queue_capacity.get());
     let client = Arc::new(Client {
+        options: TurnOptions {
+            model: config.model.clone(),
+            model_options: config.model_options.clone(),
+            allowed_tools: tools
+                .definitions()
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect(),
+        },
         sender,
         session: Arc::clone(&session),
     });
@@ -102,6 +129,7 @@ impl Loop {
                 self.turn(
                     TurnId(number),
                     command.input,
+                    &command.options,
                     &command.cancellation,
                     &mut stop,
                 )
@@ -118,6 +146,7 @@ impl Loop {
         &self,
         turn: TurnId,
         input: String,
+        options: &TurnOptions,
         cancellation: &CancellationSource,
         stop: &mut Cancellation,
     ) -> Result<String, AgentError> {
@@ -134,7 +163,7 @@ impl Loop {
             self.session
                 .append(SessionEvent::StepStarted { turn, step })
                 .await;
-            let response = self.step(turn, step, cancellation, stop).await;
+            let response = self.step(turn, step, options, cancellation, stop).await;
             self.session
                 .append(SessionEvent::StepFinished {
                     turn,
@@ -167,14 +196,20 @@ impl Loop {
         &self,
         turn: TurnId,
         step: usize,
+        options: &TurnOptions,
         cancellation: &CancellationSource,
         stop: &mut Cancellation,
     ) -> Result<Option<String>, AgentError> {
         let request = ModelRequest {
-            model: self.config.model.clone(),
-            options: self.config.model_options.clone(),
-            messages: self.session.messages().await,
-            tools: self.tools.definitions(),
+            model: options.model.clone(),
+            options: options.model_options.clone(),
+            messages: self.session.messages_for_model(&options.model).await,
+            tools: self
+                .tools
+                .definitions()
+                .into_iter()
+                .filter(|tool| options.allowed_tools.contains(&tool.name))
+                .collect(),
         };
         self.session
             .append(SessionEvent::Request {
@@ -197,6 +232,8 @@ impl Loop {
             let (executed, result) = if stop.is_cancelled() || cancellation.token().is_cancelled() {
                 cancellation.cancel();
                 (false, Err(ToolError::Cancelled))
+            } else if !options.allowed_tools.contains(&call.name) {
+                (false, Err(ToolError::UnknownTool(call.name.clone())))
             } else if let Some(tool) = self.tools.get(&call.name) {
                 let mut signal = cancellation.token();
                 let execution = tool.execute_call(

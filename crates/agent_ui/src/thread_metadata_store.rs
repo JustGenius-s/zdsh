@@ -765,7 +765,7 @@ impl ThreadMetadataStore {
         }
 
         self.cache_thread_metadata(metadata.clone());
-        // DSH preview has no session loader; a durable sidebar row would be unopenable.
+        // DSH has no session loader; a durable sidebar row would be unopenable.
         if metadata.agent_id.as_ref() == dsh_zed::DSH_AGENT_ID {
             return;
         }

@@ -9,6 +9,7 @@ mod completion_provider;
 mod config_options;
 mod context;
 mod context_server_configuration;
+mod conversation_item;
 pub(crate) mod conversation_view;
 mod diagnostics;
 pub mod draft_prompt_store;
@@ -566,7 +567,7 @@ impl Agent {
     pub fn label(&self) -> SharedString {
         match self {
             Self::NativeAgent => "Zed Agent".into(),
-            Self::Dsh => "DSH Preview".into(),
+            Self::Dsh => "DSH".into(),
             Self::Custom { id, .. } => id.0.clone(),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => "Stub Agent".into(),

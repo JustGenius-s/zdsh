@@ -54,8 +54,7 @@ use gpui::{
     TaskExt, WeakEntity,
 };
 use language_model::{
-    IconOrSvg, LanguageModel, LanguageModelId, LanguageModelProvider, LanguageModelProviderId,
-    LanguageModelRegistry,
+    LanguageModel, LanguageModelId, LanguageModelProviderId, LanguageModelRegistry,
 };
 use project::{
     AgentId, Project, ProjectItem, ProjectPath, Worktree, WorktreeId,
@@ -439,49 +438,7 @@ impl LanguageModels {
     }
 
     fn refresh_list(&mut self, cx: &App) {
-        let providers = LanguageModelRegistry::global(cx)
-            .read(cx)
-            .visible_providers()
-            .into_iter()
-            .filter(|provider| provider.is_authenticated(cx))
-            .collect::<Vec<_>>();
-
-        let mut language_model_list = IndexMap::default();
-        let mut recommended_models = HashSet::default();
-
-        let mut recommended = Vec::new();
-        for provider in &providers {
-            for model in provider.recommended_models(cx) {
-                recommended_models.insert((model.provider_id(), model.id()));
-                recommended.push(Self::map_language_model_to_info(&model, provider));
-            }
-        }
-        if !recommended.is_empty() {
-            language_model_list.insert(
-                acp_thread::AgentModelGroupName("Recommended".into()),
-                recommended,
-            );
-        }
-
-        let mut models = HashMap::default();
-        for provider in providers {
-            let mut provider_models = Vec::new();
-            for model in provider.provided_models(cx) {
-                let model_info = Self::map_language_model_to_info(&model, &provider);
-                let model_id = model_info.id.clone();
-                provider_models.push(model_info);
-                models.insert(model_id, model);
-            }
-            if !provider_models.is_empty() {
-                language_model_list.insert(
-                    acp_thread::AgentModelGroupName(provider.name().0.clone()),
-                    provider_models,
-                );
-            }
-        }
-
-        self.models = models;
-        self.model_list = acp_thread::AgentModelList::Grouped(language_model_list);
+        (self.models, self.model_list) = acp_thread::model_catalog::catalog(cx);
         self.refresh_models_tx.send(()).ok();
     }
 
@@ -495,24 +452,6 @@ impl LanguageModels {
 
     pub fn model_from_id(&self, model_id: &AgentModelId) -> Option<LanguageModel> {
         self.models.get(model_id).cloned()
-    }
-
-    fn map_language_model_to_info(
-        model: &LanguageModel,
-        provider: &Arc<dyn LanguageModelProvider>,
-    ) -> acp_thread::AgentModelInfo {
-        acp_thread::AgentModelInfo {
-            id: Self::model_id(model),
-            name: model.name().0,
-            description: None,
-            icon: Some(match provider.icon() {
-                IconOrSvg::Svg(path) => acp_thread::AgentModelIcon::Path(path),
-                IconOrSvg::Icon(name) => acp_thread::AgentModelIcon::Named(name),
-            }),
-            is_latest: model.is_latest(),
-            cost: model.model_cost_info().map(|cost| cost.to_shared_string()),
-            disabled: model.is_disabled(),
-        }
     }
 
     fn model_id(model: &LanguageModel) -> AgentModelId {
@@ -3184,9 +3123,7 @@ impl acp_thread::AgentModelSelector for NativeAgentModelSelector {
         else {
             return Task::ready(Err(anyhow!("Provider not found")));
         };
-        Task::ready(Ok(LanguageModels::map_language_model_to_info(
-            model, &provider,
-        )))
+        Task::ready(Ok(acp_thread::model_catalog::model_info(model, &provider)))
     }
 
     fn favorite_model_ids(&self, cx: &mut App) -> HashSet<AgentModelId> {

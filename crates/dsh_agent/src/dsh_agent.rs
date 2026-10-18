@@ -11,7 +11,7 @@ pub use tools::{RegistrationError, ToolRegistry, ToolsService};
 
 use dsh_runtime::{CancellationSource, Service};
 use futures::future::BoxFuture;
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
 use tokio::sync::oneshot;
 
 /// Explicit deployment choices for one agent instance. No default model or budget.
@@ -22,6 +22,14 @@ pub struct AgentConfig {
     pub system_prompt: String,
     pub max_steps: NonZeroUsize,
     pub queue_capacity: NonZeroUsize,
+}
+
+/// Immutable settings for one queued turn. Tool names are an explicit allowlist.
+#[derive(Clone, Debug)]
+pub struct TurnOptions {
+    pub model: String,
+    pub model_options: ModelOptions,
+    pub allowed_tools: BTreeSet<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -69,6 +77,12 @@ pub trait Agent: Send + Sync {
     /// Enqueues input with backpressure. Cancelling this future before enqueue
     /// completes does not submit a turn. Turns execute serially.
     fn submit(&self, input: String) -> BoxFuture<'_, Result<Turn, AgentError>>;
+    /// Enqueues a turn with settings captured at submission; later selections cannot alter it.
+    fn submit_with_options(
+        &self,
+        input: String,
+        options: TurnOptions,
+    ) -> BoxFuture<'_, Result<Turn, AgentError>>;
     fn session(&self) -> Arc<Session>;
 }
 

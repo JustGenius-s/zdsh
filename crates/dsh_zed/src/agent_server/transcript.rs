@@ -87,7 +87,7 @@ pub(super) fn apply_event(
             chunk: ModelChunk::Usage(usage),
             ..
         } => {
-            let selected = session.selected.borrow();
+            let selected = session.active_model.borrow();
             let model = selected
                 .as_ref()
                 .context("DSH model selection is missing")?;

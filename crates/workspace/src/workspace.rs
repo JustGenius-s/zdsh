@@ -35,7 +35,7 @@ pub use multi_workspace::{
     MoveProjectToNewWindow, MoveProjectUp, MultiWorkspace, MultiWorkspaceEvent, NewThread,
     NextProject, NextThread, PreviousProject, PreviousThread, ProjectGroup, ProjectGroupKey,
     RemovalIntent, SerializedProjectGroupState, Sidebar, SidebarEvent, SidebarHandle,
-    SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar, sidebar_side_context_menu,
+    SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar,
 };
 pub use path_list::{PathList, SerializedPathList};
 pub use remote::{
@@ -1979,8 +1979,7 @@ impl Workspace {
             .flatten()
             .map(|mw| mw.downgrade());
         let status_bar = cx.new(|cx| {
-            let mut status_bar =
-                StatusBar::new(&center_pane.clone(), multi_workspace.clone(), window, cx);
+            let mut status_bar = StatusBar::new(&center_pane.clone(), window, cx);
             status_bar.add_left_item(left_dock_buttons, window, cx);
             status_bar.add_right_item(right_dock_buttons, window, cx);
             status_bar.add_right_item(bottom_dock_buttons, window, cx);
@@ -2893,11 +2892,8 @@ impl Workspace {
         &mut self,
         multi_workspace: WeakEntity<MultiWorkspace>,
         active_workspace_id: Rc<Cell<EntityId>>,
-        cx: &mut App,
+        _cx: &mut App,
     ) {
-        self.status_bar.update(cx, |status_bar, cx| {
-            status_bar.set_multi_workspace(multi_workspace.clone(), cx);
-        });
         self.multi_workspace = Some(multi_workspace);
         self.active_workspace_id = Some(active_workspace_id);
     }
@@ -4685,6 +4681,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<T>> {
+        if let Some(panel) = self.panel::<T>(cx)
+            && panel.update(cx, |panel, cx| panel.focus_in_center(window, cx))
+        {
+            return Some(panel);
+        }
         let panel = self.focus_or_unfocus_panel::<T>(window, cx, &mut |_, _, _| true)?;
         panel.to_any().downcast().ok()
     }
@@ -4698,6 +4699,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if let Some(panel) = self.panel::<T>(cx)
+            && panel.update(cx, |panel, cx| panel.focus_in_center(window, cx))
+        {
+            return true;
+        }
         let mut did_focus_panel = false;
         self.focus_or_unfocus_panel::<T>(window, cx, &mut |panel, window, cx| {
             did_focus_panel = !panel.panel_focus_handle(cx).contains_focused(window, cx);
@@ -4799,6 +4805,11 @@ impl Workspace {
 
     /// Open the panel of the given type
     pub fn open_panel<T: Panel>(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.panel::<T>(cx)
+            && panel.update(cx, |panel, cx| panel.focus_in_center(window, cx))
+        {
+            return;
+        }
         for dock in self.all_docks() {
             if let Some(panel_index) = dock.read(cx).panel_index_for_type::<T>() {
                 dock.update(cx, |dock, cx| {

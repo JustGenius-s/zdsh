@@ -104,11 +104,25 @@ impl Session {
 
     /// Reconstructs model history from committed events, excluding incomplete responses.
     pub async fn messages(&self) -> Vec<Message> {
+        self.project_messages(None).await
+    }
+
+    /// Omits model-specific reasoning from other models while preserving text and tool history.
+    pub(crate) async fn messages_for_model(&self, model: &str) -> Vec<Message> {
+        self.project_messages(Some(model)).await
+    }
+
+    async fn project_messages(&self, model: Option<&str>) -> Vec<Message> {
+        let mut response_model = None;
         self.events
             .lock()
             .await
             .iter()
             .filter_map(|event| match event {
+                SessionEvent::Request { request, .. } => {
+                    response_model = Some(request.model.as_str());
+                    None
+                }
                 SessionEvent::Started { system_prompt } if !system_prompt.is_empty() => {
                     Some(Message::System {
                         text: system_prompt.clone(),
@@ -117,9 +131,27 @@ impl Session {
                 SessionEvent::TurnStarted { input, .. } => Some(Message::User {
                     text: input.clone(),
                 }),
-                SessionEvent::Assistant { content, .. } => Some(Message::Assistant {
-                    content: content.clone(),
-                }),
+                SessionEvent::Assistant { content, .. } => {
+                    let content = if model.is_some() && response_model != model {
+                        content
+                            .iter()
+                            .filter_map(|part| match part {
+                                AssistantContent::Text(_) => Some(part.clone()),
+                                AssistantContent::ToolCall(call) => {
+                                    let mut call = call.clone();
+                                    call.thought_signature = None;
+                                    Some(AssistantContent::ToolCall(call))
+                                }
+                                AssistantContent::Thinking { .. }
+                                | AssistantContent::RedactedThinking(_)
+                                | AssistantContent::ReasoningDetails(_) => None,
+                            })
+                            .collect::<Vec<_>>()
+                    } else {
+                        content.clone()
+                    };
+                    (!content.is_empty()).then_some(Message::Assistant { content })
+                }
                 SessionEvent::ToolFinished {
                     call_id, result, ..
                 } => Some(Message::Tool {

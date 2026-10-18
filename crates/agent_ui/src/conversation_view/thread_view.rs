@@ -1007,6 +1007,13 @@ impl ThreadView {
             }));
         }));
 
+        if let Some(controls) = dsh_zed::session_controls(
+            thread.read(cx).connection().clone(),
+            thread.read(cx).session_id(),
+        ) {
+            subscriptions.push(cx.observe(&controls, |_, _, cx| cx.notify()));
+        }
+
         let current_submission = thread.read(cx).latest_submission_id();
         let mut this = Self {
             root_thread_id,
@@ -5798,9 +5805,91 @@ impl ThreadView {
         Some((provider_id, model_id, confirmation))
     }
 
+    fn dsh_controls(&self, cx: &App) -> Option<Entity<dsh_zed::SessionControls>> {
+        let thread = self.thread.read(cx);
+        dsh_zed::session_controls(thread.connection().clone(), thread.session_id())
+    }
+
+    fn thinking_state(&self, cx: &App) -> Option<(LanguageModel, bool, Option<String>)> {
+        if let Some(thread) = self.as_native_thread(cx) {
+            let thread = thread.read(cx);
+            Some((
+                thread.model()?.clone(),
+                thread.thinking_enabled(),
+                thread.thinking_effort().cloned(),
+            ))
+        } else {
+            let controls = self.dsh_controls(cx)?;
+            let controls = controls.read(cx);
+            Some((
+                controls.model()?.clone(),
+                controls.thinking_enabled(),
+                controls.thinking_effort().cloned(),
+            ))
+        }
+    }
+
+    fn persist_native_thinking_selection(thread: &Entity<agent::Thread>, cx: &App) {
+        let thread = thread.read(cx);
+        let Some(model) = thread.model() else {
+            return;
+        };
+        let provider = model.provider_id.0.to_string();
+        let model = model.id.0.to_string();
+        let enabled = thread.thinking_enabled();
+        let effort = thread.thinking_effort().cloned();
+        update_settings_file(
+            thread.project().read(cx).fs().clone(),
+            cx,
+            move |settings, _| {
+                if let Some(agent) = settings.agent.as_mut() {
+                    if let Some(default_model) = agent.default_model.as_mut() {
+                        default_model.enable_thinking = enabled;
+                        default_model.effort = effort.clone();
+                    }
+                    agent.update_favorite_model(&provider, &model, |favorite| {
+                        favorite.enable_thinking = enabled;
+                        favorite.effort = effort;
+                    });
+                }
+            },
+        );
+    }
+
+    fn toggle_thinking(&mut self, cx: &mut Context<Self>) {
+        let Some((model, enabled, effort)) = self.thinking_state(cx) else {
+            return;
+        };
+        if !model.supports_thinking
+            || !model.supports_disabling_thinking_at_effort(effort.as_deref())
+        {
+            return;
+        }
+        if let Some(thread) = self.as_native_thread(cx) {
+            thread.update(cx, |thread, cx| thread.set_thinking_enabled(!enabled, cx));
+            Self::persist_native_thinking_selection(&thread, cx);
+        } else if let Some(controls) = self.dsh_controls(cx) {
+            controls.update(cx, |controls, cx| {
+                controls.set_thinking_enabled(!enabled, cx)
+            });
+        }
+    }
+
+    fn select_thinking_effort(&mut self, effort: String, cx: &mut Context<Self>) {
+        if let Some(thread) = self.as_native_thread(cx) {
+            thread.update(cx, |thread, cx| {
+                thread.set_thinking_effort(Some(effort), cx)
+            });
+            Self::persist_native_thinking_selection(&thread, cx);
+        } else if let Some(controls) = self.dsh_controls(cx) {
+            controls.update(cx, |controls, cx| {
+                controls.set_thinking_effort(Some(effort), cx)
+            });
+        }
+    }
+
     fn render_thinking_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let thread = self.as_native_thread(cx)?.read(cx);
-        let model = thread.model()?;
+        let (model, thinking_enabled, selected_effort) = self.thinking_state(cx)?;
 
         let supports_thinking = model.supports_thinking();
         if !supports_thinking {
@@ -5808,7 +5897,6 @@ impl ThreadView {
         }
 
         let effort_levels = model.supported_effort_levels();
-        let selected_effort = thread.thinking_effort().cloned();
         let supports_disabling_thinking =
             model.supports_disabling_thinking_at_effort(selected_effort.as_deref());
         let supports_disabling_thinking_at_any_effort = supports_disabling_thinking
@@ -5828,7 +5916,7 @@ impl ThreadView {
             );
         }
 
-        let thinking = thread.thinking_enabled() || !supports_disabling_thinking;
+        let thinking = thinking_enabled || !supports_disabling_thinking;
 
         let (tooltip_label, icon, color) = if !supports_disabling_thinking {
             (None, IconName::ThinkingMode, Color::Accent)
@@ -5868,33 +5956,7 @@ impl ThreadView {
                 }
             });
         let thinking_toggle = if supports_disabling_thinking {
-            thinking_toggle.on_click(cx.listener(move |this, _, _window, cx| {
-                if let Some(thread) = this.as_native_thread(cx) {
-                    thread.update(cx, |thread, cx| {
-                        let enable_thinking = !thread.thinking_enabled();
-                        thread.set_thinking_enabled(enable_thinking, cx);
-
-                        let favorite_key = thread
-                            .model()
-                            .map(|model| (model.provider_id.0.to_string(), model.id.0.to_string()));
-                        let fs = thread.project().read(cx).fs().clone();
-                        update_settings_file(fs, cx, move |settings, _| {
-                            if let Some(agent) = settings.agent.as_mut() {
-                                if let Some(default_model) = agent.default_model.as_mut() {
-                                    default_model.enable_thinking = enable_thinking;
-                                }
-                                if let Some((provider_id, model_id)) = &favorite_key {
-                                    agent.update_favorite_model(
-                                        provider_id,
-                                        model_id,
-                                        |favorite| favorite.enable_thinking = enable_thinking,
-                                    );
-                                }
-                            }
-                        });
-                    });
-                }
-            }))
+            thinking_toggle.on_click(cx.listener(|this, _, _, cx| this.toggle_thinking(cx)))
         } else {
             thinking_toggle.cursor_style(gpui::CursorStyle::Arrow)
         };
@@ -6028,44 +6090,7 @@ impl ThreadView {
                                 let effort = effort.clone();
                                 weak_self
                                     .update(cx, |this, cx| {
-                                        if let Some(thread) = this.as_native_thread(cx) {
-                                            thread.update(cx, |thread, cx| {
-                                                thread.set_thinking_effort(
-                                                    Some(effort.to_string()),
-                                                    cx,
-                                                );
-
-                                                let favorite_key = thread.model().map(|model| {
-                                                    (
-                                                        model.provider_id().0.to_string(),
-                                                        model.id().0.to_string(),
-                                                    )
-                                                });
-                                                let fs = thread.project().read(cx).fs().clone();
-                                                update_settings_file(fs, cx, move |settings, _| {
-                                                    if let Some(agent) = settings.agent.as_mut() {
-                                                        if let Some(default_model) =
-                                                            agent.default_model.as_mut()
-                                                        {
-                                                            default_model.effort =
-                                                                Some(effort.to_string());
-                                                        }
-                                                        if let Some((provider_id, model_id)) =
-                                                            &favorite_key
-                                                        {
-                                                            agent.update_favorite_model(
-                                                                provider_id,
-                                                                model_id,
-                                                                |favorite| {
-                                                                    favorite.effort =
-                                                                        Some(effort.to_string())
-                                                                },
-                                                            );
-                                                        }
-                                                    }
-                                                });
-                                            });
-                                        }
+                                        this.select_thinking_effort(effort.to_string(), cx);
                                     })
                                     .ok();
                             }
@@ -13020,62 +13045,25 @@ impl ThreadView {
         });
     }
 
-    fn cycle_native_agent_thinking_effort(&mut self, cx: &mut Context<Self>) {
-        let Some(thread) = self.as_native_thread(cx) else {
+    fn cycle_agent_thinking_effort(&mut self, cx: &mut Context<Self>) {
+        let Some((model, enabled, current_effort)) = self.thinking_state(cx) else {
             return;
         };
-
-        let (effort_levels, current_effort) = {
-            let thread_ref = thread.read(cx);
-            let Some(model) = thread_ref.model() else {
-                return;
-            };
-            let thinking_enabled = thread_ref.thinking_enabled()
-                || !model.supports_disabling_thinking_at_effort(
-                    thread_ref.thinking_effort().map(String::as_str),
-                );
-            if !model.supports_thinking() || !thinking_enabled {
-                return;
-            }
-            let effort_levels = model.supported_effort_levels();
-            if effort_levels.is_empty() {
-                return;
-            }
-            let current_effort = thread_ref.thinking_effort().cloned();
-            (effort_levels, current_effort)
-        };
-
-        let current_index = current_effort.and_then(|current| {
-            effort_levels
-                .iter()
-                .position(|level| level.value == current)
-        });
-        let next_index = match current_index {
-            Some(index) => (index + 1) % effort_levels.len(),
-            None => 0,
-        };
-        let next_effort = effort_levels[next_index].value.to_string();
-
-        thread.update(cx, |thread, cx| {
-            thread.set_thinking_effort(Some(next_effort.clone()), cx);
-
-            let favorite_key = thread
-                .model()
-                .map(|model| (model.provider_id().0.to_string(), model.id().0.to_string()));
-            let fs = thread.project().read(cx).fs().clone();
-            update_settings_file(fs, cx, move |settings, _| {
-                if let Some(agent) = settings.agent.as_mut() {
-                    if let Some(default_model) = agent.default_model.as_mut() {
-                        default_model.effort = Some(next_effort.clone());
-                    }
-                    if let Some((provider_id, model_id)) = &favorite_key {
-                        agent.update_favorite_model(provider_id, model_id, |favorite| {
-                            favorite.effort = Some(next_effort)
-                        });
-                    }
-                }
-            });
-        });
+        if !model.supports_thinking
+            || (!enabled && model.supports_disabling_thinking_at_effort(current_effort.as_deref()))
+        {
+            return;
+        }
+        let levels = model.supported_effort_levels();
+        if levels.is_empty() {
+            return;
+        }
+        let next_index = current_effort
+            .and_then(|current| levels.iter().position(|level| level.value == current))
+            .map_or(0, |index| (index + 1) % levels.len());
+        if let Some(next) = levels.get(next_index) {
+            self.select_thinking_effort(next.value.to_string(), cx);
+        }
     }
 }
 
@@ -13228,21 +13216,9 @@ impl Render for ThreadView {
             .on_action(cx.listener(|this, _: &ToggleFastMode, window, cx| {
                 this.toggle_fast_mode(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &ToggleThinkingMode, _window, cx| {
-                if this.thread.read(cx).status() != ThreadStatus::Idle {
-                    return;
-                }
-                if let Some(thread) = this.as_native_thread(cx) {
-                    thread.update(cx, |thread, cx| {
-                        let model_allows_disabling = thread.model().is_none_or(|model| {
-                            model.supports_disabling_thinking_at_effort(
-                                thread.thinking_effort().map(String::as_str),
-                            )
-                        });
-                        if model_allows_disabling {
-                            thread.set_thinking_enabled(!thread.thinking_enabled(), cx);
-                        }
-                    });
+            .on_action(cx.listener(|this, _: &ToggleThinkingMode, _, cx| {
+                if this.thread.read(cx).status() == ThreadStatus::Idle {
+                    this.toggle_thinking(cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &CycleThinkingEffort, _window, cx| {
@@ -13261,7 +13237,7 @@ impl Render for ThreadView {
                         return;
                     }
                 }
-                this.cycle_native_agent_thinking_effort(cx);
+                this.cycle_agent_thinking_effort(cx);
             }))
             .on_action(
                 cx.listener(|this, _: &ToggleThinkingEffortMenu, window, cx| {
