@@ -58,7 +58,7 @@ pub struct ThemeSettings {
     /// The agent font size. Determines the size of text in the agent panel. Falls back to the UI font size if unset.
     agent_ui_font_size: Option<Pixels>,
     /// The agent buffer font family. Determines the family of user messages in the agent panel.
-    /// Falls back to the buffer font family if unset.
+    /// Falls back to the UI font family if unset.
     agent_buffer_font_family: Option<SharedString>,
     /// The agent buffer font size. Determines the size of user messages in the agent panel.
     agent_buffer_font_size: Option<Pixels>,
@@ -414,13 +414,13 @@ impl ThemeSettings {
             .map(|size| size.0)
             .or(self.agent_buffer_font_size)
             .map(clamp_font_size)
-            .unwrap_or_else(|| self.buffer_font_size(cx))
+            .unwrap_or_else(|| self.ui_font_size(cx))
     }
 
     pub fn agent_buffer_font_family(&self) -> &SharedString {
         self.agent_buffer_font_family
             .as_ref()
-            .unwrap_or(&self.buffer_font.family)
+            .unwrap_or(&self.ui_font.family)
     }
 
     pub fn git_commit_buffer_font_size(&self, cx: &App) -> Pixels {

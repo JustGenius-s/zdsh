@@ -35,8 +35,8 @@ Zed supports separate themes for light and dark mode with automatic switching ba
 {
   "theme": {
     "mode": "system",
-    "light": "One Light",
-    "dark": "One Dark"
+    "light": "Z Light",
+    "dark": "Z Dark"
   }
 }
 ```

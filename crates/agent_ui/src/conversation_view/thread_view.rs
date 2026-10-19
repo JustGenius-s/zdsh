@@ -9,9 +9,10 @@ use agent_client_protocol::schema::v2 as acp_v2;
 use std::{cell::RefCell, path::Path};
 
 use acp_thread::{
-    Elicitation, ElicitationEntryId, ElicitationStatus, ForegroundActivity,
-    SandboxAuthorizationDetails, SandboxFallbackAuthorizationDetails, SandboxNotAppliedReason,
-    SubmissionId, SubmissionResponse, SubmissionState, ToolCallLocation, decode_path_escapes,
+    AgentModelIcon, AgentModelId, AgentModelInfo, AgentModelList, Elicitation, ElicitationEntryId,
+    ElicitationStatus, ForegroundActivity, SandboxAuthorizationDetails,
+    SandboxFallbackAuthorizationDetails, SandboxNotAppliedReason, SubmissionId, SubmissionResponse,
+    SubmissionState, ToolCallLocation, decode_path_escapes,
 };
 use agent::{
     SandboxStatusKey, SandboxStatusRefresh, SkillLoadingIssue, SkillLoadingIssueKind,
@@ -38,15 +39,15 @@ use gpui::TaskExt;
 use heapless::Vec as ArrayVec;
 use itertools::Itertools;
 use language_model::{
-    FastModeConfirmation, LanguageModel, LanguageModelEffortLevel, LanguageModelId,
+    FastModeConfirmation, IconOrSvg, LanguageModel, LanguageModelEffortLevel, LanguageModelId,
     LanguageModelProvider, LanguageModelProviderId, LanguageModelRegistry, Speed,
 };
 use notifications::status_toast::StatusToast;
 use project::ResolvedPath;
 use settings::{update_settings_file, update_settings_file_with_completion};
 use ui::{
-    ButtonLike, CalloutBorderPosition, Checkbox, SpinnerLabel, SpinnerVariant, SplitButton,
-    SplitButtonStyle, Tab, ToggleState,
+    ButtonLike, CalloutBorderPosition, Checkbox, ListItemSpacing, SpinnerLabel, SpinnerVariant,
+    SplitButton, SplitButtonStyle, Tab, ToggleState,
 };
 use url::Url;
 use util::markdown::source_position_from_fragment;
@@ -627,6 +628,7 @@ pub struct ThreadView {
     pub message_editor: Entity<MessageEditor>,
     pub add_context_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub thinking_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
+    pub model_and_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub fast_mode_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub project: WeakEntity<Project>,
     /// Cache + worktree snapshot for resolving paths in markdown code spans.
@@ -1072,6 +1074,7 @@ impl ThreadView {
             message_editor,
             add_context_menu_handle: PopoverMenuHandle::default(),
             thinking_effort_menu_handle: PopoverMenuHandle::default(),
+            model_and_effort_menu_handle: PopoverMenuHandle::default(),
             fast_mode_menu_handle: PopoverMenuHandle::default(),
             project,
             code_span_resolver,
@@ -4989,7 +4992,6 @@ impl ThreadView {
         }
 
         let focus_handle = self.message_editor.focus_handle(cx);
-        let editor_bg_color = cx.theme().colors().element_background;
         let opaque_window =
             cx.theme().window_background_appearance() == gpui::WindowBackgroundAppearance::Opaque;
 
@@ -5037,13 +5039,13 @@ impl ThreadView {
                     .when_some(max_content_width, |this, max_w| this.max_w(max_w))
                     .min_w_0()
                     .when(fills_container, |this| this.h_full())
-                    .px_3()
+                    .px_4()
                     .py_3()
-                    .rounded_xl()
-                    .bg(editor_bg_color)
+                    .rounded_2xl()
+                    .bg(cx.theme().colors().elevated_surface_background)
                     .border_1()
                     .border_color(cx.theme().colors().border_variant)
-                    .when(opaque_window, |this| this.shadow_md())
+                    .when(opaque_window, |this| this.shadow_lg())
                     .flex_shrink_1()
                     .flex_grow_0()
                     .justify_between()
@@ -5104,8 +5106,7 @@ impl ThreadView {
                                     .gap_0p5()
                                     .child(self.render_add_context_button(cx))
                                     .child(self.render_follow_toggle(cx))
-                                    .children(self.render_fast_mode_control(cx))
-                                    .children(self.render_thinking_control(cx)),
+                                    .children(self.render_fast_mode_control(cx)),
                             )
                             .child(
                                 h_flex()
@@ -5116,10 +5117,12 @@ impl ThreadView {
                                     .children(self.render_token_usage(cx))
                                     .children(self.profile_selector.clone())
                                     .map(|this| match self.config_options_view.clone() {
-                                        Some(config_view) => this.child(config_view),
+                                        Some(config_view) => this
+                                            .child(config_view)
+                                            .children(self.render_thinking_control(cx)),
                                         None => this
                                             .children(self.mode_selector.clone())
-                                            .children(self.model_selector.clone()),
+                                            .child(self.render_model_and_effort_control(cx)),
                                     })
                                     .child(self.render_send_button(cx)),
                             ),
@@ -5889,6 +5892,284 @@ impl ThreadView {
                 controls.set_thinking_effort(Some(effort), cx)
             });
         }
+    }
+
+    /// Renders the model and thinking effort as a single control. The trigger
+    /// shows the active model and effort; the menu exposes effort, model, and
+    /// thinking as one panel instead of separate toolbar entries.
+    fn render_model_and_effort_control(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(model_selector) = self.model_selector.clone() else {
+            return self
+                .render_thinking_control(cx)
+                .unwrap_or_else(|| div().into_any_element());
+        };
+
+        let thinking_state = self.thinking_state(cx);
+        let thinking_enabled = thinking_state
+            .as_ref()
+            .is_some_and(|(_, enabled, _)| *enabled);
+        let supports_disabling_thinking =
+            thinking_state.as_ref().is_some_and(|(model, _, effort)| {
+                model.supports_disabling_thinking_at_effort(effort.as_deref())
+            });
+        let effort_levels = thinking_state
+            .as_ref()
+            .map(|(model, _, _)| model.supported_effort_levels())
+            .unwrap_or_default();
+        let selected_effort = thinking_state
+            .as_ref()
+            .and_then(|(_, _, effort)| effort.clone());
+        let effort_label = effort_levels
+            .iter()
+            .find(|level| selected_effort.as_deref() == Some(level.value.as_ref()))
+            .or_else(|| effort_levels.iter().find(|level| level.is_default))
+            .map(|level| level.name.clone());
+        let model_name = thinking_state
+            .as_ref()
+            .map(|(model, _, _)| model.name().0)
+            .unwrap_or_else(|| SharedString::from("Select a Model"));
+        // Prefer the model's own icon; fall back to the provider icon so the
+        // trigger is never icon-less while the picker is still loading models.
+        let model_icon = model_selector
+            .read(cx)
+            .active_model(cx)
+            .and_then(|model| model.icon.clone())
+            .map(|icon| match icon {
+                AgentModelIcon::Path(path) => Icon::from_external_svg(path),
+                AgentModelIcon::Named(icon_name) => Icon::new(icon_name),
+            })
+            .or_else(|| {
+                thinking_state.as_ref().and_then(|(model, _, _)| {
+                    LanguageModelRegistry::read_global(cx)
+                        .provider(&model.provider_id)
+                        .map(|provider| match provider.icon() {
+                            IconOrSvg::Icon(icon_name) => Icon::new(icon_name),
+                            IconOrSvg::Svg(path) => Icon::from_external_svg(path),
+                        })
+                })
+            })
+            .map(|icon| icon.size(IconSize::XSmall).color(Color::Muted));
+
+        let weak_self = cx.weak_entity();
+        let model_name_for_menu = model_name.clone();
+
+        let trigger = ButtonLike::new("model-effort-trigger").child(
+            h_flex()
+                .gap_1()
+                .when_some(model_icon, |this, icon| this.child(icon))
+                .child(
+                    Label::new(model_name)
+                        .size(LabelSize::Small)
+                        .color(Color::Default),
+                )
+                .when_some(effort_label, |this, label| {
+                    this.child(Label::new(label).size(LabelSize::Small).color(Color::Muted))
+                })
+                .child(
+                    Icon::new(IconName::ChevronDown)
+                        .size(IconSize::XSmall)
+                        .color(Color::Muted),
+                ),
+        );
+
+        let menu = PopoverMenu::new("model-effort-selector")
+            .trigger(trigger)
+            .menu({
+                move |window, cx| {
+                    let model_list = model_selector.read(cx).available_models(cx);
+                    let selected_model_id = model_selector
+                        .read(cx)
+                        .active_model(cx)
+                        .map(|model| model.id.clone());
+                    let effort_levels = effort_levels.clone();
+                    let selected_effort = selected_effort.clone();
+                    let model_name_for_menu = model_name_for_menu.clone();
+                    let model_selector = model_selector.clone();
+                    let weak_self = weak_self.clone();
+
+                    Some(ContextMenu::build(window, cx, move |mut menu, _window, _cx| {
+                        menu = menu.spacing(ListItemSpacing::Sparse);
+                        let mut has_items = false;
+
+                        if supports_disabling_thinking {
+                            has_items = true;
+                            menu.push_item(
+                                ContextMenuEntry::new("Thinking")
+                                    .toggleable(IconPosition::End, thinking_enabled)
+                                    .handler({
+                                        let weak_self = weak_self.clone();
+                                        move |_window, cx| {
+                                            if let Err(error) = weak_self
+                                                .update(cx, |this, cx| this.toggle_thinking(cx))
+                                            {
+                                                log::error!(
+                                                    "failed to toggle thinking mode: {error}"
+                                                );
+                                            }
+                                        }
+                                    }),
+                            );
+                        }
+
+                        if !effort_levels.is_empty() {
+                            has_items = true;
+                            let levels = effort_levels.clone();
+                            let selected = selected_effort.clone();
+                            let weak_self = weak_self.clone();
+                            menu = menu.submenu_with_value(
+                                "Effort",
+                                Self::selected_effort_label(&effort_levels, selected_effort.as_deref()),
+                                move |mut menu, _window, _cx| {
+                                    menu = menu.spacing(ListItemSpacing::Sparse);
+                                    for level in levels.clone() {
+                                        let is_selected =
+                                            selected.as_deref() == Some(level.value.as_ref());
+                                        let weak_self = weak_self.clone();
+                                        let value = level.value.clone();
+                                        menu.push_item(
+                                            ContextMenuEntry::new(level.name)
+                                                .toggleable(IconPosition::End, is_selected)
+                                                .handler(move |_window, cx| {
+                                                    if let Err(error) =
+                                                        weak_self.update(cx, |this, cx| {
+                                                            this.select_thinking_effort(
+                                                                value.to_string(),
+                                                                cx,
+                                                            )
+                                                        })
+                                                    {
+                                                        log::error!(
+                                                            "failed to select thinking effort: {error}"
+                                                        );
+                                                    }
+                                                }),
+                                        );
+                                    }
+                                    menu
+                                },
+                            );
+                        }
+
+                        if let Some(model_list) = model_list.clone() {
+                            if !model_list.is_empty() {
+                                has_items = true;
+                                let model_selector = model_selector.clone();
+                                let selected_model_id = selected_model_id.clone();
+                                menu = menu.submenu_with_value(
+                                    "Model",
+                                    model_name_for_menu,
+                                    move |mut menu, _window, _cx| {
+                                        menu = menu.spacing(ListItemSpacing::Sparse);
+                                        menu = Self::push_model_entries(
+                                            menu,
+                                            model_list.clone(),
+                                            selected_model_id.as_ref(),
+                                            model_selector.clone(),
+                                        );
+                                        menu
+                                    },
+                                );
+                            }
+                        }
+
+                        if !has_items {
+                            menu.push_item(
+                                ContextMenuEntry::new("No models available").disabled(true),
+                            );
+                        }
+
+                        menu
+                    }))
+                }
+            })
+            .anchor(gpui::Anchor::BottomRight)
+            .with_handle(self.model_and_effort_menu_handle.clone())
+            .offset(gpui::Point {
+                x: px(0.0),
+                y: px(-6.0),
+            });
+
+        div()
+            .rounded_full()
+            .bg(cx.theme().colors().element_background)
+            .px_1()
+            .child(menu)
+            .into_any_element()
+    }
+
+    fn selected_effort_label(
+        effort_levels: &[LanguageModelEffortLevel],
+        selected_effort: Option<&str>,
+    ) -> SharedString {
+        effort_levels
+            .iter()
+            .find(|level| Some(level.value.as_ref()) == selected_effort)
+            .or_else(|| effort_levels.iter().find(|level| level.is_default))
+            .map(|level| level.name.clone())
+            .unwrap_or_else(|| SharedString::from("Default"))
+    }
+
+    fn push_model_entries(
+        mut menu: ContextMenu,
+        models: AgentModelList,
+        selected_model_id: Option<&AgentModelId>,
+        model_selector: Entity<ModelSelectorPopover>,
+    ) -> ContextMenu {
+        match models {
+            AgentModelList::Flat(list) => {
+                for model in list {
+                    menu.push_item(Self::model_menu_entry(
+                        model,
+                        selected_model_id,
+                        model_selector.clone(),
+                    ));
+                }
+            }
+            AgentModelList::Grouped(groups) => {
+                for (group, list) in groups {
+                    menu = menu.header(group.0);
+                    for model in list {
+                        menu.push_item(Self::model_menu_entry(
+                            model,
+                            selected_model_id,
+                            model_selector.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        menu = menu.separator();
+        menu.push_item(
+            ContextMenuEntry::new("Manage Models…").handler(|window, cx| {
+                window.dispatch_action(
+                    Box::new(zed_actions::OpenSettingsAt {
+                        path: "llm_providers".to_string(),
+                        target: None,
+                    }),
+                    cx,
+                );
+            }),
+        );
+        menu
+    }
+
+    fn model_menu_entry(
+        model: AgentModelInfo,
+        selected_model_id: Option<&AgentModelId>,
+        model_selector: Entity<ModelSelectorPopover>,
+    ) -> ContextMenuEntry {
+        let is_selected = selected_model_id == Some(&model.id);
+        let disabled = model.disabled.is_some();
+        let model_id = model.id.clone();
+        ContextMenuEntry::new(model.name)
+            .toggleable(IconPosition::End, is_selected)
+            .disabled(disabled)
+            .handler(move |_window, cx| {
+                model_selector.update(cx, |selector, cx| {
+                    selector.select_model(model_id.clone(), cx);
+                });
+            })
     }
 
     fn render_thinking_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -6942,8 +7223,8 @@ impl ThreadView {
                                 if editing {
                                     this.w_full()
                                 } else {
-                                    this.w(relative(0.85))
-                                        .max_w(relative(0.85))
+                                    this.w(relative(0.70))
+                                        .max_w(relative(0.70))
                                         .when_some(editor.read(cx).preferred_width(window, cx), |this, width| {
                                             this.w(width + rems(2.).to_pixels(window.rem_size()) + px(2.))
                                         })
@@ -6953,7 +7234,7 @@ impl ThreadView {
                                 div()
                                     .py_3()
                                     .px_4()
-                                    .rounded_xl()
+                                    .rounded_2xl()
                                     .bg(cx.theme().colors().element_background)
                                     .border_1()
                                     .when(is_indented, |this| this.py_2())
@@ -13369,10 +13650,7 @@ impl Render for ThreadView {
                     }
                 }
 
-                if let Some(model_selector) = this.model_selector.clone() {
-                    model_selector
-                        .update(cx, |model_selector, cx| model_selector.toggle(window, cx));
-                }
+                this.model_and_effort_menu_handle.toggle(window, cx);
             }))
             .on_action(cx.listener(|this, _: &CycleFavoriteModels, window, cx| {
                 if this.thread.read(cx).status() != ThreadStatus::Idle {
@@ -13398,6 +13676,7 @@ impl Render for ThreadView {
                 }
             }))
             .size_full()
+            .bg(cx.theme().colors().surface_background)
             .children(self.render_subagent_titlebar(cx))
             .when_some(
                 self.thread_search_visible

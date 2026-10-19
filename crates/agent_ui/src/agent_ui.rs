@@ -1085,7 +1085,7 @@ mod tests {
             flexible: true,
             default_width: px(300.),
             default_height: px(600.),
-            max_content_width: Some(px(850.)),
+            max_content_width: Some(px(768.)),
             default_model: None,
             subagent_model: None,
             inline_assistant_model: None,

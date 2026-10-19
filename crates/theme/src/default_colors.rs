@@ -58,7 +58,9 @@ impl ThemeColors {
             border_selected: blue().light().step_5(),
             border_transparent: system.transparent,
             border_disabled: neutral().light().step_3(),
-            elevated_surface_background: neutral().light().step_2(),
+            // Keep floating surfaces visibly above panels while preserving the
+            // low-contrast editor canvas used for long reading sessions.
+            elevated_surface_background: neutral().light().step_3(),
             surface_background: neutral().light().step_2(),
             background: neutral().light().step_1(),
             element_background: neutral().light().step_3(),
@@ -88,7 +90,7 @@ impl ThemeColors {
             status_bar_background: neutral().light().step_2(),
             title_bar_background: neutral().light().step_2(),
             title_bar_inactive_background: neutral().light().step_3(),
-            toolbar_background: neutral().light().step_1(),
+            toolbar_background: neutral().light().step_2(),
             tab_bar_background: neutral().light().step_2(),
             tab_inactive_background: neutral().light().step_2(),
             tab_active_background: neutral().light().step_1(),
@@ -212,7 +214,9 @@ impl ThemeColors {
             border_selected: blue().dark().step_5(),
             border_transparent: system.transparent,
             border_disabled: neutral().dark().step_3(),
-            elevated_surface_background: neutral().dark().step_2(),
+            // Keep floating surfaces visibly above panels while preserving the
+            // low-contrast editor canvas used for long reading sessions.
+            elevated_surface_background: neutral().dark().step_3(),
             surface_background: neutral().dark().step_2(),
             background: neutral().dark().step_1(),
             element_background: neutral().dark().step_3(),
@@ -242,7 +246,7 @@ impl ThemeColors {
             status_bar_background: neutral().dark().step_2(),
             title_bar_background: neutral().dark().step_2(),
             title_bar_inactive_background: neutral().dark().step_3(),
-            toolbar_background: neutral().dark().step_1(),
+            toolbar_background: neutral().dark().step_2(),
             tab_bar_background: neutral().dark().step_2(),
             tab_inactive_background: neutral().dark().step_2(),
             tab_active_background: neutral().dark().step_1(),

@@ -91,7 +91,7 @@ Use different settings for Stable, Preview, or Nightly builds by adding top-leve
 
 ```json [settings]
 {
-  "theme": "One Dark",
+  "theme": "Z Dark",
   "vim_mode": false,
   "nightly": {
     "theme": "Rosé Pine",
@@ -105,7 +105,7 @@ Use different settings for Stable, Preview, or Nightly builds by adding top-leve
 
 With this configuration:
 
-- **Stable** uses One Dark with vim mode off
+- **Stable** uses Z Dark with vim mode off
 - **Preview** uses Catppuccin Mocha with vim mode off
 - **Nightly** uses Rosé Pine with vim mode on
 
@@ -129,8 +129,8 @@ These are useful for sharing configuration tips or linking from documentation.
 {
   "theme": {
     "mode": "system",
-    "light": "One Light",
-    "dark": "One Dark"
+    "light": "Z Light",
+    "dark": "Z Dark"
   },
   "buffer_font_family": "JetBrains Mono",
   "buffer_font_size": 14,

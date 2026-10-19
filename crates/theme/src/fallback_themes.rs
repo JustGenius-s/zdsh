@@ -105,7 +105,7 @@ pub(crate) fn zed_default_dark() -> Theme {
 
     let player = PlayerColors::dark();
     Theme {
-        id: "one_dark".to_string(),
+        id: "z_dark".to_string(),
         name: DEFAULT_DARK_THEME.into(),
         appearance: Appearance::Dark,
         styles: ThemeStyles {

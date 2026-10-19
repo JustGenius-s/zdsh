@@ -129,6 +129,33 @@ impl ModelPickerDelegate {
         self.selected_model.as_ref()
     }
 
+    pub fn models(&self) -> Option<&AgentModelList> {
+        self.models.as_ref()
+    }
+
+    pub fn select_model_by_id(&mut self, model_id: &AgentModelId, cx: &mut Context<Picker<Self>>) {
+        self.selector
+            .select_model(model_id.clone(), cx)
+            .detach_and_log_err(cx);
+
+        let selected_model = self.models.as_ref().and_then(|models| {
+            let models: Vec<&AgentModelInfo> = match models {
+                AgentModelList::Flat(list) => list.iter().collect(),
+                AgentModelList::Grouped(groups) => groups.values().flatten().collect(),
+            };
+            models
+                .into_iter()
+                .find(|model| model.id == *model_id)
+                .cloned()
+        });
+
+        if let Some(selected_model) = selected_model {
+            self.selected_model = Some(selected_model);
+        }
+
+        cx.notify();
+    }
+
     pub fn favorites_count(&self) -> usize {
         self.favorites.len()
     }

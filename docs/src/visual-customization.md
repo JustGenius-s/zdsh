@@ -17,7 +17,7 @@ You can preview/choose amongst your installed themes and icon themes with {#acti
 
 ```json [settings]
 {
-  "theme": "One Dark",
+  "theme": "Z Dark",
   "icon_theme": "Zed (Default)"
 }
 ```
@@ -27,8 +27,8 @@ If you would like to use distinct themes for light mode/dark mode that can be se
 ```json [settings]
 {
   "theme": {
-    "dark": "One Dark",
-    "light": "One Light",
+    "dark": "Z Dark",
+    "light": "Z Light",
     // Mode to use (dark, light) or "system" to follow the OS's light/dark mode (default)
     "mode": "system"
   },
@@ -72,7 +72,7 @@ If you would like to use distinct themes for light mode/dark mode that can be se
   "agent_ui_font_size": 15,
   // Controls the font family and size for the agent panel's message editor
   // and user messages.
-  // If not specified, the font family falls back to the buffer font family.
+  // If not specified, the font family falls back to the UI font family.
   "agent_buffer_font_family": "Berkeley Mono",
   // Controls the font size for the agent panel's message editor, user message,
   // and any other snippet of code.
@@ -542,7 +542,7 @@ TBD: Centered layout related settings
   "agent_ui_font_size": 15,
   // Controls the font family and size for the agent panel's message editor
   // and user messages.
-  // If not specified, the font family falls back to the buffer font family.
+  // If not specified, the font family falls back to the UI font family.
   "agent_buffer_font_family": "Berkeley Mono",
   "agent_buffer_font_size": 12
 }

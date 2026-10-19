@@ -60,6 +60,7 @@ pub enum ContextMenuItem {
     },
     Submenu {
         label: SharedString,
+        value: Option<SharedString>,
         icon: Option<IconName>,
         icon_color: Option<Color>,
         builder: Rc<dyn Fn(ContextMenu, &mut Window, &mut Context<ContextMenu>) -> ContextMenu>,
@@ -811,6 +812,25 @@ impl ContextMenu {
     ) -> Self {
         self.items.push(ContextMenuItem::Submenu {
             label: label.into(),
+            value: None,
+            icon: None,
+            icon_color: None,
+            builder: Rc::new(builder),
+        });
+        self
+    }
+
+    /// A submenu that shows the current value next to its label, for settings
+    /// whose selected option would otherwise be invisible until opened.
+    pub fn submenu_with_value(
+        mut self,
+        label: impl Into<SharedString>,
+        value: impl Into<SharedString>,
+        builder: impl Fn(ContextMenu, &mut Window, &mut Context<ContextMenu>) -> ContextMenu + 'static,
+    ) -> Self {
+        self.items.push(ContextMenuItem::Submenu {
+            label: label.into(),
+            value: Some(value.into()),
             icon: None,
             icon_color: None,
             builder: Rc::new(builder),
@@ -826,6 +846,7 @@ impl ContextMenu {
     ) -> Self {
         self.items.push(ContextMenuItem::Submenu {
             label: label.into(),
+            value: None,
             icon: Some(icon),
             icon_color: None,
             builder: Rc::new(builder),
@@ -842,6 +863,7 @@ impl ContextMenu {
     ) -> Self {
         self.items.push(ContextMenuItem::Submenu {
             label: label.into(),
+            value: None,
             icon: Some(icon),
             icon_color: Some(icon_color),
             builder: Rc::new(builder),
@@ -1528,6 +1550,7 @@ impl ContextMenu {
             }
             ContextMenuItem::Submenu {
                 label,
+                value,
                 icon,
                 icon_color,
                 ..
@@ -1535,6 +1558,7 @@ impl ContextMenu {
                 .render_submenu_item_trigger(
                     ix,
                     label.clone(),
+                    value.clone(),
                     *icon,
                     *icon_color,
                     is_active_descendant(true),
@@ -1548,6 +1572,7 @@ impl ContextMenu {
         &self,
         ix: usize,
         label: SharedString,
+        value: Option<SharedString>,
         icon: Option<IconName>,
         icon_color: Option<Color>,
         is_active_descendant: bool,
@@ -1691,9 +1716,16 @@ impl ContextMenu {
                                     .child(Label::new(label).color(Color::Default)),
                             )
                             .child(
-                                Icon::new(IconName::ChevronRight)
-                                    .size(IconSize::Small)
-                                    .color(Color::Muted),
+                                h_flex()
+                                    .gap_1p5()
+                                    .when_some(value, |this, value| {
+                                        this.child(Label::new(value).color(Color::Muted))
+                                    })
+                                    .child(
+                                        Icon::new(IconName::ChevronRight)
+                                            .size(IconSize::Small)
+                                            .color(Color::Muted),
+                                    ),
                             ),
                     ),
             )
@@ -1739,8 +1771,8 @@ impl ContextMenu {
             .id(("submenu-container", ix))
             .absolute()
             .top(offset)
-            .when(flip_left, |this| this.right_full().mr_neg_0p5())
-            .when(!flip_left, |this| this.left_full().ml_neg_0p5())
+            .when(flip_left, |this| this.right_full().mr_1p5())
+            .when(!flip_left, |this| this.left_full().ml_1p5())
             .on_hover(cx.listener(|this, hovered, _, _| {
                 if *hovered {
                     this.hover_target = HoverTarget::Submenu;

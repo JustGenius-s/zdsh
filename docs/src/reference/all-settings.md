@@ -3758,13 +3758,13 @@ Examples:
       "settings": {
         "buffer_font_size": 20,
         "ui_font_size": 18,
-        "theme": "One Light"
+        "theme": "Z Light"
       }
     },
     "Clean Slate": {
       "base": "default",
       "settings": {
-        "theme": "Ayu Dark"
+        "theme": "Z Dark"
       }
     }
   }
@@ -5399,7 +5399,7 @@ Processing stops at the first regex that matches the terminal line, even if the 
 
 - Description: The theme setting can be specified in two forms - either as the name of a theme or as an object containing the `mode`, `dark`, and `light` themes for the Zed UI.
 - Setting: `theme`
-- Default: `One Dark`
+- Default: `Z Dark`
 
 ### Theme Object
 
@@ -5411,8 +5411,8 @@ Processing stops at the first regex that matches the terminal line, even if the 
 {
   "theme": {
     "mode": "system",
-    "dark": "One Dark",
-    "light": "One Light"
+    "dark": "Z Dark",
+    "light": "Z Light"
   }
 }
 ```
@@ -5431,8 +5431,8 @@ Processing stops at the first regex that matches the terminal line, even if the 
 {
   "theme": {
     "mode": "dark",
-    "dark": "One Dark",
-    "light": "One Light"
+    "dark": "Z Dark",
+    "light": "Z Light"
   }
 }
 ```
@@ -5443,8 +5443,8 @@ Processing stops at the first regex that matches the terminal line, even if the 
 {
   "theme": {
     "mode": "light",
-    "dark": "One Dark",
-    "light": "One Light"
+    "dark": "Z Dark",
+    "light": "Z Light"
   }
 }
 ```
@@ -5455,8 +5455,8 @@ Processing stops at the first regex that matches the terminal line, even if the 
 {
   "theme": {
     "mode": "system",
-    "dark": "One Dark",
-    "light": "One Light"
+    "dark": "Z Dark",
+    "light": "Z Light"
   }
 }
 ```
@@ -5465,7 +5465,7 @@ Processing stops at the first regex that matches the terminal line, even if the 
 
 - Description: The name of the dark Zed theme to use for the UI.
 - Setting: `dark`
-- Default: `One Dark`
+- Default: `Z Dark`
 
 **Options**
 
@@ -5475,7 +5475,7 @@ Run the {#action theme_selector::Toggle} action in the command palette to see a 
 
 - Description: The name of the light Zed theme to use for the UI.
 - Setting: `light`
-- Default: `One Light`
+- Default: `Z Light`
 
 **Options**
 
@@ -6399,7 +6399,7 @@ Example:
       "settings": {
         "agent_buffer_font_size": 18.0,
         "buffer_font_size": 18.0,
-        "theme": "One Dark",
+        "theme": "Z Dark",
         "ui_font_size": 18.0
       }
     },
@@ -6407,7 +6407,7 @@ Example:
       "settings": {
         "agent_buffer_font_size": 18.0,
         "buffer_font_size": 18.0,
-        "theme": "One Light",
+        "theme": "Z Light",
         "ui_font_size": 18.0
       }
     },
