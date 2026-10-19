@@ -229,6 +229,7 @@ pub struct AgentSettings {
     pub compaction_model: Option<LanguageModelSelection>,
     pub inline_alternatives: Vec<LanguageModelSelection>,
     pub favorite_models: Vec<LanguageModelSelection>,
+    pub hidden_models: Vec<LanguageModelSelection>,
     pub default_profile: AgentProfileId,
     pub profiles: IndexMap<AgentProfileId, AgentProfileSettings>,
 
@@ -298,6 +299,19 @@ impl AgentSettings {
             .iter()
             .map(|sel| SharedString::from(format!("{}/{}", sel.provider.0, sel.model)))
             .collect()
+    }
+
+    pub fn hidden_model_ids(&self) -> HashSet<SharedString> {
+        self.hidden_models
+            .iter()
+            .map(|sel| SharedString::from(format!("{}/{}", sel.provider.0, sel.model)))
+            .collect()
+    }
+
+    pub fn is_model_hidden(&self, provider: &str, model: &str) -> bool {
+        self.hidden_models
+            .iter()
+            .any(|sel| sel.provider.0 == provider && sel.model == model)
     }
 }
 
@@ -809,6 +823,7 @@ impl Settings for AgentSettings {
             compaction_model: agent.compaction_model,
             inline_alternatives: agent.inline_alternatives.unwrap_or_default(),
             favorite_models: agent.favorite_models,
+            hidden_models: agent.hidden_models,
             default_profile: AgentProfileId(agent.default_profile.unwrap()),
             profiles: agent
                 .profiles

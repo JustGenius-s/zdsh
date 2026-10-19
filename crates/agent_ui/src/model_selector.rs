@@ -9,8 +9,8 @@ use collections::{HashSet, IndexMap};
 use futures::FutureExt;
 use fuzzy::{StringMatchCandidate, match_strings};
 use gpui::{
-    Action, AsyncWindowContext, BackgroundExecutor, DismissEvent, FocusHandle, Subscription, Task,
-    TaskExt, WeakEntity,
+    Action, AsyncWindowContext, BackgroundExecutor, ClickEvent, DismissEvent, FocusHandle,
+    Subscription, Task, TaskExt, WeakEntity,
 };
 use itertools::Itertools;
 use ordered_float::OrderedFloat;
@@ -41,6 +41,8 @@ pub fn acp_model_selector(
 enum ModelPickerEntry {
     Separator(SharedString),
     Model(AgentModelInfo, bool),
+    /// A hidden model that matched the search query.
+    Hidden(AgentModelInfo),
 }
 
 pub struct ModelPickerDelegate {
@@ -51,6 +53,7 @@ pub struct ModelPickerDelegate {
     selected_description: Option<(usize, SharedString)>,
     selected_model: Option<AgentModelInfo>,
     favorites: HashSet<AgentModelId>,
+    hidden: HashSet<AgentModelId>,
     _refresh_models_task: Task<()>,
     _settings_subscription: Subscription,
     focus_handle: FocusHandle,
@@ -101,15 +104,20 @@ impl ModelPickerDelegate {
         let selector_for_subscription = selector.clone();
         let settings_subscription =
             cx.observe_global_in::<SettingsStore>(window, move |picker, window, cx| {
-                // Only refresh if the favorites actually changed to avoid redundant work
-                // when other settings are modified (e.g., user editing settings.json)
+                // Only refresh if favorites or hidden models actually changed to avoid redundant
+                // work when other settings are modified (e.g., user editing settings.json)
                 let new_favorites = selector_for_subscription.favorite_model_ids(cx);
-                if new_favorites != picker.delegate.favorites {
+                let new_hidden = selector_for_subscription.hidden_model_ids(cx);
+                if new_favorites != picker.delegate.favorites
+                    || new_hidden != picker.delegate.hidden
+                {
                     picker.delegate.favorites = new_favorites;
+                    picker.delegate.hidden = new_hidden;
                     picker.refresh(window, cx);
                 }
             });
         let favorites = selector.favorite_model_ids(cx);
+        let hidden = selector.hidden_model_ids(cx);
 
         Self {
             selector,
@@ -119,6 +127,7 @@ impl ModelPickerDelegate {
             selected_index: 0,
             selected_description: None,
             favorites,
+            hidden,
             _refresh_models_task: refresh_models_task,
             _settings_subscription: settings_subscription,
             focus_handle,
@@ -160,6 +169,74 @@ impl ModelPickerDelegate {
         self.favorites.len()
     }
 
+    pub fn hidden_model_ids(&self) -> &HashSet<AgentModelId> {
+        &self.hidden
+    }
+
+    fn render_model_row(
+        &self,
+        ix: usize,
+        model_info: &AgentModelInfo,
+        is_favorite: bool,
+        is_hidden: bool,
+        is_focused: bool,
+        cx: &mut Context<Picker<Self>>,
+    ) -> AnyElement {
+        let is_selected = Some(model_info) == self.selected_model.as_ref();
+
+        // A hidden model has no favorite toggle: hiding a model unfavorites it.
+        let handle_favorite_click = (!is_hidden).then(|| {
+            let model_id = model_info.id.clone();
+            let selector = self.selector.clone();
+            cx.listener(move |_, _: &ClickEvent, _, cx| {
+                selector.toggle_favorite_model(model_id.clone(), !is_favorite, cx);
+            })
+        });
+        let handle_hidden_click = self.selector.can_hide_models().then(|| {
+            let model_id = model_info.id.clone();
+            let selector = self.selector.clone();
+            cx.listener(move |_, _: &ClickEvent, _, cx| {
+                selector.set_model_hidden(model_id.clone(), !is_hidden, cx);
+            })
+        });
+
+        div()
+            .id(("model-picker-menu-child", ix))
+            .when_some(model_info.description.clone(), |this, description| {
+                this.on_hover(cx.listener(move |menu, hovered, _, cx| {
+                    if *hovered {
+                        menu.delegate.selected_description = Some((ix, description.clone()));
+                    } else if matches!(menu.delegate.selected_description, Some((id, _)) if id == ix)
+                    {
+                        menu.delegate.selected_description = None;
+                    }
+                    cx.notify();
+                }))
+            })
+            .child(
+                ModelSelectorListItem::new(ix, model_info.name.clone())
+                    .map(|this| match &model_info.icon {
+                        Some(AgentModelIcon::Path(path)) => this.icon_path(path.clone()),
+                        Some(AgentModelIcon::Named(icon)) => this.icon(*icon),
+                        None => this,
+                    })
+                    .disabled(model_info.disabled.clone())
+                    .is_selected(is_selected)
+                    .is_focused(is_focused)
+                    .is_latest(model_info.is_latest)
+                    .is_favorite(is_favorite)
+                    .is_hidden(is_hidden)
+                    .when_some(handle_favorite_click, |this, handler| {
+                        this.on_toggle_favorite(handler)
+                    })
+                    .when_some(handle_hidden_click, |this, handler| {
+                        this.on_toggle_hidden(handler)
+                    })
+                    .cost_info(model_info.cost.clone()),
+            )
+            .into_any_element()
+    }
+
     pub fn cycle_favorite_models(&mut self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
         if self.favorites.is_empty() {
             return;
@@ -176,7 +253,7 @@ impl ModelPickerDelegate {
 
         let favorite_models: Vec<_> = all_models
             .into_iter()
-            .filter(|model| self.favorites.contains(&model.id))
+            .filter(|model| self.favorites.contains(&model.id) && !self.hidden.contains(&model.id))
             .unique_by(|model| &model.id)
             .collect();
 
@@ -237,7 +314,7 @@ impl PickerDelegate for ModelPickerDelegate {
 
     fn can_select(&self, ix: usize, _window: &mut Window, _cx: &mut Context<Picker<Self>>) -> bool {
         match self.filtered_entries.get(ix) {
-            Some(ModelPickerEntry::Model(_, _)) => true,
+            Some(ModelPickerEntry::Model(_, _) | ModelPickerEntry::Hidden(_)) => true,
             Some(ModelPickerEntry::Separator(_)) | None => false,
         }
     }
@@ -253,6 +330,9 @@ impl PickerDelegate for ModelPickerDelegate {
         cx: &mut Context<Picker<Self>>,
     ) -> Task<()> {
         let favorites = self.favorites.clone();
+        let hidden = self.hidden.clone();
+        let selected_model_id = self.selected_model.as_ref().map(|model| model.id.clone());
+        let include_hidden = !query.trim().is_empty();
 
         cx.spawn_in(window, async move |this, cx| {
             let filtered_models = match this
@@ -269,8 +349,13 @@ impl PickerDelegate for ModelPickerDelegate {
             };
 
             this.update_in(cx, |this, window, cx| {
-                this.delegate.filtered_entries =
-                    info_list_to_picker_entries(filtered_models, &favorites);
+                this.delegate.filtered_entries = info_list_to_picker_entries(
+                    filtered_models,
+                    &favorites,
+                    &hidden,
+                    selected_model_id.as_ref(),
+                    include_hidden,
+                );
                 // Finds the currently selected model in the list
                 let new_index = this
                     .delegate
@@ -294,7 +379,7 @@ impl PickerDelegate for ModelPickerDelegate {
     }
 
     fn confirm(&mut self, _secondary: bool, window: &mut Window, cx: &mut Context<Picker<Self>>) {
-        if let Some(ModelPickerEntry::Model(model_info, _)) =
+        if let Some(ModelPickerEntry::Model(model_info, _) | ModelPickerEntry::Hidden(model_info)) =
             self.filtered_entries.get(self.selected_index)
             && model_info.disabled.is_none()
         {
@@ -327,51 +412,10 @@ impl PickerDelegate for ModelPickerDelegate {
                 Some(ModelSelectorHeader::new(title, ix > 1).into_any_element())
             }
             ModelPickerEntry::Model(model_info, is_favorite) => {
-                let is_selected = Some(model_info) == self.selected_model.as_ref();
-
-                let is_favorite = *is_favorite;
-                let handle_action_click = {
-                    let model_id = model_info.id.clone();
-                    let selector = self.selector.clone();
-
-                    cx.listener(move |_, _, _, cx| {
-                        selector.toggle_favorite_model(model_id.clone(), !is_favorite, cx);
-                    })
-                };
-
-                let model_cost = model_info.cost.clone();
-
-                Some(
-                    div()
-                        .id(("model-picker-menu-child", ix))
-                        .when_some(model_info.description.clone(), |this, description| {
-                            this.on_hover(cx.listener(move |menu, hovered, _, cx| {
-                                if *hovered {
-                                    menu.delegate.selected_description =
-                                        Some((ix, description.clone()));
-                                } else if matches!(menu.delegate.selected_description, Some((id, _)) if id == ix) {
-                                    menu.delegate.selected_description = None;
-                                }
-                                cx.notify();
-                            }))
-                        })
-                        .child(
-                            ModelSelectorListItem::new(ix, model_info.name.clone())
-                                .map(|this| match &model_info.icon {
-                                    Some(AgentModelIcon::Path(path)) => this.icon_path(path.clone()),
-                                    Some(AgentModelIcon::Named(icon)) => this.icon(*icon),
-                                    None => this,
-                                })
-                                .disabled(model_info.disabled.clone())
-                                .is_selected(is_selected)
-                                .is_focused(selected)
-                                .is_latest(model_info.is_latest)
-                                .is_favorite(is_favorite)
-                                .on_toggle_favorite(handle_action_click)
-                                .cost_info(model_cost)
-                        )
-                        .into_any_element(),
-                )
+                Some(self.render_model_row(ix, model_info, *is_favorite, false, selected, cx))
+            }
+            ModelPickerEntry::Hidden(model_info) => {
+                Some(self.render_model_row(ix, model_info, false, true, selected, cx))
             }
         }
     }
@@ -415,7 +459,14 @@ impl PickerDelegate for ModelPickerDelegate {
 fn info_list_to_picker_entries(
     model_list: AgentModelList,
     favorites: &HashSet<AgentModelId>,
+    hidden: &HashSet<AgentModelId>,
+    selected_model_id: Option<&AgentModelId>,
+    include_hidden: bool,
 ) -> Vec<ModelPickerEntry> {
+    // The model a thread is using stays listed even when hidden, so its checkmark never vanishes.
+    let is_listed = |model: &AgentModelInfo| {
+        !hidden.contains(&model.id) || Some(&model.id) == selected_model_id
+    };
     let mut entries = Vec::new();
 
     let all_models: Vec<_> = match &model_list {
@@ -423,10 +474,21 @@ fn info_list_to_picker_entries(
         AgentModelList::Grouped(index_map) => index_map.values().flatten().collect(),
     };
 
+    let hidden_models: Vec<AgentModelInfo> = if include_hidden {
+        all_models
+            .iter()
+            .filter(|model| !is_listed(model))
+            .unique_by(|model| &model.id)
+            .map(|model| (*model).clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let favorite_models: Vec<_> = all_models
         .iter()
-        .filter(|m| favorites.contains(&m.id))
-        .unique_by(|m| &m.id)
+        .filter(|model| favorites.contains(&model.id) && is_listed(model))
+        .unique_by(|model| &model.id)
         .collect();
 
     let has_favorites = !favorite_models.is_empty();
@@ -442,13 +504,20 @@ fn info_list_to_picker_entries(
             if has_favorites {
                 entries.push(ModelPickerEntry::Separator("All".into()));
             }
-            for model in list {
+            for model in list.into_iter().filter(|model| is_listed(model)) {
                 let is_favorite = favorites.contains(&model.id);
                 entries.push(ModelPickerEntry::Model(model, is_favorite));
             }
         }
         AgentModelList::Grouped(index_map) => {
             for (group_name, models) in index_map {
+                let models: Vec<_> = models
+                    .into_iter()
+                    .filter(|model| is_listed(model))
+                    .collect();
+                if models.is_empty() {
+                    continue;
+                }
                 entries.push(ModelPickerEntry::Separator(group_name.0));
                 for model in models {
                     let is_favorite = favorites.contains(&model.id);
@@ -456,6 +525,11 @@ fn info_list_to_picker_entries(
                 }
             }
         }
+    }
+
+    if !hidden_models.is_empty() {
+        entries.push(ModelPickerEntry::Separator("Hidden".into()));
+        entries.extend(hidden_models.into_iter().map(ModelPickerEntry::Hidden));
     }
 
     entries
@@ -690,7 +764,9 @@ mod tests {
         entries
             .iter()
             .map(|entry| match entry {
-                ModelPickerEntry::Model(info, _) => info.id.as_ref(),
+                ModelPickerEntry::Model(info, _) | ModelPickerEntry::Hidden(info) => {
+                    info.id.as_ref()
+                }
                 ModelPickerEntry::Separator(s) => &s,
             })
             .collect()
@@ -735,7 +811,8 @@ mod tests {
         ]);
         let favorites = create_favorites(vec!["zed/gemini"]);
 
-        let entries = info_list_to_picker_entries(models, &favorites);
+        let entries =
+            info_list_to_picker_entries(models, &favorites, &HashSet::default(), None, false);
 
         assert!(matches!(
             entries.first(),
@@ -751,7 +828,8 @@ mod tests {
         let models = create_model_list(vec![("zed", vec!["zed/claude", "zed/gemini"])]);
         let favorites = create_favorites(vec![]);
 
-        let entries = info_list_to_picker_entries(models, &favorites);
+        let entries =
+            info_list_to_picker_entries(models, &favorites, &HashSet::default(), None, false);
 
         assert!(matches!(
             entries.first(),
@@ -767,7 +845,8 @@ mod tests {
         ]);
         let favorites = create_favorites(vec!["zed/claude"]);
 
-        let entries = info_list_to_picker_entries(models, &favorites);
+        let entries =
+            info_list_to_picker_entries(models, &favorites, &HashSet::default(), None, false);
 
         for entry in &entries {
             if let ModelPickerEntry::Model(info, is_favorite) = entry {
@@ -788,7 +867,8 @@ mod tests {
         ]);
         let favorites = create_favorites(vec!["zed/gemini", "openai/gpt-5"]);
 
-        let entries = info_list_to_picker_entries(models, &favorites);
+        let entries =
+            info_list_to_picker_entries(models, &favorites, &HashSet::default(), None, false);
         let model_ids = get_entry_model_ids(&entries);
 
         assert_eq!(model_ids[0], "zed/gemini");
@@ -809,7 +889,8 @@ mod tests {
 
         let favorites = create_favorites(vec!["zed/claude"]);
 
-        let entries = info_list_to_picker_entries(models, &favorites);
+        let entries =
+            info_list_to_picker_entries(models, &favorites, &HashSet::default(), None, false);
         let labels = get_entry_labels(&entries);
 
         assert_eq!(
@@ -855,7 +936,8 @@ mod tests {
         ]);
         let favorites = create_favorites(vec!["zed/gemini"]);
 
-        let entries = info_list_to_picker_entries(models, &favorites);
+        let entries =
+            info_list_to_picker_entries(models, &favorites, &HashSet::default(), None, false);
 
         assert!(matches!(
             entries.first(),
@@ -866,6 +948,59 @@ mod tests {
             e,
             ModelPickerEntry::Separator(s) if s == "All"
         )));
+    }
+
+    #[gpui::test]
+    fn test_hidden_models_are_left_out(_cx: &mut TestAppContext) {
+        let models = create_model_list(vec![
+            ("Recommended", vec!["zed/claude"]),
+            ("zed", vec!["zed/claude", "zed/gemini"]),
+            ("codebuddy", vec!["codebuddy/glm", "codebuddy/kimi"]),
+        ]);
+        let favorites = create_favorites(vec!["zed/claude"]);
+        let hidden = create_favorites(vec!["zed/claude", "codebuddy/glm", "codebuddy/kimi"]);
+
+        let entries = info_list_to_picker_entries(models, &favorites, &hidden, None, false);
+
+        assert_eq!(get_entry_labels(&entries), vec!["zed", "zed/gemini"]);
+    }
+
+    #[gpui::test]
+    fn test_selected_hidden_model_stays_listed(_cx: &mut TestAppContext) {
+        let models =
+            create_model_list(vec![("codebuddy", vec!["codebuddy/glm", "codebuddy/kimi"])]);
+        let hidden = create_favorites(vec!["codebuddy/glm", "codebuddy/kimi"]);
+        let selected = AgentModelId::new("codebuddy/kimi");
+
+        let entries = info_list_to_picker_entries(
+            models,
+            &HashSet::default(),
+            &hidden,
+            Some(&selected),
+            false,
+        );
+
+        assert_eq!(
+            get_entry_labels(&entries),
+            vec!["codebuddy", "codebuddy/kimi"]
+        );
+    }
+
+    #[gpui::test]
+    fn test_search_lists_hidden_models_last(_cx: &mut TestAppContext) {
+        let models = create_model_list(vec![
+            ("Recommended", vec!["codebuddy/glm"]),
+            ("codebuddy", vec!["codebuddy/glm", "codebuddy/kimi"]),
+        ]);
+        let hidden = create_favorites(vec!["codebuddy/glm"]);
+
+        let entries = info_list_to_picker_entries(models, &HashSet::default(), &hidden, None, true);
+
+        assert_eq!(
+            get_entry_labels(&entries),
+            vec!["codebuddy", "codebuddy/kimi", "Hidden", "codebuddy/glm"]
+        );
+        assert!(matches!(entries.last(), Some(ModelPickerEntry::Hidden(_))));
     }
 
     #[gpui::test]
@@ -907,7 +1042,8 @@ mod tests {
         ]);
         let favorites = create_favorites(vec!["favorite-model"]);
 
-        let entries = info_list_to_picker_entries(models, &favorites);
+        let entries =
+            info_list_to_picker_entries(models, &favorites, &HashSet::default(), None, false);
 
         for entry in &entries {
             if let ModelPickerEntry::Model(info, is_favorite) = entry {

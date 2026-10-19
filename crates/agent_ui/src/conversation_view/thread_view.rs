@@ -5977,6 +5977,7 @@ impl ThreadView {
             .menu({
                 move |window, cx| {
                     let model_list = model_selector.read(cx).available_models(cx);
+                    let hidden_model_ids = model_selector.read(cx).hidden_model_ids(cx);
                     let selected_model_id = model_selector
                         .read(cx)
                         .active_model(cx)
@@ -6055,6 +6056,7 @@ impl ThreadView {
                                 has_items = true;
                                 let model_selector = model_selector.clone();
                                 let selected_model_id = selected_model_id.clone();
+                                let hidden_model_ids = hidden_model_ids.clone();
                                 menu = menu.submenu_with_value(
                                     "Model",
                                     model_name_for_menu,
@@ -6064,6 +6066,7 @@ impl ThreadView {
                                             menu,
                                             model_list.clone(),
                                             selected_model_id.as_ref(),
+                                            &hidden_model_ids,
                                             model_selector.clone(),
                                         );
                                         menu
@@ -6113,11 +6116,16 @@ impl ThreadView {
         mut menu: ContextMenu,
         models: AgentModelList,
         selected_model_id: Option<&AgentModelId>,
+        hidden_model_ids: &HashSet<AgentModelId>,
         model_selector: Entity<ModelSelectorPopover>,
     ) -> ContextMenu {
+        // The model in use stays listed even when hidden, so the checkmark never vanishes.
+        let is_listed = |model: &AgentModelInfo| {
+            !hidden_model_ids.contains(&model.id) || Some(&model.id) == selected_model_id
+        };
         match models {
             AgentModelList::Flat(list) => {
-                for model in list {
+                for model in list.into_iter().filter(|model| is_listed(model)) {
                     menu.push_item(Self::model_menu_entry(
                         model,
                         selected_model_id,
@@ -6127,13 +6135,30 @@ impl ThreadView {
             }
             AgentModelList::Grouped(groups) => {
                 for (group, list) in groups {
+                    let (listed, hidden): (Vec<_>, Vec<_>) =
+                        list.into_iter().partition(|model| is_listed(model));
+                    if listed.is_empty() {
+                        continue;
+                    }
                     menu = menu.header(group.0);
-                    for model in list {
+                    for model in listed {
                         menu.push_item(Self::model_menu_entry(
                             model,
                             selected_model_id,
                             model_selector.clone(),
                         ));
+                    }
+                    if !hidden.is_empty() {
+                        let label = SharedString::from(format!("{} hidden", hidden.len()));
+                        menu = menu.custom_entry(
+                            move |_window, _cx| {
+                                Label::new(label.clone())
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted)
+                                    .into_any_element()
+                            },
+                            Self::open_llm_providers_settings,
+                        );
                     }
                 }
             }
@@ -6141,17 +6166,19 @@ impl ThreadView {
 
         menu = menu.separator();
         menu.push_item(
-            ContextMenuEntry::new("Manage Models…").handler(|window, cx| {
-                window.dispatch_action(
-                    Box::new(zed_actions::OpenSettingsAt {
-                        path: "llm_providers".to_string(),
-                        target: None,
-                    }),
-                    cx,
-                );
-            }),
+            ContextMenuEntry::new("Manage Models…").handler(Self::open_llm_providers_settings),
         );
         menu
+    }
+
+    fn open_llm_providers_settings(window: &mut Window, cx: &mut App) {
+        window.dispatch_action(
+            Box::new(zed_actions::OpenSettingsAt {
+                path: "llm_providers".to_string(),
+                target: None,
+            }),
+            cx,
+        );
     }
 
     fn model_menu_entry(

@@ -1,9 +1,10 @@
 use std::{collections::HashSet, sync::Arc};
 
-use editor::Editor;
-use gpui::{AnyView, Entity, Focusable as _, ScrollHandle, prelude::*};
+use agent_settings::AgentSettings;
+use editor::{Editor, EditorEvent};
+use gpui::{AnyView, Entity, Focusable as _, ScrollHandle, Subscription, prelude::*};
 use language_model::{
-    ApiKeyConfiguration, CreateProviderSettingsView, IconOrSvg, InlineDescription,
+    ApiKeyConfiguration, CreateProviderSettingsView, IconOrSvg, InlineDescription, LanguageModel,
     LanguageModelProvider, LanguageModelProviderId, LanguageModelRegistry, ProviderSettingsView,
 };
 
@@ -11,6 +12,7 @@ use settings::{
     AnthropicCompatibleAvailableModel, AnthropicCompatibleModelCapabilities,
     AnthropicCompatibleSettingsContent, OpenAiCompatibleAvailableModel,
     OpenAiCompatibleModelCapabilities, OpenAiCompatibleSettingsContent, OpenAiReasoningEffort,
+    Settings as _,
 };
 use ui::{
     ButtonLink, Checkbox, ConfiguredApiCard, ContextMenu, Divider, DividerColor, DropdownMenu,
@@ -173,13 +175,190 @@ fn render_provider_section(
         None => div().into_any_element(),
     };
 
+    let models = render_provider_models(settings_window, provider, window, cx);
+
     v_flex()
         .min_w_0()
         .map(|s| if is_first { s.pt_4() } else { s.pt_8() })
         .gap_1p5()
         .child(render_provider_header(provider_name, provider.icon(), cx))
         .child(body)
+        .children(models)
         .into_any_element()
+}
+
+pub(crate) struct ProviderModelFilter {
+    editor: Entity<Editor>,
+    _subscription: Subscription,
+}
+
+fn provider_model_filter(
+    settings_window: &SettingsWindow,
+    provider_id: &LanguageModelProviderId,
+    window: &mut Window,
+    cx: &mut Context<SettingsWindow>,
+) -> Entity<Editor> {
+    if let Some(filter) = settings_window.provider_model_filters.get(provider_id) {
+        return filter.editor.clone();
+    }
+
+    let editor = new_input("Filter models", None, false, window, cx);
+    let subscription = cx.subscribe(&editor, |_, _, event: &EditorEvent, cx| {
+        if matches!(event, EditorEvent::BufferEdited) {
+            cx.notify();
+        }
+    });
+
+    // Store the filter for future renders by deferring a mutation
+    let provider_id = provider_id.clone();
+    let stored_editor = editor.clone();
+    cx.defer_in(window, move |this, _window, _cx| {
+        this.provider_model_filters.insert(
+            provider_id,
+            ProviderModelFilter {
+                editor: stored_editor,
+                _subscription: subscription,
+            },
+        );
+    });
+
+    editor
+}
+
+/// Lists a provider's models with a checkbox each, so models can be hidden from model selectors.
+fn render_provider_models(
+    settings_window: &SettingsWindow,
+    provider: &Arc<dyn LanguageModelProvider>,
+    window: &mut Window,
+    cx: &mut Context<SettingsWindow>,
+) -> Option<AnyElement> {
+    if !provider.is_authenticated(cx) {
+        return None;
+    }
+    let models = provider.provided_models(cx);
+    if models.is_empty() {
+        return None;
+    }
+
+    let provider_id = provider.id();
+    let filter = provider_model_filter(settings_window, &provider_id, window, cx);
+    let agent_settings = AgentSettings::get_global(cx);
+    let is_hidden = |model: &LanguageModel| {
+        agent_settings.is_model_hidden(provider_id.0.as_ref(), model.id.0.as_ref())
+    };
+    let shown_count = models.iter().filter(|model| !is_hidden(model)).count();
+    let model_count = models.len();
+
+    let query = filter.read(cx).text(cx).trim().to_lowercase();
+    let matching: Vec<&LanguageModel> = models
+        .iter()
+        .filter(|model| {
+            query.is_empty()
+                || model.name.0.to_lowercase().contains(&query)
+                || model.id.0.to_lowercase().contains(&query)
+        })
+        .collect();
+    let matching_ids: Vec<String> = matching
+        .iter()
+        .map(|model| model.id.0.to_string())
+        .collect();
+    let (show_label, hide_label) = if query.is_empty() {
+        ("Show All", "Hide All")
+    } else {
+        ("Show Matching", "Hide Matching")
+    };
+
+    let provider_key = provider_id.0.to_string();
+    let colors = cx.theme().colors();
+    let focus_handle = filter.focus_handle(cx).tab_index(0).tab_stop(true);
+
+    Some(
+        v_flex()
+            .pt_2()
+            .gap_1p5()
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(Label::new("Models"))
+                    .child(
+                        Label::new(format!("{shown_count} of {model_count} shown"))
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new(format!("show-models-{provider_key}"), show_label)
+                            .label_size(LabelSize::Small)
+                            .on_click({
+                                let provider = provider_key.clone();
+                                let models = matching_ids.clone();
+                                move |_, _, cx| {
+                                    set_models_hidden(provider.clone(), models.clone(), false, cx)
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new(format!("hide-models-{provider_key}"), hide_label)
+                            .label_size(LabelSize::Small)
+                            .on_click({
+                                let provider = provider_key.clone();
+                                let models = matching_ids;
+                                move |_, _, cx| {
+                                    set_models_hidden(provider.clone(), models.clone(), true, cx)
+                                }
+                            }),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .h_8()
+                    .px_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.editor_background)
+                    .track_focus(&focus_handle)
+                    .focus(|style| style.border_color(colors.border_focused))
+                    .child(filter),
+            )
+            .children(matching.into_iter().map(|model| {
+                let model_id = model.id.0.to_string();
+                let state = if is_hidden(model) {
+                    ToggleState::Unselected
+                } else {
+                    ToggleState::Selected
+                };
+                Checkbox::new(
+                    SharedString::from(format!("show-model-{provider_key}-{model_id}")),
+                    state,
+                )
+                .label(model.name.0.clone())
+                .on_click({
+                    let provider = provider_key.clone();
+                    move |state, _window, cx| {
+                        set_models_hidden(
+                            provider.clone(),
+                            vec![model_id.clone()],
+                            *state != ToggleState::Selected,
+                            cx,
+                        )
+                    }
+                })
+            }))
+            .into_any_element(),
+    )
+}
+
+fn set_models_hidden(provider: String, models: Vec<String>, hidden: bool, cx: &mut App) {
+    let fs = <dyn fs::Fs>::global(cx);
+    settings::update_settings_file(fs, cx, move |settings, _| {
+        let agent = settings.agent.get_or_insert_default();
+        for model in &models {
+            agent.set_model_hidden(&provider, model, hidden);
+        }
+    });
 }
 
 /// An icon + name header with a faded divider, mirroring `SettingsSectionHeader`

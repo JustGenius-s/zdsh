@@ -661,6 +661,18 @@ pub trait AgentModelSelector: 'static {
     fn toggle_favorite_model(&self, _model_id: AgentModelId, _should_be_favorite: bool, _cx: &App) {
     }
 
+    /// Whether [Self::set_model_hidden] persists anything; selectors only offer hiding when it does.
+    fn can_hide_models(&self) -> bool {
+        false
+    }
+
+    /// Models the user chose to leave out of model selectors.
+    fn hidden_model_ids(&self, _cx: &mut App) -> HashSet<AgentModelId> {
+        HashSet::default()
+    }
+
+    fn set_model_hidden(&self, _model_id: AgentModelId, _hidden: bool, _cx: &App) {}
+
     /// Whenever the model list is updated the receiver will be notified.
     /// Optional for agents that don't update their model list.
     fn watch(&self, _cx: &mut App) -> Option<watch::Receiver<()>> {

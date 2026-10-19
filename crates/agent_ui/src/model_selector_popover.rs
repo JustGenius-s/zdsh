@@ -3,6 +3,7 @@ use std::rc::Rc;
 use acp_thread::{
     AgentModelIcon, AgentModelId, AgentModelInfo, AgentModelList, AgentModelSelector,
 };
+use collections::HashSet;
 use gpui::{Entity, FocusHandle};
 use picker::popover_menu::PickerPopoverMenu;
 use ui::{PopoverMenuHandle, Tooltip, prelude::*};
@@ -40,6 +41,10 @@ impl ModelSelectorPopover {
 
     pub fn available_models(&self, cx: &App) -> Option<AgentModelList> {
         self.selector.read(cx).delegate.models().cloned()
+    }
+
+    pub fn hidden_model_ids(&self, cx: &App) -> HashSet<AgentModelId> {
+        self.selector.read(cx).delegate.hidden_model_ids().clone()
     }
 
     pub fn select_model(&self, model_id: AgentModelId, cx: &mut Context<Self>) {

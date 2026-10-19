@@ -56,13 +56,20 @@ pub fn language_model_selector(
     }
 }
 
-fn all_models(cx: &App) -> GroupedModels {
+fn all_models(active_model: Option<&LanguageModel>, cx: &App) -> GroupedModels {
     let lm_registry = LanguageModelRegistry::global(cx).read(cx);
     let providers = lm_registry.visible_providers();
+    let agent_settings = AgentSettings::get_global(cx);
+
+    // The active model stays listed even when hidden, so the current choice never vanishes.
+    let is_listed = |provider: &dyn LanguageModelProvider, model: &LanguageModel| {
+        !agent_settings.is_model_hidden(provider.id().0.as_ref(), model.id().0.as_ref())
+            || active_model.is_some_and(|active| active.is_same_as(model))
+    };
 
     let mut favorites_index = FavoritesIndex::default();
 
-    for sel in &AgentSettings::get_global(cx).favorite_models {
+    for sel in &agent_settings.favorite_models {
         favorites_index
             .entry(sel.provider.0.clone().into())
             .or_default()
@@ -75,6 +82,7 @@ fn all_models(cx: &App) -> GroupedModels {
             provider
                 .recommended_models(cx)
                 .into_iter()
+                .filter(|model| is_listed(&**provider, model))
                 .map(|model| ModelInfo::new(&**provider, model, &favorites_index))
         })
         .collect();
@@ -85,6 +93,7 @@ fn all_models(cx: &App) -> GroupedModels {
             provider
                 .provided_models(cx)
                 .into_iter()
+                .filter(|model| is_listed(&**provider, model))
                 .map(|model| ModelInfo::new(&**provider, model, &favorites_index))
         })
         .collect();
@@ -142,13 +151,14 @@ impl LanguageModelPickerDelegate {
         cx: &mut Context<Picker<Self>>,
     ) -> Self {
         let on_model_changed = Arc::new(on_model_changed);
-        let models = all_models(cx);
+        let active_model = get_active_model(cx);
+        let models = all_models(active_model.as_ref(), cx);
         let entries = models.entries();
 
         Self {
             on_model_changed,
             all_models: Arc::new(models),
-            selected_index: Self::get_active_model_index(&entries, get_active_model(cx)),
+            selected_index: Self::get_active_model_index(&entries, active_model),
             filtered_entries: entries,
             get_active_model: Arc::new(get_active_model),
             on_toggle_favorite: Arc::new(on_toggle_favorite),
@@ -161,7 +171,9 @@ impl LanguageModelPickerDelegate {
                         | language_model::Event::AddedProvider(_)
                         | language_model::Event::RemovedProvider(_) => {
                             let query = picker.query(cx);
-                            picker.delegate.all_models = Arc::new(all_models(cx));
+                            let active_model = (picker.delegate.get_active_model)(cx);
+                            picker.delegate.all_models =
+                                Arc::new(all_models(active_model.as_ref(), cx));
                             // Update matches will automatically drop the previous task
                             // if we get a provider event again
                             picker.update_matches(query, window, cx)

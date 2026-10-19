@@ -3147,6 +3147,34 @@ impl acp_thread::AgentModelSelector for NativeAgentModelSelector {
         });
     }
 
+    fn can_hide_models(&self) -> bool {
+        true
+    }
+
+    fn hidden_model_ids(&self, cx: &mut App) -> HashSet<AgentModelId> {
+        agent_settings::AgentSettings::get_global(cx)
+            .hidden_model_ids()
+            .into_iter()
+            .map(AgentModelId::from)
+            .collect()
+    }
+
+    fn set_model_hidden(&self, model_id: AgentModelId, hidden: bool, cx: &App) {
+        let Some((provider, model)) = model_id.as_ref().split_once('/') else {
+            log::error!("cannot hide model with malformed id {model_id}");
+            return;
+        };
+        let provider = provider.to_string();
+        let model = model.to_string();
+        let fs = self.connection.0.read(cx).fs.clone();
+        update_settings_file(fs, cx, move |settings, _| {
+            settings
+                .agent
+                .get_or_insert_default()
+                .set_model_hidden(&provider, &model, hidden);
+        });
+    }
+
     fn watch(&self, cx: &mut App) -> Option<watch::Receiver<()>> {
         Some(self.connection.0.read(cx).models.watch())
     }

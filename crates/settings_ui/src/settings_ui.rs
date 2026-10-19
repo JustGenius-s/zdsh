@@ -59,8 +59,8 @@ use crate::components::{
     text_field_a11y_state, theme_picker,
 };
 use crate::pages::{
-    CustomAgentForm, LlmProviderForm, McpServerForm, render_input_audio_device_dropdown,
-    render_output_audio_device_dropdown,
+    CustomAgentForm, LlmProviderForm, McpServerForm, ProviderModelFilter,
+    render_input_audio_device_dropdown, render_output_audio_device_dropdown,
 };
 
 const NAVBAR_CONTAINER_TAB_INDEX: isize = 0;
@@ -989,6 +989,9 @@ pub struct SettingsWindow {
     /// Cached configuration views per provider, created lazily.
     pub(crate) provider_configuration_views:
         HashMap<language_model::LanguageModelProviderId, gpui::AnyView>,
+    /// Model filter inputs per provider on the LLM providers page, created lazily.
+    pub(crate) provider_model_filters:
+        HashMap<language_model::LanguageModelProviderId, ProviderModelFilter>,
     /// The provider whose configuration sub-page is currently open, if any.
     pub(crate) configuring_provider: Option<language_model::LanguageModelProviderId>,
     /// Directory path of the skill whose share link was most recently copied,
@@ -2026,6 +2029,7 @@ impl SettingsWindow {
             bottom_spacer_height: px(0.),
             last_copied_link_path: None,
             provider_configuration_views: HashMap::default(),
+            provider_model_filters: HashMap::default(),
             configuring_provider: None,
             last_copied_skill_directory_path: None,
             llm_provider_form: None,
@@ -5482,6 +5486,7 @@ pub mod test {
                 sandbox_host_validation_error: None,
                 last_copied_link_path: None,
                 provider_configuration_views: HashMap::default(),
+                provider_model_filters: HashMap::default(),
                 configuring_provider: None,
                 last_copied_skill_directory_path: None,
                 llm_provider_form: None,
@@ -5622,6 +5627,7 @@ pub mod test {
             sandbox_host_validation_error: None,
             last_copied_link_path: None,
             provider_configuration_views: HashMap::default(),
+            provider_model_filters: HashMap::default(),
             configuring_provider: None,
             last_copied_skill_directory_path: None,
             llm_provider_form: None,

@@ -53,8 +53,10 @@ pub struct ModelSelectorListItem {
     is_focused: bool,
     is_latest: bool,
     is_favorite: bool,
+    is_hidden: bool,
     disabled: Option<DisabledReason>,
     on_toggle_favorite: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_toggle_hidden: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
     cost_info: Option<SharedString>,
 }
 
@@ -68,8 +70,10 @@ impl ModelSelectorListItem {
             is_focused: false,
             is_latest: false,
             is_favorite: false,
+            is_hidden: false,
             disabled: None,
             on_toggle_favorite: None,
+            on_toggle_hidden: None,
             cost_info: None,
         }
     }
@@ -117,6 +121,19 @@ impl ModelSelectorListItem {
         self
     }
 
+    pub fn is_hidden(mut self, is_hidden: bool) -> Self {
+        self.is_hidden = is_hidden;
+        self
+    }
+
+    pub fn on_toggle_hidden(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_toggle_hidden = Some(Box::new(handler));
+        self
+    }
+
     pub fn cost_info(mut self, cost_info: Option<SharedString>) -> Self {
         self.cost_info = cost_info;
         self
@@ -136,6 +153,7 @@ impl RenderOnce for ModelSelectorListItem {
         };
 
         let is_favorite = self.is_favorite;
+        let is_hidden = self.is_hidden;
 
         ListItem::new(self.index)
             .inset(true)
@@ -162,6 +180,7 @@ impl RenderOnce for ModelSelectorListItem {
                     .child(
                         Label::new(self.title)
                             .when(is_disabled, |this| this.color(Color::Disabled))
+                            .when(is_hidden && !is_disabled, |this| this.color(Color::Muted))
                             .truncate(),
                     )
                     .when(self.is_latest, |parent| parent.child(Chip::new("Latest")))
@@ -189,25 +208,44 @@ impl RenderOnce for ModelSelectorListItem {
                     }),
             )
             .when(!is_disabled, |this| {
-                this.end_slot_on_hover(div().pr_1p5().when_some(self.on_toggle_favorite, {
-                    |this, handle_click| {
-                        let (icon, color, tooltip) = if is_favorite {
-                            (IconName::StarFilled, Color::Accent, "Unfavorite Model")
-                        } else {
-                            (IconName::Star, Color::Default, "Favorite Model")
-                        };
-                        this.child(
-                            IconButton::new(("toggle-favorite", self.index), icon)
-                                .layer(ElevationIndex::ElevatedSurface)
-                                .icon_color(color)
-                                .icon_size(IconSize::Small)
-                                .tooltip(Tooltip::text(tooltip))
-                                .on_click(move |event, window, cx| {
-                                    (handle_click)(event, window, cx)
-                                }),
-                        )
-                    }
-                }))
+                this.end_slot_on_hover(
+                    h_flex()
+                        .pr_1p5()
+                        .gap_0p5()
+                        .when_some(self.on_toggle_favorite, |this, handle_click| {
+                            let (icon, color, tooltip) = if is_favorite {
+                                (IconName::StarFilled, Color::Accent, "Unfavorite Model")
+                            } else {
+                                (IconName::Star, Color::Default, "Favorite Model")
+                            };
+                            this.child(
+                                IconButton::new(("toggle-favorite", self.index), icon)
+                                    .layer(ElevationIndex::ElevatedSurface)
+                                    .icon_color(color)
+                                    .icon_size(IconSize::Small)
+                                    .tooltip(Tooltip::text(tooltip))
+                                    .on_click(move |event, window, cx| {
+                                        (handle_click)(event, window, cx)
+                                    }),
+                            )
+                        })
+                        .when_some(self.on_toggle_hidden, |this, handle_click| {
+                            let (icon, tooltip) = if is_hidden {
+                                (IconName::Eye, "Show Model")
+                            } else {
+                                (IconName::EyeOff, "Hide Model")
+                            };
+                            this.child(
+                                IconButton::new(("toggle-hidden", self.index), icon)
+                                    .layer(ElevationIndex::ElevatedSurface)
+                                    .icon_size(IconSize::Small)
+                                    .tooltip(Tooltip::text(tooltip))
+                                    .on_click(move |event, window, cx| {
+                                        (handle_click)(event, window, cx)
+                                    }),
+                            )
+                        }),
+                )
             })
     }
 }

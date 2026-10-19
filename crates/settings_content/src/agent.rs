@@ -289,6 +289,10 @@ pub struct AgentSettingsContent {
     /// Favorite models to show at the top of the model selector.
     #[serde(default)]
     pub favorite_models: Vec<LanguageModelSelection>,
+    /// Models to leave out of model selectors. The model a thread currently uses
+    /// is still shown, and hidden models still match a search in the model picker.
+    #[serde(default)]
+    pub hidden_models: Vec<LanguageModelSelection>,
     /// Model to use for the inline assistant. Defaults to default_model when not specified.
     pub inline_assistant_model: Option<LanguageModelSelection>,
     /// Model to use for the inline assistant when streaming tools are enabled.
@@ -473,6 +477,25 @@ impl AgentSettingsContent {
     pub fn remove_favorite_model(&mut self, model: &LanguageModelSelection) {
         self.favorite_models
             .retain(|m| !(m.provider == model.provider && m.model == model.model));
+    }
+
+    /// Hiding a model also unfavorites it, so favorites never point at a model the
+    /// selectors leave out.
+    pub fn set_model_hidden(&mut self, provider: &str, model: &str, hidden: bool) {
+        let matches = |selection: &LanguageModelSelection| {
+            selection.provider.0 == provider && selection.model == model
+        };
+        self.hidden_models.retain(|selection| !matches(selection));
+        if hidden {
+            self.favorite_models.retain(|selection| !matches(selection));
+            self.hidden_models.push(LanguageModelSelection {
+                provider: LanguageModelProviderSetting(provider.to_string()),
+                model: model.to_string(),
+                enable_thinking: false,
+                effort: None,
+                speed: None,
+            });
+        }
     }
 
     pub fn update_favorite_model<F>(&mut self, provider: &str, model: &str, f: F)
@@ -1521,5 +1544,30 @@ mod tests {
             serde_json::to_value(&resolved).unwrap(),
             serde_json::json!({ "requested": "/tmp/x", "resolved": "/tmp/real" })
         );
+    }
+
+    #[test]
+    fn test_set_model_hidden_unfavorites_and_dedupes() {
+        let selection = |provider: &str, model: &str| LanguageModelSelection {
+            provider: LanguageModelProviderSetting(provider.to_string()),
+            model: model.to_string(),
+            enable_thinking: false,
+            effort: None,
+            speed: None,
+        };
+        let mut agent = AgentSettingsContent::default();
+        agent.add_favorite_model(selection("codebuddy", "glm-5"));
+        agent.add_favorite_model(selection("codebuddy", "kimi-k2"));
+
+        agent.set_model_hidden("codebuddy", "glm-5", true);
+        agent.set_model_hidden("codebuddy", "glm-5", true);
+        assert_eq!(agent.hidden_models, vec![selection("codebuddy", "glm-5")]);
+        assert_eq!(
+            agent.favorite_models,
+            vec![selection("codebuddy", "kimi-k2")]
+        );
+
+        agent.set_model_hidden("codebuddy", "glm-5", false);
+        assert!(agent.hidden_models.is_empty());
     }
 }
