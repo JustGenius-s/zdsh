@@ -95,7 +95,7 @@ pub use thread_import::{
     channels_with_threads, import_threads_from_other_channels,
 };
 use zed_actions;
-pub use zed_actions::{CreateWorktree, NewWorktreeBranchTarget, SwitchWorktree};
+pub use zed_actions::{CreateWorktree, NewWorktreeBranchTarget, SwitchWorktree, agent::NewThread};
 
 pub(crate) fn resolve_agent_image(
     dest_url: &str,
@@ -471,12 +471,6 @@ pub struct ToggleCommandPattern {
     /// The index of the command pattern to toggle.
     pub pattern_index: usize,
 }
-
-/// Creates a new conversation thread, optionally based on an existing thread.
-#[derive(Default, Clone, PartialEq, Deserialize, JsonSchema, Action)]
-#[action(namespace = agent)]
-#[serde(deny_unknown_fields)]
-pub struct NewThread;
 
 /// Creates a new external agent conversation thread.
 #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]

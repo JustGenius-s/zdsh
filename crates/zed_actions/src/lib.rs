@@ -605,6 +605,12 @@ pub mod agent {
         ]
     );
 
+    /// Creates a new Agent conversation thread.
+    #[derive(Default, Clone, PartialEq, Deserialize, JsonSchema, Action)]
+    #[action(namespace = agent)]
+    #[serde(deny_unknown_fields)]
+    pub struct NewThread;
+
     /// Selects the agent used for new threads in the agent panel, without
     /// opening the panel. The selected agent is launched the next time the
     /// panel is opened.
@@ -723,11 +729,10 @@ pub struct OpenDevContainer;
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RevealTarget {
-    /// In the central pane group, "main" editor area.
-    Center,
-    /// In the terminal dock, "regular" terminal items' place.
+    /// In the central pane group, alongside files.
     #[default]
-    Dock,
+    #[serde(alias = "dock")]
+    Center,
 }
 
 /// Spawns a task with name or opens tasks modal.

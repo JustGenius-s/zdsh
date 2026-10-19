@@ -57,7 +57,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use std::{rc::Rc, time::Duration};
-use terminal_view::terminal_panel::TerminalPanel;
+use terminal_view::terminal_workspace::TerminalWorkspace;
 use text::Anchor;
 use theme_settings::{AgentBufferFontSize, AgentUiFontSize};
 use ui::{
@@ -2524,10 +2524,6 @@ impl ConversationView {
         window: &mut Window,
         cx: &mut App,
     ) -> Task<Result<()>> {
-        let Some(terminal_panel) = workspace.read(cx).panel::<TerminalPanel>(cx) else {
-            return Task::ready(Err(anyhow!("Terminal panel is unavailable")));
-        };
-
         window.spawn(cx, async move |cx| {
             let mut task = login.clone();
             if let Some(cmd) = &task.command {
@@ -2555,9 +2551,9 @@ impl ConversationView {
                 title_override: None,
             };
 
-            let terminal = terminal_panel
-                .update_in(cx, |terminal_panel, window, cx| {
-                    terminal_panel.spawn_task(&task, window, cx)
+            let terminal = workspace
+                .update_in(cx, |workspace, window, cx| {
+                    TerminalWorkspace::spawn_interactive_task(workspace, &task, window, cx)
                 })?
                 .await?;
 
@@ -3875,7 +3871,7 @@ impl Render for ConversationView {
         v_flex()
             .track_focus(&self.focus_handle)
             .size_full()
-            .bg(cx.theme().colors().panel_background)
+            .bg(cx.theme().colors().toolbar_background)
             .child(v_flex().flex_1().min_h_0().child(content))
             .when(!active_thread_renders_request_elicitations, |this| {
                 this.children(request_elicitation_connection.as_ref().map_or_else(
@@ -5303,7 +5299,7 @@ pub(crate) mod tests {
             assert!(!view.can_edit_user_message(0, cx));
             assert!(matches!(
                 view.message_editor.read(cx).editor().read(cx).mode(),
-                editor::EditorMode::Full { .. }
+                editor::EditorMode::AutoHeight { .. }
             ));
         });
         thread.update(cx, |thread, cx| {

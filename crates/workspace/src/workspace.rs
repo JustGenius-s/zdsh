@@ -634,7 +634,7 @@ pub struct NewCenterTerminal {
     pub local: bool,
 }
 
-/// Opens a new terminal.
+/// Opens a new terminal in the center pane.
 #[derive(Default, PartialEq, Eq, Clone, Deserialize, JsonSchema, Action)]
 #[action(namespace = workspace)]
 #[serde(deny_unknown_fields)]
@@ -7882,11 +7882,36 @@ impl Workspace {
         cx: &mut Context<Workspace>,
     ) -> Task<Result<Vec<Option<Box<dyn ItemHandle>>>>> {
         cx.spawn_in(window, async move |workspace, cx| {
+            let mut serialized_workspace = serialized_workspace;
             let recent_navigation_history = serialized_workspace.recent_navigation_history.clone();
             workspace.update(cx, |workspace, _| {
                 workspace.persisted_recent_navigation_history = recent_navigation_history;
                 workspace.restoring_workspace = true;
             })?;
+            let (database, key_value_store) =
+                cx.update(|_, cx| (WorkspaceDb::global(cx), db::kvp::KeyValueStore::global(cx)))?;
+            let legacy_key = format!(
+                "{:?}-{:?}",
+                "TerminalPanel",
+                i64::from(serialized_workspace.id).to_string()
+            );
+            if let Some(json) = key_value_store.read_kvp(&legacy_key)? {
+                serialized_workspace.import_terminal_tabs(&json)?;
+                // Save the imported IDs before retiring the old layout or cleaning up terminal rows.
+                database
+                    .save_workspace_checked(serialized_workspace.clone())
+                    .await?;
+                key_value_store.delete_kvp(legacy_key).await?;
+            }
+            for dock in [
+                &mut serialized_workspace.docks.left,
+                &mut serialized_workspace.docks.right,
+                &mut serialized_workspace.docks.bottom,
+            ] {
+                if dock.active_panel.as_deref() == Some("TerminalPanel") {
+                    *dock = Default::default();
+                }
+            }
             let project = workspace.read_with(cx, |workspace, _| workspace.project().clone())?;
 
             let mut center_group = None;

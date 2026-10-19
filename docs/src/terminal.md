@@ -9,26 +9,22 @@ Zed includes a built-in terminal emulator that supports multiple terminal instan
 
 ## Opening Terminals
 
-| Action                  | macOS           | Linux/Windows   |
-| ----------------------- | --------------- | --------------- |
-| Toggle terminal panel   | `` Ctrl+` ``    | `` Ctrl+` ``    |
-| Open new terminal       | `Ctrl+~`        | `Ctrl+~`        |
-| Open terminal in center | Command palette | Command palette |
+| Action            | macOS        | Linux/Windows |
+| ----------------- | ------------ | ------------- |
+| Focus terminal    | `` Ctrl+` `` | `` Ctrl+` ``  |
+| Open new terminal | `Ctrl+~`     | `Ctrl+~`      |
 
-You can also open a terminal from the command palette with {#action terminal_panel::Toggle} or {#action workspace::NewTerminal}.
+In zdsh, all standalone terminals open as central tabs beside your files. Choose **New Terminal** from the tab bar’s **+** menu or use {#action workspace::NewTerminal}. **Open in Terminal** uses the selected folder or the selected file’s parent directory. Task execution, debugger terminals, and external-agent login commands also open central tabs.
 
-### Terminal Panel vs Center Terminal
-
-Terminals can open in two locations:
-
-- **Terminal Panel** — Docked at the bottom (default), left, or right of the workspace. Toggle with `` Ctrl+` ``.
-- **Center Pane** — Opens as a regular tab alongside your files. Use {#action workspace::NewCenterTerminal} from the command palette.
+Use {#action terminal::Focus} to focus the most recent terminal, creating one if necessary. Existing bindings for {#action workspace::NewCenterTerminal} remain supported. Replace custom bindings for `terminal_panel::Toggle` or `terminal_panel::ToggleFocus` with `terminal::Focus`.
 
 ## Working with Multiple Terminals
 
-Create additional terminals with `Cmd+N` (macOS) or `Ctrl+N` (Linux/Windows) while focused in the terminal panel. Each terminal appears as a tab in the panel.
+Use {#action workspace::NewTerminal} to create additional terminal tabs. Move or split them with the same tab and pane controls used for files.
 
-Split terminals horizontally with `Cmd+D` (macOS) or `Ctrl+Shift+5` (Linux/Windows).
+Terminal tabs restore through the workspace layout. Existing terminal-panel sessions are imported as central tabs, preserving working directories and custom titles; panel splits become tabs. Running processes and command output are not restored.
+
+The terminal panel and its settings controls are removed. Legacy `terminal.button`, `dock`, `starts_open`, `flexible`, `default_width`, `default_height`, and `show_count_badge` values are accepted but have no effect. Tasks use `reveal_target: "center"`; legacy `"dock"` values are accepted as an alias. `reveal: "never"` keeps the current tab active, while `"no_focus"` displays the terminal without taking keyboard focus.
 
 ## Configuring the Shell
 

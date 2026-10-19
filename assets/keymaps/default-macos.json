@@ -720,7 +720,7 @@
       "alt-shift-enter": "toast::RunAction",
       "cmd-shift-s": "workspace::SaveAs",
       "cmd-shift-n": "workspace::NewWindow",
-      "ctrl-`": "terminal_panel::Toggle",
+      "ctrl-`": "terminal::Focus",
       "cmd-1": ["workspace::ActivatePane", 0],
       "cmd-2": ["workspace::ActivatePane", 1],
       "cmd-3": ["workspace::ActivatePane", 2],
@@ -793,7 +793,7 @@
       "cmd-alt-r": ["task::Rerun", { "reevaluate_context": false }],
       "ctrl-alt-shift-r": ["task::Spawn", { "reveal_target": "center" }],
       // also possible to spawn tasks by name:
-      // "foo-bar": ["task::Spawn", { "task_name": "MyTask", "reveal_target": "dock" }]
+      // "foo-bar": ["task::Spawn", { "task_name": "MyTask", "reveal_target": "center" }]
       // or by tag:
       // "foo-bar": ["task::Spawn", { "task_tag": "MyTag" }],
     },

@@ -8,19 +8,21 @@ description: Use Zed's AI coding agent to generate, refactor, and debug code wit
 The Agent Panel is where you interact with AI agents that can read, write, and run code in your project.
 It's the core of Zed's AI code editing experience — use it for code generation, refactoring, debugging, documentation, and general questions.
 
-Open it with {#action agent::NewThread} from [the Command Palette](../command-palette.md) or click the ✨ icon in the status bar.
+Open it with {#action agent::NewThread} from [the Command Palette](../command-palette.md) or click the **New Agent Tab** icon in the top-right pane toolbar.
 
 ## Agent tabs in zdsh
 
-In zdsh, each Agent conversation opens in a central editor tab. The project file tree can stay open beside it. This applies to the Zed Agent, DSH, and external ACP agents; terminal entries retain their existing panel behavior.
+In zdsh, each Agent conversation opens in a central editor tab. The project file tree can stay open beside it. This applies to the Zed Agent, DSH, and external ACP agents; terminal entries open in separate central terminal tabs.
 
-Use the existing New Thread action, Agent button, or thread history to open a conversation. Opening an already open conversation activates its tab. Drag tabs to reorder them or move them into a split pane to work beside code. Each conversation has one tab; splitting does not duplicate the conversation.
+Use the New Thread action, the **New Agent Tab** button in the top-right pane toolbar, or thread history to open a conversation. New Thread always creates an Agent conversation. The pane toolbar stays visible when focus moves elsewhere and when all tabs are closed; each toolbar opens new tabs in its own pane. Opening an already open conversation activates its tab. Drag tabs to reorder them or move them into a split pane to work beside code. Each conversation has one tab; splitting does not duplicate the conversation.
 
-The tab displays its title and connection, generation, approval, or error status. Its toolbar provides the agent picker and chat options, and files can still be dragged into the conversation as context.
+The tab displays its title and connection, generation, approval, or error status. Its toolbar uses the same row height, padding, theme background, and separator colors as file and Git toolbars and provides the agent picker and chat options. Toolbar sizing follows the global UI font size independently of the Agent conversation font size. Files can still be dragged into the conversation as context.
 
 Use the double speech bubble button in the conversation toolbar to open **Thread History** inside the tab. The list retains project grouping, search, archive, and restore actions. It shares the existing history data across tabs. Only one tab presents the list at a time; opening it in another tab moves the list there. File tabs and the project file tree keep their full layout.
 
 On wide panes, history sits to the right of the conversation with a draggable divider. On narrow panes, it overlays the right side of the conversation; click outside it or use the toolbar button to close it. The existing Toggle Threads Sidebar and Focus Sidebar shortcuts target this tab-local history. From a file tab, they open a conversation tab first. History starts collapsed after restarting zdsh.
+
+The conversation uses the toolbar background. The composer sits in a rounded dock with space around its edges and stays at the bottom for both new and ongoing conversations. It follows the configured content width and retains model, mode, thinking, context, and send controls. User messages appear as right-aligned rounded bubbles. Plain-text bubbles fit their content up to 85% of the conversation width, then wrap; messages with attachments keep room for embedded controls. Editing, attachments, and checkpoint actions remain available.
 
 Switching tabs keeps work running. Closing a conversation tab requests cancellation and releases its session. Saved conversations remain available through the agent's history support; DSH conversations are currently in memory and cannot be restored after closing. Central Agent tab positions are not restored when restarting zdsh.
 
@@ -53,7 +55,8 @@ From the "New Thread…" menu you can:
 
 - Pick **Zed Agent** or any installed [External Agent](./external-agents.md) to start a new thread with that agent.
 - Choose **New From Summary** to start a fresh Zed Agent thread seeded with a summary of the current conversation — useful for compacting long threads as you approach the context window limit.
-- Choose **Terminal** to open a terminal thread directly in the Agent Panel — see [Terminal Threads](#terminal-threads) for details.
+
+To open a terminal, use **New Terminal** from the pane toolbar’s `+` menu. The Agent menu only lists Agent options.
 
 {#action agent::NewExternalAgentThread} creates a new thread with the specified External Agent id.
 
@@ -147,7 +150,7 @@ keep/reject hunk controls as the multi-buffer review pane. This temporarily over
 
 ## Terminal Threads {#terminal-threads}
 
-The Agent Panel can host Terminal Threads alongside your agent threads. For opening, closing, notifications, terminal titles, and CLI/TUI-specific setup, see [Terminal Threads](./terminal-threads.md).
+In zdsh, Terminal Threads open in central terminal tabs alongside Agent conversation tabs. Closing a terminal tab also removes its Terminal Thread entry. For opening, closing, notifications, terminal titles, and CLI/TUI-specific setup, see [Terminal Threads](./terminal-threads.md).
 
 ## Adding Context {#adding-context}
 

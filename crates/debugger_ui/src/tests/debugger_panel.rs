@@ -31,12 +31,11 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
-use terminal_view::terminal_panel::TerminalPanel;
 use tests::{active_debug_session_panel, init_test, init_test_workspace};
 use util::{path, rel_path::rel_path};
 use workspace::item::SaveOptions;
 use workspace::pane_group::SplitDirection;
-use workspace::{Item, dock::Panel, move_active_item};
+use workspace::{Item, move_active_item};
 
 #[gpui::test]
 async fn test_basic_show_debug_panel(executor: BackgroundExecutor, cx: &mut TestAppContext) {
@@ -556,11 +555,11 @@ async fn test_handle_error_run_in_terminal_reverse_request(
 
     workspace
         .update(cx, |workspace, _window, cx| {
-            let terminal_panel = workspace.panel::<TerminalPanel>(cx).unwrap();
-
             assert_eq!(
-                0,
-                terminal_panel.read(cx).pane().unwrap().read(cx).items_len()
+                workspace
+                    .items_of_type::<terminal_view::TerminalView>(cx)
+                    .count(),
+                0
             );
         })
         .unwrap();

@@ -16,9 +16,8 @@ path = "src/terminal_view.rs"
 doctest = false
 
 [dependencies]
+agent_settings.workspace = true
 anyhow.workspace = true
-async-recursion.workspace = true
-breadcrumbs.workspace = true
 collections.workspace = true
 db.workspace = true
 dirs.workspace = true

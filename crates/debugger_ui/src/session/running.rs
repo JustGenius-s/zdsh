@@ -1382,7 +1382,7 @@ impl RunningState {
             use_new_terminal: true,
             allow_concurrent_runs: true,
             reveal: task::RevealStrategy::NoFocus,
-            reveal_target: task::RevealTarget::Dock,
+            reveal_target: task::RevealTarget::Center,
             hide: task::HideStrategy::Never,
             shell,
             show_summary: false,

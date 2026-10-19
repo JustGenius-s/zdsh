@@ -4989,7 +4989,9 @@ impl ThreadView {
         }
 
         let focus_handle = self.message_editor.focus_handle(cx);
-        let editor_bg_color = cx.theme().colors().editor_background;
+        let editor_bg_color = cx.theme().colors().element_background;
+        let opaque_window =
+            cx.theme().window_background_appearance() == gpui::WindowBackgroundAppearance::Opaque;
 
         let editor_expanded = self.editor_expanded;
         let (expand_icon, expand_tooltip) = if editor_expanded {
@@ -5000,7 +5002,7 @@ impl ThreadView {
 
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
         let has_messages = self.has_visible_conversation(cx);
-        let fills_container = !has_messages || editor_expanded;
+        let fills_container = editor_expanded;
         let composer_is_read_only = self.message_editor.read(cx).editor().read(cx).read_only(cx);
         let discard_draft_button = composer_is_read_only.then(|| {
             div()
@@ -5020,27 +5022,28 @@ impl ThreadView {
         });
 
         h_flex()
-            .py_2()
-            .bg(editor_bg_color)
+            .flex_none()
+            .w_full()
+            .px_4()
+            .pt_2()
+            .pb_4()
             .justify_center()
             .on_action(cx.listener(Self::handle_message_editor_move_up))
-            .map(|this| {
-                if has_messages {
-                    this.on_action(cx.listener(Self::expand_message_editor))
-                        .border_t_1()
-                        .border_color(cx.theme().colors().border)
-                        .when(editor_expanded, |this| this.h(vh(0.8, window)))
-                } else {
-                    this.flex_1().size_full()
-                }
-            })
+            .on_action(cx.listener(Self::expand_message_editor))
+            .when(editor_expanded, |this| this.h(vh(0.8, window)))
             .child(
                 v_flex()
-                    .when_some(max_content_width, |this, max_w| this.flex_basis(max_w))
-                    .when(max_content_width.is_none(), |this| this.w_full())
+                    .w_full()
+                    .when_some(max_content_width, |this, max_w| this.max_w(max_w))
                     .min_w_0()
                     .when(fills_container, |this| this.h_full())
-                    .px_2()
+                    .px_3()
+                    .py_3()
+                    .rounded_xl()
+                    .bg(editor_bg_color)
+                    .border_1()
+                    .border_color(cx.theme().colors().border_variant)
+                    .when(opaque_window, |this| this.shadow_md())
                     .flex_shrink_1()
                     .flex_grow_0()
                     .justify_between()
@@ -6248,10 +6251,20 @@ impl ThreadView {
                 })
             });
 
-        let has_terminal_selection = workspace
-            .upgrade()
-            .and_then(|ws| ws.read(cx).panel::<TerminalPanel>(cx))
-            .is_some_and(|panel| !panel.read(cx).terminal_selections(cx).is_empty());
+        let has_terminal_selection = workspace.upgrade().is_some_and(|workspace| {
+            workspace
+                .read(cx)
+                .items_of_type::<terminal_view::TerminalView>(cx)
+                .any(|view| {
+                    view.read(cx)
+                        .terminal()
+                        .read(cx)
+                        .last_content
+                        .selection_text
+                        .as_ref()
+                        .is_some_and(|text| !text.is_empty())
+                })
+        });
 
         let has_selection = has_editor_selection || has_terminal_selection;
 
@@ -6867,10 +6880,6 @@ impl ThreadView {
                 let editing = self.editing_message == Some(entry_ix);
                 let editor_focus = editor.focus_handle(cx).is_focused(window);
                 let focus_border = cx.theme().colors().border_focused;
-                // Drop shadows render as a dark halo on transparent windows.
-                let opaque_window = cx.theme().window_background_appearance()
-                    == gpui::WindowBackgroundAppearance::Opaque;
-
                 let has_checkpoint_button = message
                     .checkpoint
                     .as_ref()
@@ -6928,19 +6937,30 @@ impl ThreadView {
                     .child(
                         div()
                             .relative()
+                            .self_end()
+                            .map(|this| {
+                                if editing {
+                                    this.w_full()
+                                } else {
+                                    this.w(relative(0.85))
+                                        .max_w(relative(0.85))
+                                        .when_some(editor.read(cx).preferred_width(window, cx), |this, width| {
+                                            this.w(width + rems(2.).to_pixels(window.rem_size()) + px(2.))
+                                        })
+                                }
+                            })
                             .child(
                                 div()
                                     .py_3()
-                                    .px_2()
-                                    .rounded_md()
-                                    .bg(cx.theme().colors().editor_background)
+                                    .px_4()
+                                    .rounded_xl()
+                                    .bg(cx.theme().colors().element_background)
                                     .border_1()
-                                    .when(is_indented, |this| {
-                                        this.py_2().px_2().when(opaque_window, |this| {
-                                            this.shadow_sm()
-                                        })
+                                    .when(is_indented, |this| this.py_2())
+                                    .border_color(cx.theme().colors().element_background)
+                                    .when(editing || is_subagent, |this| {
+                                        this.border_color(cx.theme().colors().border)
                                     })
-                                    .border_color(cx.theme().colors().border)
                                     .map(|this| {
                                         if !is_editable {
                                             if is_subagent {
@@ -6954,10 +6974,9 @@ impl ThreadView {
                                         if editing && !editor_focus {
                                             return this.border_dashed()
                                         }
-                                        this.when(opaque_window, |this| this.shadow_md())
-                                            .hover(|s| {
-                                                s.border_color(focus_border.opacity(0.8))
-                                            })
+                                        this.hover(|s| {
+                                            s.border_color(focus_border.opacity(0.8))
+                                        })
                                     })
                                     .text_xs()
                                     .child(editor.clone().into_any_element())
@@ -7998,7 +8017,6 @@ impl ThreadView {
 
     pub(crate) fn sync_editor_mode(&mut self, cx: &mut Context<Self>) {
         let has_messages = self.has_visible_conversation(cx);
-        let v2_empty_state = !has_messages;
 
         if !has_messages {
             self.editor_expanded = false;
@@ -8009,12 +8027,6 @@ impl ThreadView {
                 scale_ui_elements_with_buffer_font_size: false,
                 show_active_line_background: false,
                 sizing_behavior: SizingBehavior::ExcludeOverscrollMargin,
-            }
-        } else if v2_empty_state {
-            EditorMode::Full {
-                scale_ui_elements_with_buffer_font_size: false,
-                show_active_line_background: false,
-                sizing_behavior: SizingBehavior::Default,
             }
         } else {
             EditorMode::AutoHeight {
@@ -13078,6 +13090,8 @@ impl Render for ThreadView {
         let list_state = self.list_state.clone();
 
         let conversation = v_flex()
+            .flex_1()
+            .min_h_0()
             .when(self.resumed_without_history, |this| {
                 this.child(Self::render_resume_notice(cx))
             })

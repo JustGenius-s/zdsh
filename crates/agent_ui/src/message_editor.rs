@@ -460,6 +460,50 @@ async fn insert_resolved_pasted_context_items(
 }
 
 impl MessageEditor {
+    fn text_style(cx: &App) -> TextStyle {
+        let settings = ThemeSettings::get_global(cx);
+        TextStyle {
+            color: cx.theme().colors().text,
+            font_family: settings.agent_buffer_font_family().clone(),
+            font_fallbacks: settings.buffer_font.fallbacks.clone(),
+            font_features: settings.buffer_font.features.clone(),
+            font_size: settings.agent_buffer_font_size(cx).into(),
+            font_weight: settings.buffer_font.weight,
+            line_height: relative(settings.buffer_line_height.value()),
+            ..Default::default()
+        }
+    }
+
+    /// Width for unwrapped plain text, including the editor's gutter and cursor space.
+    /// Rich context keeps the available width so its embedded controls can lay out normally.
+    pub(crate) fn preferred_width(&self, window: &Window, cx: &App) -> Option<Pixels> {
+        if !self.mention_set.read(cx).is_empty() {
+            return None;
+        }
+        let text = self.text(cx);
+        if text.contains('\t') {
+            return None;
+        }
+        let style = Self::text_style(cx);
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let text_system = window.text_system();
+        let font_id = text_system.resolve_font(&style.font());
+        let em_width = text_system.em_width(font_id, font_size).log_err()?;
+        let width = text.lines().fold(px(0.), |width, line| {
+            width.max(
+                text_system
+                    .shape_line(
+                        line.to_owned().into(),
+                        font_size,
+                        &[style.to_run(line.len())],
+                        None,
+                    )
+                    .width,
+            )
+        });
+        Some((width + 2. * em_width - text_system.descent(font_id, font_size)).ceil())
+    }
+
     pub fn new(
         workspace: WeakEntity<Workspace>,
         project: WeakEntity<Project>,
@@ -2067,23 +2111,12 @@ impl Render for MessageEditor {
             .capture_action(cx.listener(Self::paste))
             .flex_1()
             .child({
-                let settings = ThemeSettings::get_global(cx);
-
-                let text_style = TextStyle {
-                    color: cx.theme().colors().text,
-                    font_family: settings.agent_buffer_font_family().clone(),
-                    font_fallbacks: settings.buffer_font.fallbacks.clone(),
-                    font_features: settings.buffer_font.features.clone(),
-                    font_size: settings.agent_buffer_font_size(cx).into(),
-                    font_weight: settings.buffer_font.weight,
-                    line_height: relative(settings.buffer_line_height.value()),
-                    ..Default::default()
-                };
+                let text_style = Self::text_style(cx);
 
                 EditorElement::new(
                     &self.editor,
                     EditorStyle {
-                        background: cx.theme().colors().editor_background,
+                        background: cx.theme().system().transparent,
                         local_player: cx.theme().players().local(),
                         text: text_style,
                         syntax: cx.theme().syntax().clone(),

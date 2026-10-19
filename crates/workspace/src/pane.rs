@@ -1,7 +1,7 @@
 use crate::{
-    CloseWindow, NewCenterTerminal, NewFile, NewTerminal, OpenInTerminal, OpenOptions,
-    OpenTerminal, OpenVisible, SplitDirection, ToggleFileFinder, ToggleProjectSymbols, ToggleZoom,
-    Workspace, WorkspaceItemBuilder, ZoomIn, ZoomOut,
+    CloseWindow, NewFile, NewTerminal, OpenInTerminal, OpenOptions, OpenTerminal, OpenVisible,
+    SplitDirection, ToggleFileFinder, ToggleProjectSymbols, ToggleZoom, Workspace,
+    WorkspaceItemBuilder, ZoomIn, ZoomOut,
     focus_follows_mouse::FocusFollowsMouse as _,
     invalid_item_view::InvalidItemView,
     item::{
@@ -14,6 +14,7 @@ use crate::{
     toolbar::Toolbar,
     workspace_settings::{AutosaveSetting, FocusFollowsMouse, TabBarSettings, WorkspaceSettings},
 };
+use agent_settings::AgentSettings;
 use anyhow::Result;
 use collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use futures::{StreamExt, stream::FuturesUnordered};
@@ -4310,12 +4311,17 @@ impl Pane {
 
 fn default_render_tab_bar_buttons(
     pane: &mut Pane,
-    window: &mut Window,
+    _window: &mut Window,
     cx: &mut Context<Pane>,
 ) -> (Option<AnyElement>, Option<AnyElement>) {
-    if !pane.has_focus(window, cx) && !pane.context_menu_focused(window, cx) {
-        return (None, None);
-    }
+    let new_item_focus = pane.focus_handle(cx);
+    let split_focus = new_item_focus.clone();
+    let has_project = pane
+        .project
+        .read_with(cx, |project, cx| {
+            project.visible_worktrees(cx).next().is_some()
+        })
+        .unwrap_or(false);
     let (can_clone, can_split_move) = match pane.active_item() {
         Some(active_item) if active_item.can_split(cx) => (true, false),
         Some(_) => (false, pane.items_len() > 1),
@@ -4326,6 +4332,24 @@ fn default_render_tab_bar_buttons(
     let right_children = h_flex()
         // Instead we need to replicate the spacing from the [TabBar]'s `end_slot` here.
         .gap(DynamicSpacing::Base04.rems(cx))
+        .when(AgentSettings::get_global(cx).enabled(cx), |toolbar| {
+            toolbar.child(
+                IconButton::new("new-agent-tab", IconName::ZedAssistant)
+                    .icon_size(IconSize::Small)
+                    .disabled(!has_project)
+                    .tooltip(move |window, cx| {
+                        if has_project {
+                            Tooltip::for_action("New Agent Tab", &zed_actions::agent::NewThread, cx)
+                        } else {
+                            Tooltip::text("Open a Project to Create an Agent Tab")(window, cx)
+                        }
+                    })
+                    .on_click(cx.listener(|_pane, _, window, cx| {
+                        cx.focus_self(window);
+                        window.dispatch_action(Box::new(zed_actions::agent::NewThread), cx);
+                    })),
+            )
+        })
         .child(
             PopoverMenu::new("pane-tab-bar-popover-menu")
                 .trigger_with_tooltip(
@@ -4336,17 +4360,14 @@ fn default_render_tab_bar_buttons(
                 .with_handle(pane.new_item_context_menu_handle.clone())
                 .menu(move |window, cx| {
                     Some(ContextMenu::build(window, cx, |menu, _, _| {
-                        menu.action("New File", NewFile.boxed_clone())
+                        menu.context(new_item_focus.clone())
+                            .action("New File", NewFile.boxed_clone())
                             .action("Open File", ToggleFileFinder::default().boxed_clone())
                             .separator()
                             .action("Search Project", DeploySearch::default().boxed_clone())
                             .action("Search Symbols", ToggleProjectSymbols.boxed_clone())
                             .separator()
                             .action("New Terminal", NewTerminal::default().boxed_clone())
-                            .action(
-                                "New Center Terminal",
-                                NewCenterTerminal::default().boxed_clone(),
-                            )
                     }))
                 }),
         )
@@ -4363,6 +4384,7 @@ fn default_render_tab_bar_buttons(
                 .menu(move |window, cx| {
                     ContextMenu::build(window, cx, |menu, _, _| {
                         let mode = SplitMode::MovePane;
+                        let menu = menu.context(split_focus.clone());
                         if can_split_move {
                             menu.action("Split Right", SplitRight { mode }.boxed_clone())
                                 .action("Split Left", SplitLeft { mode }.boxed_clone())
@@ -4591,7 +4613,7 @@ impl Render for Pane {
                     cx.propagate();
                 }
             }))
-            .when(self.active_item().is_some() && display_tab_bar, |pane| {
+            .when(display_tab_bar, |pane| {
                 pane.child((self.render_tab_bar.clone())(self, window, cx))
             })
             .child({

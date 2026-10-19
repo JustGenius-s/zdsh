@@ -32,7 +32,7 @@ The CLI or TUI running inside the terminal owns its own:
 
 ## Opening a Terminal Thread {#opening-a-terminal-thread}
 
-Open the new-thread menu from the [Agent Panel](./agent-panel.md) using the agent selector button on the left or the `+` icon in the top-right of the panel toolbar, then choose **Terminal**. The Terminal Thread opens in the panel body, just like switching to an agent thread.
+In zdsh, use **New Terminal** from the pane toolbar’s `+` menu for a regular central terminal tab. The Agent menu only lists Agent options. The {#action agent::NewTerminalThread} action remains available in the Command Palette for Terminal Threads, which also open in central tabs.
 
 You can open as many Terminal Threads as you like. Each gets its own entry in the Threads Sidebar.
 

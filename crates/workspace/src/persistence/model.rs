@@ -200,6 +200,87 @@ impl Bind for DockStructure {
     }
 }
 
+// The removed terminal dock stored item IDs separately from the workspace layout.
+#[derive(Deserialize)]
+struct LegacyTerminalLayout {
+    items: LegacyTerminalItems,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LegacyTerminalItems {
+    Flat(Vec<u64>),
+    Split(LegacyTerminalGroup),
+}
+
+#[derive(Deserialize)]
+enum LegacyTerminalGroup {
+    Pane { children: Vec<u64> },
+    Group { children: Vec<LegacyTerminalGroup> },
+}
+
+impl LegacyTerminalGroup {
+    fn collect_ids(self, ids: &mut Vec<u64>) {
+        match self {
+            Self::Pane { children } => ids.extend(children),
+            Self::Group { children } => {
+                for child in children {
+                    child.collect_ids(ids);
+                }
+            }
+        }
+    }
+}
+
+impl SerializedWorkspace {
+    pub(crate) fn import_terminal_tabs(&mut self, json: &str) -> Result<()> {
+        let legacy: LegacyTerminalLayout = serde_json::from_str(json)?;
+        let mut ids = Vec::new();
+        match legacy.items {
+            LegacyTerminalItems::Flat(items) => ids.extend(items),
+            LegacyTerminalItems::Split(group) => group.collect_ids(&mut ids),
+        }
+        fn collect_existing(group: &SerializedPaneGroup, ids: &mut IndexSet<u64>) {
+            match group {
+                SerializedPaneGroup::Pane(pane) => {
+                    ids.extend(
+                        pane.children
+                            .iter()
+                            .filter(|item| item.kind.as_ref() == "Terminal")
+                            .map(|item| item.item_id),
+                    );
+                }
+                SerializedPaneGroup::Group { children, .. } => {
+                    for child in children {
+                        collect_existing(child, ids);
+                    }
+                }
+            }
+        }
+        fn first_pane(group: &mut SerializedPaneGroup) -> Option<&mut SerializedPane> {
+            match group {
+                SerializedPaneGroup::Pane(pane) => Some(pane),
+                SerializedPaneGroup::Group { children, .. } => {
+                    children.iter_mut().find_map(first_pane)
+                }
+            }
+        }
+        let mut existing = IndexSet::default();
+        collect_existing(&self.center_group, &mut existing);
+        let items = ids
+            .into_iter()
+            .filter(|id| existing.insert(*id))
+            .map(|id| SerializedItem::new("Terminal", id, false, false))
+            .collect::<Vec<_>>();
+        if let Some(pane) = first_pane(&mut self.center_group) {
+            pane.children.extend(items);
+        } else {
+            self.center_group = SerializedPaneGroup::Pane(SerializedPane::new(items, true, 0));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct DockData {
     pub visible: bool,

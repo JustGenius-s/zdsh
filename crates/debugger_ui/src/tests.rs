@@ -7,7 +7,6 @@ use gpui::{Entity, TestAppContext, WindowHandle};
 use project::{Project, debugger::session::Session};
 use settings::SettingsStore;
 use task::SharedTaskContext;
-use terminal_view::terminal_panel::TerminalPanel;
 use workspace::MultiWorkspace;
 
 use crate::{debugger_panel::DebugPanel, session::DebugSession};
@@ -68,22 +67,10 @@ pub async fn init_test_workspace(
         .await
         .expect("Failed to load debug panel");
 
-    let terminal_panel = workspace_handle
-        .update(cx, |multi, window, cx| {
-            let weak_workspace = multi.workspace().downgrade();
-            cx.spawn_in(window, async move |_, cx| {
-                TerminalPanel::load(weak_workspace, cx.clone()).await
-            })
-        })
-        .unwrap()
-        .await
-        .expect("Failed to load terminal panel");
-
     workspace_handle
         .update(cx, |multi, window, cx| {
             multi.workspace().update(cx, |workspace, cx| {
                 workspace.add_panel(debugger_panel, window, cx);
-                workspace.add_panel(terminal_panel, window, cx);
             });
         })
         .unwrap();

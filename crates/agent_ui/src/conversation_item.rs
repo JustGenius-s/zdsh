@@ -362,7 +362,7 @@ impl Render for ConversationItem {
                     .relative()
                     .size_full()
                     .min_h_0()
-                    .bg(cx.theme().colors().panel_background)
+                    .bg(cx.theme().colors().toolbar_background)
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
@@ -427,21 +427,27 @@ impl Render for ConversationItem {
                         this.close_history(window, cx);
                     }))
                     .child(
-                        h_flex()
+                        WithRemSize::new(theme.ui_font_size(cx))
+                            .h_flex()
+                            .font_family(theme.ui_font.family.clone())
                             .flex_none()
                             .justify_between()
-                            .px_2()
-                            .py_1()
+                            .gap(DynamicSpacing::Base08.rems(cx))
+                            .px(DynamicSpacing::Base08.rems(cx))
+                            .py(DynamicSpacing::Base06.rems(cx))
+                            .bg(cx.theme().colors().toolbar_background)
                             .border_b_1()
                             .border_color(cx.theme().colors().border_variant)
                             .child(
                                 h_flex()
+                                    .h_8()
                                     .gap_2()
                                     .child(Label::new(agent).color(Color::Muted))
                                     .children(sandbox_status),
                             )
                             .child(
                                 h_flex()
+                                    .h_8()
                                     .gap_1()
                                     .child(
                                         IconButton::new("thread-history-toggle", IconName::Chat)

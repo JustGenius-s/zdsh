@@ -175,26 +175,17 @@ pub struct TerminalSettingsContent {
     ///
     /// Default: true
     pub open_links_in_mouse_mode: Option<bool>,
-    /// Whether to show the terminal button in the status bar.
-    ///
-    /// Default: true
+    /// Legacy compatibility setting; ignored because terminals use central tabs.
     pub button: Option<bool>,
+    /// Legacy compatibility setting; ignored because terminals use central tabs.
     pub dock: Option<TerminalDockPosition>,
-    /// Whether the terminal panel should open on startup.
-    ///
-    /// Default: false
+    /// Legacy compatibility setting; ignored because terminals use central tabs.
     pub starts_open: Option<bool>,
-    /// Whether the terminal panel should use flexible (proportional) sizing.
-    ///
-    /// Default: true
+    /// Legacy compatibility setting; ignored because terminals use central tabs.
     pub flexible: Option<bool>,
-    /// Default width when the terminal is docked to the left or right.
-    ///
-    /// Default: 640
+    /// Legacy compatibility setting; ignored because terminals use central tabs.
     pub default_width: Option<crate::PixelSetting>,
-    /// Default height when the terminal is docked to the bottom.
-    ///
-    /// Default: 320
+    /// Legacy compatibility setting; ignored because terminals use central tabs.
     pub default_height: Option<crate::PixelSetting>,
     /// The maximum number of lines to keep in the scrollback history.
     /// Maximum allowed value is 100_000, all values above that will be treated as 100_000.
@@ -228,9 +219,7 @@ pub struct TerminalSettingsContent {
     /// Default: 45
     #[serde(serialize_with = "crate::serialize_optional_f32_with_two_decimal_places")]
     pub minimum_contrast: Option<f32>,
-    /// Whether to show a badge on the terminal panel icon with the count of open terminals.
-    ///
-    /// Default: false
+    /// Legacy compatibility setting; ignored because terminals use central tabs.
     pub show_count_badge: Option<bool>,
     /// What to do when the `BEL` character (`\a`) is printed to terminal.
     ///

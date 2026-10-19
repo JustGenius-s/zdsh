@@ -1495,6 +1495,13 @@ impl WorkspaceDb {
     }
 
     pub(crate) async fn save_workspace(&self, workspace: SerializedWorkspace) {
+        self.save_workspace_checked(workspace).await.log_err();
+    }
+
+    pub(crate) async fn save_workspace_checked(
+        &self,
+        workspace: SerializedWorkspace,
+    ) -> Result<()> {
         let paths = workspace.paths.serialize();
         let identity_paths = workspace.identity_paths.map(|paths| paths.serialize());
         log::debug!("Saving workspace at location: {:?}", workspace.location);
@@ -1684,9 +1691,8 @@ impl WorkspaceDb {
 
                 Ok(())
             })
-            .log_err();
         })
-        .await;
+        .await
     }
 
     pub(crate) async fn get_or_create_remote_connection(

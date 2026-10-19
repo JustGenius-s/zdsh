@@ -1166,7 +1166,7 @@
     "commit_message_include_project_rules": true,
     // Whether the agent is enabled.
     "enabled": true,
-    // Whether to show the agent panel button in the status bar.
+    // Legacy compatibility setting; Agent tabs are opened from the pane toolbar.
     "button": true,
     // Where to dock the agent panel. Can be 'left', 'right' or 'bottom'.
     "dock": "left",
@@ -2048,19 +2048,15 @@
     //         }
     //     }
     "shell": "system",
-    // Where to dock terminals panel. Can be `left`, `right`, `bottom`.
+    // Legacy compatibility setting; ignored by central terminal tabs.
     "dock": "bottom",
-    // Whether the terminal panel should open on startup.
-    //
-    // Default: false
+    // Legacy compatibility setting; ignored by central terminal tabs.
     "starts_open": false,
-    // Whether the terminal panel should use flexible (proportional) sizing.
-    //
-    // Default: true
+    // Legacy compatibility setting; ignored by central terminal tabs.
     "flexible": true,
-    // Default width when the terminal is docked to the left or right.
+    // Legacy compatibility setting; ignored by central terminal tabs.
     "default_width": 640,
-    // Default height when the terminal is docked to the bottom.
+    // Legacy compatibility setting; ignored by central terminal tabs.
     "default_height": 320,
     // What working directory to use when launching the terminal.
     // May take 5 values:
@@ -2134,7 +2130,7 @@
     // instead, and hyperlinks can still be opened with shift-cmd-click
     // (shift-ctrl-click).
     "open_links_in_mouse_mode": true,
-    // Whether to show the terminal button in the status bar
+    // Legacy compatibility setting; ignored by central terminal tabs.
     "button": true,
     // Any key-value pairs added to this list will be added to the terminal's
     // environment. Use `:` to separate multiple values.
@@ -2285,7 +2281,7 @@
     // Timeout for hover and Cmd-click path hyperlink discovery in milliseconds. Specifying a
     // timeout of `0` will disable path hyperlinking in terminal.
     "path_hyperlink_timeout_ms": 1,
-    // Whether to show a badge on the terminal panel icon with the count of open terminals.
+    // Legacy compatibility setting; ignored by central terminal tabs.
     "show_count_badge": false,
     // Whether to invoke the OS-specific alert sound when the terminal bell (BEL character) is printed.
     "bell": "off",

@@ -48,8 +48,7 @@ pub struct TaskTemplate {
     #[serde(default)]
     pub reveal: RevealStrategy,
     /// Where to place the task's terminal item after starting the task.
-    /// * `dock` — in the terminal dock, "regular" terminal items' place (default).
-    /// * `center` — in the central pane group, "main" editor area.
+    /// Tasks open in the central pane group. The legacy `dock` value is accepted as an alias for `center`.
     #[serde(default)]
     pub reveal_target: RevealTarget,
     /// What to do with the terminal pane and tab, after the command had finished:

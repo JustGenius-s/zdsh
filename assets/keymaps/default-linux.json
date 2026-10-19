@@ -665,7 +665,7 @@
       "ctrl-n": "workspace::NewFile",
       "shift-new": "workspace::NewWindow",
       "ctrl-shift-n": "workspace::NewWindow",
-      "ctrl-`": "terminal_panel::Toggle",
+      "ctrl-`": "terminal::Focus",
       "f10": ["app_menu::OpenApplicationMenu", "Zed"],
       "alt-1": ["workspace::ActivatePane", 0],
       "alt-2": ["workspace::ActivatePane", 1],
@@ -734,7 +734,7 @@
       "alt-shift-t": "task::Spawn",
       "alt-shift-r": ["task::Spawn", { "reveal_target": "center" }],
       // also possible to spawn tasks by name:
-      // "foo-bar": ["task::Spawn", { "task_name": "MyTask", "reveal_target": "dock" }]
+      // "foo-bar": ["task::Spawn", { "task_name": "MyTask", "reveal_target": "center" }]
       // or by tag:
       // "foo-bar": ["task::Spawn", { "task_tag": "MyTag" }],
       "f5": "debugger::Rerun",

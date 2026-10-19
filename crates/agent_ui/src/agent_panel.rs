@@ -95,7 +95,7 @@ use text::OffsetRangeExt;
 use theme_settings::ThemeSettings;
 use ui::{
     ContextMenu, ContextMenuEntry, GradientFade, IconButton, KeyBinding, PopoverMenu,
-    PopoverMenuHandle, ProjectEmptyState, Tab, Tooltip, prelude::*, utils::WithRemSize,
+    PopoverMenuHandle, ProjectEmptyState, Tooltip, prelude::*, utils::WithRemSize,
 };
 use util::ResultExt as _;
 use workspace::{
@@ -389,9 +389,7 @@ pub fn init(cx: &mut App) {
                 })
                 .register_action(|workspace, _: &NewThread, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
-                        panel.update(cx, |panel, cx| {
-                            panel.new_thread_with_workspace(Some(workspace), window, cx)
-                        });
+                        panel.update(cx, |panel, cx| panel.new_thread(&NewThread, window, cx));
                         workspace.focus_panel::<AgentPanel>(window, cx);
                     }
                 })
@@ -405,7 +403,6 @@ pub fn init(cx: &mut App) {
                                 cx,
                             )
                         });
-                        workspace.focus_panel::<AgentPanel>(window, cx);
                     }
                 })
                 .register_action(
@@ -1791,20 +1788,7 @@ impl AgentPanel {
             return;
         }
 
-        self.new_thread_with_workspace(None, window, cx);
-    }
-
-    fn new_thread_with_workspace(
-        &mut self,
-        workspace: Option<&Workspace>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.should_create_terminal_for_new_entry(cx) {
-            self.new_terminal(workspace, AgentThreadSource::AgentPanel, window, cx);
-        } else {
-            self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
-        }
+        self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
     }
 
     pub fn activate_new_thread(
@@ -2286,6 +2270,31 @@ impl AgentPanel {
             },
         );
 
+        let mut subscriptions = vec![view_subscription, terminal_subscription];
+        if let Some(workspace) = self.workspace.upgrade() {
+            let item_id = terminal_view.entity_id();
+            subscriptions.push(cx.subscribe_in(
+                &workspace,
+                window,
+                move |_this, workspace, event, window, cx| {
+                    if matches!(event, workspace::Event::ItemRemoved { item_id: removed } if *removed == item_id) {
+                        let workspace = workspace.downgrade();
+                        // Moving a tab removes it from one pane before adding it to another.
+                        cx.defer_in(window, move |this, window, cx| {
+                            let still_open = workspace.read_with(cx, |workspace, cx| {
+                                workspace.panes().iter().any(|pane| {
+                                    pane.read(cx).items().any(|item| item.item_id() == item_id)
+                                })
+                            });
+                            if matches!(still_open, Ok(false)) {
+                                this.close_terminal_without_activating_draft(terminal_id, window, cx);
+                            }
+                        });
+                    }
+                },
+            ));
+        }
+
         let last_known_terminal_title = initial_title
             .map(|title| title.to_string())
             .unwrap_or_default();
@@ -2303,7 +2312,7 @@ impl AgentPanel {
             search_bar: None,
             notification_windows: Vec::new(),
             notification_subscriptions: Vec::new(),
-            _subscriptions: vec![view_subscription, terminal_subscription],
+            _subscriptions: subscriptions,
         };
         if self.pending_terminal_spawn == Some(terminal_id) {
             self.pending_terminal_spawn = None;
@@ -2373,9 +2382,24 @@ impl AgentPanel {
             self.pending_terminal_spawn = None;
         }
         self.dismiss_terminal_notifications(terminal_id, cx);
-        if self.terminals.remove(&terminal_id).is_none() {
+        let Some(terminal) = self.terminals.remove(&terminal_id) else {
             return;
-        }
+        };
+        let workspace = self.workspace.clone();
+        window.defer(cx, move |_window, cx| {
+            let still_open = workspace.read_with(cx, |workspace, cx| {
+                workspace.panes().iter().any(|pane| {
+                    pane.read(cx)
+                        .items()
+                        .any(|item| item.item_id() == terminal.view.entity_id())
+                })
+            });
+            if matches!(still_open, Ok(true)) {
+                terminal
+                    .view
+                    .update(cx, |_, cx| cx.emit(ItemEvent::CloseItem));
+            }
+        });
         if let Some(store) = TerminalThreadMetadataStore::try_global(cx) {
             store.update(cx, |store, cx| {
                 store.delete(terminal_id, cx);
@@ -2987,7 +3011,7 @@ impl AgentPanel {
 
     fn default_terminal_working_directory(&self, cx: &App) -> Option<PathBuf> {
         // Reuse the workspace-based helper so behavior matches the regular
-        // terminal panel (e.g. `WorkingDirectory::FirstProjectDirectory` falling
+        // terminal tabs (e.g. `WorkingDirectory::FirstProjectDirectory` falling
         // back to a file's parent directory when the worktree root is a file).
         self.workspace
             .upgrade()
@@ -4454,6 +4478,16 @@ impl AgentPanel {
                 self.conversation_items.insert(id, item.downgrade());
                 item
             });
+        self.open_item_in_center(Box::new(item), window, cx);
+        true
+    }
+
+    fn open_item_in_center(
+        &self,
+        item: Box<dyn ItemHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let workspace = self.workspace.clone();
         let panel_id = cx.entity_id();
         // Panel actions can run while Workspace is borrowed; install the item after dispatch.
@@ -4469,13 +4503,12 @@ impl AgentPanel {
                             dock.update(cx, |dock, cx| dock.set_open(false, window, cx));
                         }
                     }
-                    if !workspace.activate_item(&item, true, true, window, cx) {
-                        workspace.add_item_to_active_pane(Box::new(item), None, true, window, cx);
+                    if !workspace.activate_item(item.as_ref(), true, true, window, cx) {
+                        workspace.add_item_to_active_pane(item, None, true, window, cx);
                     }
                 })
                 .log_err();
         });
-        true
     }
 
     pub(crate) fn select_conversation_item(
@@ -4549,8 +4582,11 @@ impl AgentPanel {
 
         self.refresh_base_view_subscriptions(window, cx);
 
-        if focus && !self.open_conversation_in_center(window, cx) {
-            self.activation_focus_handle(cx).focus(window, cx);
+        if focus
+            && !self.open_conversation_in_center(window, cx)
+            && let Some(terminal) = self.visible_terminal_view().cloned()
+        {
+            self.open_item_in_center(Box::new(terminal), window, cx);
         }
         cx.emit(AgentPanelEvent::ActiveViewChanged);
     }
@@ -5232,8 +5268,12 @@ impl EventEmitter<AgentPanelEvent> for AgentPanel {}
 
 impl Panel for AgentPanel {
     fn focus_in_center(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        self.ensure_thread_initialized(window, cx);
-        self.open_conversation_in_center(window, cx)
+        if self.active_conversation_view().is_none() {
+            self.activate_draft(false, AgentThreadSource::AgentPanel, window, cx);
+        }
+        self.open_conversation_in_center(window, cx);
+        // A missing project must not send this action back to the legacy dock.
+        true
     }
 
     fn persistent_name() -> &'static str {
@@ -5311,8 +5351,7 @@ impl Panel for AgentPanel {
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.is_active = active;
         if active {
-            self.ensure_thread_initialized(window, cx);
-            self.open_conversation_in_center(window, cx);
+            self.focus_in_center(window, cx);
         }
     }
 
@@ -5320,8 +5359,8 @@ impl Panel for AgentPanel {
         Some(proto::PanelId::AssistantPanel)
     }
 
-    fn icon(&self, _window: &Window, cx: &App) -> Option<IconName> {
-        (self.enabled(cx) && AgentSettings::get_global(cx).button).then_some(IconName::ZedAssistant)
+    fn icon(&self, _window: &Window, _cx: &App) -> Option<IconName> {
+        None
     }
 
     fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {
@@ -5342,12 +5381,6 @@ impl Panel for AgentPanel {
 
     fn is_agent_panel(&self) -> bool {
         true
-    }
-
-    fn hide_button_setting(&self, _: &App) -> Option<workspace::HideStatusItem> {
-        Some(workspace::HideStatusItem::new(|settings| {
-            settings.agent.get_or_insert_default().button = Some(false);
-        }))
     }
 
     fn is_zoomed(&self, _window: &Window, _cx: &App) -> bool {
@@ -6080,7 +6113,6 @@ impl AgentPanel {
         cx: &mut Context<Self>,
     ) -> Rc<dyn Fn(&mut Window, &mut App) -> Option<Entity<ContextMenu>>> {
         let agent_server_store = self.project.read(cx).agent_server_store().clone();
-        let supports_terminal = self.supports_terminal(cx);
         let showing_terminal = matches!(self.visible_surface(), VisibleSurface::Terminal(_));
         {
             let selected_agent = self.selected_agent.clone();
@@ -6146,38 +6178,6 @@ impl AgentPanel {
                                                             panel.selected_agent = Agent::Dsh;
                                                             panel.activate_new_thread(
                                                                 true,
-                                                                AgentThreadSource::AgentPanel,
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        });
-                                                    }
-                                                });
-                                            }
-                                        }
-                                    }),
-                            )
-                        })
-                        .when(supports_terminal, |menu| {
-                            menu.item(
-                                ContextMenuEntry::new("Terminal")
-                                    .when(showing_terminal, |this| this.action(Box::new(NewThread)))
-                                    .when(!showing_terminal, |this| {
-                                        this.action(Box::new(NewTerminalThread))
-                                    })
-                                    .icon(IconName::Terminal)
-                                    .icon_color(Color::Muted)
-                                    .handler({
-                                        let workspace = workspace.clone();
-                                        move |window, cx| {
-                                            if let Some(workspace) = workspace.upgrade() {
-                                                workspace.update(cx, |workspace, cx| {
-                                                    if let Some(panel) =
-                                                        workspace.panel::<AgentPanel>(cx)
-                                                    {
-                                                        panel.update(cx, |panel, cx| {
-                                                            panel.new_terminal(
-                                                                Some(workspace),
                                                                 AgentThreadSource::AgentPanel,
                                                                 window,
                                                                 cx,
@@ -6402,7 +6402,8 @@ impl AgentPanel {
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
 
         let base_container = h_flex()
-            .size_full()
+            .w_full()
+            .h_8()
             .when(
                 matches!(mode, ToolbarMode::EmptyThread | ToolbarMode::ActiveThread),
                 |this| this.when_some(max_content_width, |this, max_w| this.max_w(max_w).mx_auto()),
@@ -6476,12 +6477,13 @@ impl AgentPanel {
 
         h_flex()
             .id("agent-panel-toolbar")
-            .h(Tab::container_height(cx))
+            .py(DynamicSpacing::Base06.rems(cx))
+            .px(DynamicSpacing::Base08.rems(cx))
             .flex_shrink_0()
             .max_w_full()
-            .bg(cx.theme().colors().tab_bar_background)
+            .bg(cx.theme().colors().toolbar_background)
             .border_b_1()
-            .border_color(cx.theme().colors().border)
+            .border_color(cx.theme().colors().border_variant)
             .child(toolbar_content)
     }
 

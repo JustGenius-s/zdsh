@@ -26,9 +26,7 @@ use project::{
 };
 
 use rope::Point;
-use settings::Settings;
-use terminal::terminal_settings::TerminalSettings;
-use terminal_view::{TerminalView, terminal_panel::TerminalPanel};
+use terminal_view::TerminalView;
 use text::{Anchor, ToOffset as _, ToPoint as _};
 use ui::IconName;
 use ui::prelude::*;
@@ -51,13 +49,12 @@ pub(crate) enum AgentContextSelection {
 pub(crate) enum AgentContextSource {
     Editor(WeakEntity<Editor>),
     TerminalView(WeakEntity<TerminalView>),
-    TerminalPanel,
 }
 
 impl AgentContextSource {
     pub(crate) fn read_selection(
         &self,
-        workspace: &Workspace,
+        _workspace: &Workspace,
         include_current_line: bool,
         cx: &mut App,
     ) -> Option<AgentContextSelection> {
@@ -71,11 +68,6 @@ impl AgentContextSource {
                 let terminal_view = handle.upgrade()?;
                 terminal_view_selection(&terminal_view, cx)
                     .map(|text| AgentContextSelection::Terminal(vec![text]))
-            }
-            Self::TerminalPanel => {
-                let panel = workspace.panel::<TerminalPanel>(cx)?;
-                let selections = panel.read(cx).terminal_selections(cx);
-                (!selections.is_empty()).then_some(AgentContextSelection::Terminal(selections))
             }
         }
     }
@@ -99,12 +91,6 @@ impl AgentContextSource {
             }
         }
 
-        if let Some(panel) = workspace.panel::<TerminalPanel>(cx)
-            && panel.focus_handle(cx).contains_focused(window, cx)
-        {
-            return Some(Self::TerminalPanel);
-        }
-
         None
     }
 
@@ -116,27 +102,15 @@ impl AgentContextSource {
                 return Some(Self::TerminalView(terminal_view.downgrade()));
             }
         }
-        if terminal_panel_dock_is_open(workspace, cx) {
-            return Some(Self::TerminalPanel);
-        }
         None
     }
 
-    pub(crate) fn exists(&self, workspace: &Workspace, cx: &App) -> bool {
+    pub(crate) fn exists(&self, _workspace: &Workspace, _cx: &App) -> bool {
         match self {
             Self::Editor(handle) => handle.upgrade().is_some(),
             Self::TerminalView(handle) => handle.upgrade().is_some(),
-            Self::TerminalPanel => terminal_panel_dock_is_open(workspace, cx),
         }
     }
-}
-
-fn terminal_panel_dock_is_open(workspace: &Workspace, cx: &App) -> bool {
-    if workspace.panel::<TerminalPanel>(cx).is_none() {
-        return false;
-    }
-    let position = TerminalSettings::get_global(cx).dock.into();
-    workspace.dock_at_position(position).read(cx).is_open()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

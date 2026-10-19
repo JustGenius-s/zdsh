@@ -4171,7 +4171,7 @@ fn search_and_files_page() -> SettingsPage {
 }
 
 fn window_and_layout_page() -> SettingsPage {
-    fn status_bar_section() -> [SettingsPageItem; 12] {
+    fn status_bar_section() -> [SettingsPageItem; 11] {
         [
             SettingsPageItem::SectionHeader("Status Bar"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -4303,20 +4303,6 @@ fn window_and_layout_page() -> SettingsPage {
                             .status_bar
                             .get_or_insert_default()
                             .pending_keystrokes_indicator = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Terminal Button",
-                description: "Show the terminal button in the status bar.",
-                field: Box::new(SettingField {
-                    organization_override: None,
-                    json_path: Some("terminal.button"),
-                    pick: |settings_content| settings_content.terminal.as_ref()?.button.as_ref(),
-                    write: |settings_content, value, _| {
-                        settings_content.terminal.get_or_insert_default().button = value;
                     },
                 }),
                 metadata: None,
@@ -6209,82 +6195,6 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn terminal_panel_section() -> [SettingsPageItem; 5] {
-        [
-            SettingsPageItem::SectionHeader("Terminal Panel"),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Terminal Dock",
-                description: "Where to dock the terminal panel.",
-                field: Box::new(SettingField {
-                    organization_override: None,
-                    json_path: Some("terminal.dock"),
-                    pick: |settings_content| settings_content.terminal.as_ref()?.dock.as_ref(),
-                    write: |settings_content, value, _| {
-                        settings_content.terminal.get_or_insert_default().dock = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Starts Open",
-                description: "Whether the terminal panel should open on startup.",
-                field: Box::new(SettingField {
-                    organization_override: None,
-                    json_path: Some("terminal.starts_open"),
-                    pick: |settings_content| {
-                        settings_content.terminal.as_ref()?.starts_open.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .terminal
-                            .get_or_insert_default()
-                            .starts_open = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Terminal Panel Flexible Sizing",
-                description: "Whether the terminal panel should use flexible (proportional) sizing when docked to the left or right.",
-                field: Box::new(SettingField {
-                    organization_override: None,
-                    json_path: Some("terminal.flexible"),
-                    pick: |settings_content| settings_content.terminal.as_ref()?.flexible.as_ref(),
-                    write: |settings_content, value, _| {
-                        settings_content.terminal.get_or_insert_default().flexible = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Show Count Badge",
-                description: "Show a badge on the terminal panel icon with the count of open terminals.",
-                field: Box::new(SettingField {
-                    organization_override: None,
-                    json_path: Some("terminal.show_count_badge"),
-                    pick: |settings_content| {
-                        settings_content
-                            .terminal
-                            .as_ref()?
-                            .show_count_badge
-                            .as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .terminal
-                            .get_or_insert_default()
-                            .show_count_badge = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-        ]
-    }
-
     fn outline_panel_section() -> [SettingsPageItem; 12] {
         [
             SettingsPageItem::SectionHeader("Outline Panel"),
@@ -6977,23 +6887,9 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn agent_panel_section() -> [SettingsPageItem; 7] {
+    fn agent_panel_section() -> [SettingsPageItem; 6] {
         [
             SettingsPageItem::SectionHeader("Agent Panel"),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Agent Panel Button",
-                description: "Whether to show the agent panel button in the status bar.",
-                field: Box::new(SettingField {
-                    organization_override: None,
-                    json_path: Some("agent.button"),
-                    pick: |settings_content| settings_content.agent.as_ref()?.button.as_ref(),
-                    write: |settings_content, value, _| {
-                        settings_content.agent.get_or_insert_default().button = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Agent Panel Dock",
                 description: "Where to dock the agent panel.",
@@ -7119,7 +7015,6 @@ fn panels_page() -> SettingsPage {
         title: "Panels",
         items: concat_sections![
             project_panel_section(),
-            terminal_panel_section(),
             outline_panel_section(),
             git_panel_section(),
             debugger_panel_section(),
@@ -7948,50 +7843,6 @@ fn terminal_page() -> SettingsPage {
         ]
     }
 
-    fn layout_settings_section() -> [SettingsPageItem; 3] {
-        [
-            SettingsPageItem::SectionHeader("Layout Settings"),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Default Width",
-                description: "Default width when the terminal is docked to the left or right (in pixels).",
-                field: Box::new(SettingField {
-                    organization_override: None,
-                    json_path: Some("terminal.default_width"),
-                    pick: |settings_content| {
-                        settings_content.terminal.as_ref()?.default_width.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .terminal
-                            .get_or_insert_default()
-                            .default_width = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Default Height",
-                description: "Default height when the terminal is docked to the bottom (in pixels).",
-                field: Box::new(SettingField {
-                    organization_override: None,
-                    json_path: Some("terminal.default_height"),
-                    pick: |settings_content| {
-                        settings_content.terminal.as_ref()?.default_height.as_ref()
-                    },
-                    write: |settings_content, value, _| {
-                        settings_content
-                            .terminal
-                            .get_or_insert_default()
-                            .default_height = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
-            }),
-        ]
-    }
-
     fn advanced_settings_section() -> [SettingsPageItem; 3] {
         [
             SettingsPageItem::SectionHeader("Advanced Settings"),
@@ -8119,7 +7970,6 @@ fn terminal_page() -> SettingsPage {
             font_section(),
             display_settings_section(),
             behavior_settings_section(),
-            layout_settings_section(),
             advanced_settings_section(),
             toolbar_section(),
             scrollbar_section(),

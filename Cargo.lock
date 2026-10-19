@@ -18685,9 +18685,8 @@ dependencies = [
 name = "terminal_view"
 version = "0.1.0"
 dependencies = [
+ "agent_settings",
  "anyhow",
- "async-recursion",
- "breadcrumbs",
  "collections",
  "db",
  "dirs",

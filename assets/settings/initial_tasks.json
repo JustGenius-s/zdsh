@@ -20,9 +20,8 @@
     // * `never` — do not alter focus, but still add/reuse the task's tab in its pane
     "reveal": "always",
     // Where to place the task's terminal item after starting the task:
-    // * `dock` — in the terminal dock, "regular" terminal items' place (default)
-    // * `center` — in the central pane group, "main" editor area
-    "reveal_target": "dock",
+    // Tasks use central tabs. Legacy `dock` values are accepted as an alias for `center`.
+    "reveal_target": "center",
     // What to do with the terminal pane and tab, after the command had finished:
     // * `never` — Do nothing when the command finishes (default)
     // * `always` — always hide the terminal tab, hide the pane also if it was the last tab in it
