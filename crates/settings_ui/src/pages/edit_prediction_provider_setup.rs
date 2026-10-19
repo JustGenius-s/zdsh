@@ -31,7 +31,9 @@ pub(crate) fn render_edit_prediction_setup_page(
 ) -> AnyElement {
     let providers = [
         Some(render_provider_dropdown(window, cx)),
-        Some(render_zed_provider(settings_window, window, cx).into_any_element()),
+        client::Client::try_global(cx)
+            .is_some_and(|client| client.accounts_enabled())
+            .then(|| render_zed_provider(settings_window, window, cx).into_any_element()),
         render_github_copilot_provider(settings_window, window, cx)
             .map(IntoElement::into_any_element),
         Some(
@@ -129,6 +131,7 @@ fn render_provider_dropdown(window: &mut Window, cx: &mut App) -> AnyElement {
     let current_provider = AllLanguageSettings::get_global(cx)
         .edit_predictions
         .provider;
+    let current_provider = edit_prediction::effective_provider(current_provider, cx);
     let current_provider_name = current_provider.display_name().unwrap_or("No provider set");
 
     let menu = ContextMenu::build(window, cx, move |mut menu, _, cx| {

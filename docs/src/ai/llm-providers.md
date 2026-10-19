@@ -5,6 +5,10 @@ description: Choose how Zed gets language models: Zed-hosted models, API access,
 
 # LLM Providers
 
+> **Note:** zdsh does not offer Zed-hosted models or Zed account sign-in. Use API
+> access, a provider subscription, a gateway, or a local model instead. See
+> [Accounts in zdsh](./agent-panel.md#zdsh-accounts) for compatibility details.
+
 Use this page to choose which models power [the Zed Agent](./zed-agent.md) and
 other Zed-owned AI features, including [Inline Assistant](./inline-assistant.md),
 Git commit generation, thread summaries, and similar model-backed features.

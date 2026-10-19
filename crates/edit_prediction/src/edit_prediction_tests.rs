@@ -3990,7 +3990,7 @@ async fn test_sweep_prompt_request_prediction_diffs_rewritten_window_into_anchor
 
     let requests = requests.lock();
     assert_eq!(requests.len(), 1);
-    let stop_tokens = requests[0]
+    let stop_tokens: Vec<&str> = requests[0]
         .stop
         .iter()
         .map(|token| token.as_ref())

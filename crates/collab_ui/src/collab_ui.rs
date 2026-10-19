@@ -18,6 +18,10 @@ use workspace::AppState;
 
 // Another comment, nice.
 pub fn init(app_state: &Arc<AppState>, cx: &mut App) {
+    if !app_state.client.accounts_enabled() {
+        title_bar::init(cx);
+        return;
+    }
     call_stats_modal::init(cx);
     channel_view::init(cx);
     collab_panel::init(cx);

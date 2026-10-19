@@ -26,11 +26,28 @@ The conversation uses the toolbar background. The composer sits in a rounded doc
 
 Switching tabs keeps work running. Closing a conversation tab requests cancellation and releases its session. Saved conversations remain available through the agent's history support; DSH conversations are currently in memory and cannot be restored after closing. Central Agent tab positions are not restored when restarting zdsh.
 
+## Accounts in zdsh {#zdsh-accounts}
+
+zdsh runs without a Zed account. Configure a provider in the Settings Editor to use
+DSH or Zed Agent with your own API access, provider subscription, or local model.
+External agents and Copilot retain their own authorization flows.
+
+Zed-hosted models, Zed cloud search, Zed cloud edit predictions, subscriptions,
+contacts, channels, calls, and shared editing are unavailable. The desktop does
+not restore Zed login sessions or read or delete existing Zed account credentials.
+The titlebar menu still provides settings, themes, extensions, and updates.
+
+Existing explicit Zed-hosted model selections require you to choose another model;
+zdsh does not replace them with a different paid provider. A legacy
+`edit_predictions.provider` value of `zed` disables predictions until you select
+an available provider. SSH, local development tools, extension downloads, updates,
+and telemetry are independent of Zed account access.
+
 ## Getting Started {#getting-started}
 
 If you're using the Agent Panel for the first time, configure either a model for the [Zed Agent](./zed-agent.md) or an [External Agent](./external-agents.md).
 
-- Use [LLM Providers](./llm-providers.md) for Zed-hosted models, API access, subscriptions, gateways, and local models.
+- Use [LLM Providers](./llm-providers.md) for API access, provider subscriptions, gateways, and local models.
 - Use [External Agents](./external-agents.md) for ACP-integrated agents.
 - Use [AI Quick Start](./quick-start.md) if you are not sure which path to choose.
 

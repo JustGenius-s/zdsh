@@ -889,9 +889,15 @@ fn update_command_palette_filter(cx: &mut App) {
     let disable_ai = DisableAiSettings::get_global(cx).disable_ai;
     let agent_enabled = AgentSettings::get_global(cx).enabled;
 
-    let edit_prediction_provider = AllLanguageSettings::get_global(cx)
+    let accounts_enabled =
+        client::Client::try_global(cx).is_none_or(|client| client.accounts_enabled());
+    let edit_prediction_provider = match AllLanguageSettings::get_global(cx)
         .edit_predictions
-        .provider;
+        .provider
+    {
+        EditPredictionProvider::Zed if !accounts_enabled => EditPredictionProvider::None,
+        provider => provider,
+    };
 
     CommandPaletteFilter::update_global(cx, |filter, _| {
         use editor::actions::{
@@ -957,8 +963,13 @@ fn update_command_palette_filter(cx: &mut App) {
                 }
             }
 
-            filter.show_namespace("zed_predict_onboarding");
-            filter.show_action_types(&[TypeId::of::<zed_actions::OpenZedPredictOnboarding>()]);
+            if accounts_enabled {
+                filter.show_namespace("zed_predict_onboarding");
+                filter.show_action_types(&[TypeId::of::<zed_actions::OpenZedPredictOnboarding>()]);
+            } else {
+                filter.hide_namespace("zed_predict_onboarding");
+                filter.hide_action_types(&[TypeId::of::<zed_actions::OpenZedPredictOnboarding>()]);
+            }
 
             filter.show_namespace("multi_workspace");
         }

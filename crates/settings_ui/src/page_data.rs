@@ -63,7 +63,7 @@ macro_rules! concat_sections {
 }
 
 pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
-    vec![
+    let mut pages = vec![
         general_page(cx),
         appearance_page(),
         keymap_page(),
@@ -79,7 +79,29 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
         ai_page(cx),
         network_page(),
         developer_page(cx),
-    ]
+    ];
+    if !client::Client::try_global(cx).is_some_and(|client| client.accounts_enabled()) {
+        pages.retain(|page| page.title != "Collaboration");
+        for page in &mut pages {
+            page.items = std::mem::take(&mut page.items)
+                .into_vec()
+                .into_iter()
+                .filter(|item| match item {
+                    SettingsPageItem::SectionHeader(title) => *title != "Collaboration Panel",
+                    SettingsPageItem::SettingItem(item) => !matches!(
+                        item.title,
+                        "Show Sign In"
+                            | "Show User Picture"
+                            | "Collaboration Panel Button"
+                            | "Collaboration Panel Dock"
+                            | "Collaboration Panel Default Width"
+                    ),
+                    _ => true,
+                })
+                .collect();
+        }
+    }
+    pages
 }
 
 fn developer_page(cx: &App) -> SettingsPage {
@@ -4520,8 +4542,8 @@ fn window_and_layout_page() -> SettingsPage {
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
-                title: "Show User Menu",
-                description: "Show the user menu button in the titlebar.",
+                title: "Show Application Menu",
+                description: "Show the settings, theme, and update menu in the titlebar.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("title_bar.show_user_menu"),

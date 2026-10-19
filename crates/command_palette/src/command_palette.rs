@@ -118,12 +118,17 @@ impl CommandPalette {
         cx: &mut Context<Self>,
     ) -> Self {
         let filter = CommandPaletteFilter::try_global(cx);
+        let accounts_enabled = entity
+            .read_with(cx, |workspace, _| workspace.client().accounts_enabled())
+            .unwrap_or(false);
 
         let commands = window
             .available_actions(cx)
             .into_iter()
             .filter_map(|action| {
-                if filter.is_some_and(|filter| filter.is_hidden(&*action)) {
+                if (!accounts_enabled && client::is_account_action(action.name()))
+                    || filter.is_some_and(|filter| filter.is_hidden(&*action))
+                {
                     return None;
                 }
 

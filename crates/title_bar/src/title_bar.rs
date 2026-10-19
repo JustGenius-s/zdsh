@@ -360,6 +360,7 @@ impl Render for TitleBar {
             }
         }
 
+        let accounts_enabled = self.client.accounts_enabled();
         let status = self.client.status();
         let status = &*status.borrow();
         let user = self.user_store.read(cx).current_user();
@@ -381,16 +382,19 @@ impl Render for TitleBar {
                 .pr_1()
                 .gap_1()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(self.render_call_controls(window, cx))
-                .children(self.render_connection_status(status, cx))
+                .when(accounts_enabled, |this| {
+                    this.child(self.render_call_controls(window, cx))
+                        .children(self.render_connection_status(status, cx))
+                })
                 .child(self.update_version.clone())
                 .when(
-                    user.is_none()
+                    accounts_enabled
+                        && user.is_none()
                         && is_signed_out_or_auth_error
                         && TitleBarSettings::get_global(cx).show_sign_in,
                     |this| this.child(self.render_sign_in_button(cx)),
                 )
-                .when(is_signing_in, |this| {
+                .when(accounts_enabled && is_signing_in, |this| {
                     this.child(
                         Label::new("Signing in…")
                             .size(LabelSize::Small)
@@ -1188,7 +1192,7 @@ impl TitleBar {
             });
 
             ButtonLike::new("user-menu")
-                .aria_label("User menu")
+                .aria_label("Application menu")
                 .tab_index(0isize)
                 .child(
                     h_flex()
@@ -1200,7 +1204,7 @@ impl TitleBar {
                 )
         } else {
             ButtonLike::new("user-menu")
-                .aria_label("User menu")
+                .aria_label("Application menu")
                 .tab_index(0isize)
                 .child(Icon::new(IconName::ChevronDown).size(IconSize::Small))
         };

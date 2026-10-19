@@ -3553,7 +3553,7 @@ impl Dismissable for ZedPredictUpsell {
 }
 
 pub fn should_show_upsell_modal(cx: &App) -> bool {
-    !is_upsell_dismissed(cx)
+    Client::global(cx).accounts_enabled() && !is_upsell_dismissed(cx)
 }
 
 /// Returns whether the user is set up to use Zed's hosted edit predictions but their plan
@@ -3636,10 +3636,25 @@ fn show_free_plan_edit_predictions_ended_notice_once(user_store: &Entity<UserSto
     );
 }
 
+/// Resolves legacy Zed cloud prediction selections to disabled in account-free hosts.
+pub fn effective_provider(provider: EditPredictionProvider, cx: &App) -> EditPredictionProvider {
+    if provider == EditPredictionProvider::Zed
+        && Client::try_global(cx).is_some_and(|client| !client.accounts_enabled())
+    {
+        EditPredictionProvider::None
+    } else {
+        provider
+    }
+}
+
 pub fn init(cx: &mut App) {
     cx.observe_new(move |workspace: &mut Workspace, _, _cx| {
         workspace.register_action(
             move |workspace, _: &zed_actions::OpenZedPredictOnboarding, window, cx| {
+                if !workspace.client().accounts_enabled() {
+                    window.dispatch_action(Box::new(zed_actions::agent::OpenSettings), cx);
+                    return;
+                }
                 ZedPredictModal::toggle(
                     workspace,
                     workspace.user_store().clone(),

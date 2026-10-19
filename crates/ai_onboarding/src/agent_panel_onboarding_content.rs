@@ -78,9 +78,13 @@ impl Render for AgentPanelOnboarding {
         });
 
         AgentPanelOnboardingCard::new()
-            .child(onboarding)
+            .when(self.client.accounts_enabled(), |this| {
+                this.child(onboarding)
+            })
             .map(|this| {
-                if enrolled_in_trial || is_pro_user || self.has_configured_providers {
+                if self.client.accounts_enabled()
+                    && (enrolled_in_trial || is_pro_user || self.has_configured_providers)
+                {
                     this
                 } else {
                     this.child(ApiKeysWithoutProviders::new())

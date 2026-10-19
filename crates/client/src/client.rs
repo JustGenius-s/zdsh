@@ -163,7 +163,25 @@ impl Settings for ProxySettings {
     }
 }
 
+/// Identifies Zed account and hosted collaboration actions, excluding provider authentication.
+pub fn is_account_action(name: &str) -> bool {
+    matches!(
+        name.split("::").next(),
+        Some("client" | "collab" | "collab_panel" | "channel_modal" | "zed_predict_onboarding")
+    ) || matches!(
+        name,
+        "onboarding::SignIn"
+            | "onboarding::OpenAccount"
+            | "zed::OpenZedPredictOnboarding"
+            | "agent::ResetTrialUpsell"
+            | "agent::ResetTrialEndUpsell"
+    )
+}
+
 pub fn init(client: &Arc<Client>, cx: &mut App) {
+    if !client.accounts_enabled() {
+        return;
+    }
     let client = Arc::downgrade(client);
     cx.on_action({
         let client = client.clone();
@@ -205,6 +223,7 @@ struct GlobalClient(Arc<Client>);
 impl Global for GlobalClient {}
 
 pub struct Client {
+    accounts_enabled: bool,
     id: AtomicU64,
     peer: Arc<Peer>,
     http: Arc<HttpClientWithUrl>,
@@ -560,7 +579,17 @@ impl Client {
         http: Arc<HttpClientWithUrl>,
         cx: &mut App,
     ) -> Arc<Self> {
+        Self::new_with_accounts(clock, http, true, cx)
+    }
+
+    fn new_with_accounts(
+        clock: Arc<dyn SystemClock>,
+        http: Arc<HttpClientWithUrl>,
+        accounts_enabled: bool,
+        cx: &mut App,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            accounts_enabled,
             id: AtomicU64::new(0),
             peer: Peer::new(0),
             telemetry: Telemetry::new(clock, http.clone(), cx),
@@ -589,6 +618,21 @@ impl Client {
             cx.http_client().proxy().cloned(),
         ));
         Self::new(clock, http, cx)
+    }
+
+    /// Supplies HTTP, model credential storage and local services without Zed account access.
+    /// Existing Zed account credentials are neither loaded nor removed.
+    pub fn local(cx: &mut App) -> Arc<Self> {
+        let http = Arc::new(HttpClientWithUrl::new_url(
+            cx.http_client(),
+            &ClientSettings::get_global(cx).server_url,
+            cx.http_client().proxy().cloned(),
+        ));
+        Self::new_with_accounts(Arc::new(clock::RealSystemClock), http, false, cx)
+    }
+
+    pub fn accounts_enabled(&self) -> bool {
+        self.accounts_enabled
     }
 
     pub fn id(&self) -> u64 {
@@ -646,6 +690,11 @@ impl Client {
     pub fn override_rpc_url(&self, url: Url) -> &Self {
         *self.rpc_url.write() = Some(url);
         self
+    }
+
+    pub fn try_global(cx: &App) -> Option<Arc<Self>> {
+        cx.try_global::<GlobalClient>()
+            .map(|client| client.0.clone())
     }
 
     pub fn global(cx: &App) -> Arc<Self> {
@@ -871,6 +920,9 @@ impl Client {
     }
 
     pub async fn has_credentials(&self, cx: &AsyncApp) -> bool {
+        if !self.accounts_enabled {
+            return false;
+        }
         self.credentials_provider
             .read_credentials(cx)
             .await
@@ -882,6 +934,10 @@ impl Client {
         try_provider: bool,
         cx: &AsyncApp,
     ) -> Result<Credentials> {
+        anyhow::ensure!(
+            self.accounts_enabled,
+            "Zed accounts are not available in zdsh. Configure a model provider in Settings."
+        );
         let is_reauthenticating = if self.status().borrow().is_signed_out() {
             self.set_status(Status::Authenticating, cx);
             false
@@ -1044,6 +1100,10 @@ impl Client {
         try_provider: bool,
         cx: &AsyncApp,
     ) -> Result<()> {
+        anyhow::ensure!(
+            self.accounts_enabled,
+            "Zed accounts are not available in zdsh. Configure a model provider in Settings."
+        );
         // Don't try to sign in again if we're already connected to Collab, as it will temporarily disconnect us.
         if self.status().borrow().is_connected() {
             return Ok(());
@@ -1679,6 +1739,9 @@ impl Client {
     }
 
     pub async fn sign_out(self: &Arc<Self>, cx: &AsyncApp) {
+        if !self.accounts_enabled {
+            return;
+        }
         self.state.write().credentials = None;
         self.cloud_client.clear_credentials();
         self.disconnect(cx);

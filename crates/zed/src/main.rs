@@ -524,7 +524,7 @@ fn main() {
         extension::init(cx);
         let extension_host_proxy = ExtensionHostProxy::global(cx);
 
-        let client = Client::production(cx);
+        let client = Client::local(cx);
         cx.set_http_client(client.http_client());
         let mut languages = LanguageRegistry::new(cx.background_executor().clone());
         languages.set_language_server_download_dir(paths::languages_dir().clone());
@@ -876,12 +876,6 @@ fn main() {
         initialize_workspace(app_state.clone(), cx);
 
         cx.activate(true);
-
-        cx.spawn({
-            let client = app_state.client.clone();
-            async move |cx| authenticate(client, cx).await
-        })
-        .detach_and_log_err(cx);
 
         let urls: Vec<_> = args
             .paths_or_urls
@@ -1313,6 +1307,10 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                     task.await?;
                 }
                 let client = app_state.client.clone();
+                anyhow::ensure!(
+                    client.accounts_enabled(),
+                    "Zed collaboration links are not supported in zdsh."
+                );
                 // we continue even if connection fails as join_channel/ open channel notes will
                 // show a visible error message.
                 client.connect(true, cx).await.into_response().log_err();
@@ -1367,20 +1365,6 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
         })
         .detach();
     }
-}
-
-async fn authenticate(client: Arc<Client>, cx: &AsyncApp) -> Result<()> {
-    if stdout_is_a_pty() {
-        if client::IMPERSONATE_LOGIN.is_some() {
-            client.sign_in_with_optional_connect(false, cx).await?;
-        } else if client.has_credentials(cx).await {
-            client.sign_in_with_optional_connect(true, cx).await?;
-        }
-    } else if client.has_credentials(cx).await {
-        client.sign_in_with_optional_connect(true, cx).await?;
-    }
-
-    Ok(())
 }
 
 async fn system_id() -> Result<IdType> {

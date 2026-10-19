@@ -91,7 +91,7 @@ pub struct TitleBarSettingsContent {
     ///
     /// Default: true
     pub show_onboarding_banner: Option<bool>,
-    /// Whether to show user avatar in the title bar.
+    /// Legacy user avatar preference; ignored by the account-free zdsh desktop.
     ///
     /// Default: true
     pub show_user_picture: Option<bool>,
@@ -107,11 +107,11 @@ pub struct TitleBarSettingsContent {
     ///
     /// Default: true
     pub show_project_items: Option<bool>,
-    /// Whether to show the sign in button in the title bar.
+    /// Legacy sign-in preference; ignored by the account-free zdsh desktop.
     ///
-    /// Default: true
+    /// Default: false
     pub show_sign_in: Option<bool>,
-    /// Whether to show the user menu button in the title bar.
+    /// Whether to show the application menu for settings, themes, and updates.
     ///
     /// Default: true
     pub show_user_menu: Option<bool>,

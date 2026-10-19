@@ -315,8 +315,10 @@ impl Render for Onboarding {
             .size_full()
             .bg(cx.theme().colors().editor_background)
             .on_action(Self::on_finish)
-            .on_action(cx.listener(Self::handle_sign_in))
-            .on_action(Self::handle_open_account)
+            .when(Client::global(cx).accounts_enabled(), |this| {
+                this.on_action(cx.listener(Self::handle_sign_in))
+                    .on_action(Self::handle_open_account)
+            })
             .on_action(cx.listener(|_, _: &menu::SelectNext, window, cx| {
                 window.focus_next(cx);
                 cx.notify();

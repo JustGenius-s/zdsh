@@ -79,7 +79,7 @@ impl Render for EditPredictionButton {
 
         let language_settings = all_language_settings(None, cx);
 
-        match language_settings.edit_predictions.provider {
+        match edit_prediction::effective_provider(language_settings.edit_predictions.provider, cx) {
             EditPredictionProvider::Copilot => {
                 let Some(copilot) = EditPredictionStore::try_global(cx)
                     .and_then(|store| store.read(cx).copilot_for_project(&self.project.upgrade()?))
@@ -826,7 +826,7 @@ impl EditPredictionButton {
             });
         menu = menu.item(entry);
 
-        let provider = settings.edit_predictions.provider;
+        let provider = edit_prediction::effective_provider(settings.edit_predictions.provider, cx);
         let current_mode = settings.edit_predictions_mode();
         let subtle_mode = matches!(current_mode, EditPredictionsMode::Subtle);
         let eager_mode = matches!(current_mode, EditPredictionsMode::Eager);
@@ -1156,7 +1156,8 @@ impl EditPredictionButton {
         ContextMenu::build(window, cx, |mut menu, window, cx| {
             let user = self.user_store.read(cx).current_user();
 
-            let needs_sign_in = user.is_none()
+            let needs_sign_in = Client::global(cx).accounts_enabled()
+                && user.is_none()
                 && matches!(
                     provider,
                     EditPredictionProvider::None | EditPredictionProvider::Zed
@@ -1579,7 +1580,9 @@ pub fn set_completion_provider(fs: Arc<dyn Fs>, cx: &mut App, provider: EditPred
 pub fn get_available_providers(cx: &mut App) -> Vec<EditPredictionProvider> {
     let mut providers = Vec::new();
 
-    providers.push(EditPredictionProvider::Zed);
+    if Client::global(cx).accounts_enabled() {
+        providers.push(EditPredictionProvider::Zed);
+    }
 
     let app_state = workspace::AppState::global(cx);
     if copilot::GlobalCopilotAuth::try_get_or_init(app_state, cx)

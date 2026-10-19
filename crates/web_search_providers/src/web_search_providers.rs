@@ -55,7 +55,7 @@ fn register_zed_web_search_provider(
         .read(cx)
         .default_model()
         .is_some_and(|default| default.is_provided_by_zed());
-    if using_zed_provider {
+    if client.accounts_enabled() && using_zed_provider {
         registry.register_provider(
             cloud::CloudWebSearchProvider::new(client, user_store, cx),
             cx,
