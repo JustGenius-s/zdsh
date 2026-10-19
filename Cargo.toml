@@ -217,6 +217,8 @@ members = [
     "crates/telemetry",
     "crates/telemetry_events",
     "crates/terminal",
+    "crates/terminal_completion",
+    "crates/terminal_core",
     "crates/terminal_view",
     "crates/text",
     "crates/theme",
@@ -492,6 +494,8 @@ tasks_ui = { path = "crates/tasks_ui" }
 telemetry = { path = "crates/telemetry" }
 telemetry_events = { path = "crates/telemetry_events" }
 terminal = { path = "crates/terminal" }
+terminal_completion = { path = "crates/terminal_completion" }
+terminal_core = { path = "crates/terminal_core" }
 terminal_view = { path = "crates/terminal_view" }
 text = { path = "crates/text" }
 theme = { path = "crates/theme" }
@@ -925,6 +929,7 @@ tokio-rustls = { version = "0.26", default-features = false }
 toml = { version = "0.9", default-features = false, features = ["std", "serde", "parse"] }
 toml_edit = { version = "0.22", default-features = false, features = ["parse"] }
 tower-http = "0.4.4"
+typed-path = "0.10.0"
 tree-sitter = { git = "https://github.com/tree-sitter/tree-sitter", rev = "43623ec9bf0eaaf7113285c46e8a09018f181b18" }
 tracing = "0.1.40"
 tracing-subscriber = "0.3"

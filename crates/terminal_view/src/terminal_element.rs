@@ -1,12 +1,11 @@
 use editor::{CursorLayout, EditorSettings, HighlightedRange, HighlightedRangeLine};
 use gpui::{
     AbsoluteLength, AnyElement, App, AvailableSpace, Bounds, ContentMask, DispatchPhase, Element,
-    ElementId, Entity, FocusHandle, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
-    HighlightStyle, Hitbox, Hsla, InputHandler, InteractiveElement, Interactivity, IntoElement,
-    LayoutId, Length, ModifiersChangedEvent, MouseButton, MouseMoveEvent, Pixels,
-    Point as GpuiPoint, StatefulInteractiveElement, StrikethroughStyle, Styled, TextRun, TextStyle,
-    UTF16Selection, UnderlineStyle, WeakEntity, WhiteSpace, Window, div, fill, point, px, relative,
-    size,
+    ElementId, Entity, FocusHandle, Font, FontStyle, FontWeight, GlobalElementId, HighlightStyle,
+    Hitbox, Hsla, InputHandler, InteractiveElement, Interactivity, IntoElement, LayoutId, Length,
+    ModifiersChangedEvent, MouseButton, MouseMoveEvent, Pixels, Point as GpuiPoint,
+    StatefulInteractiveElement, StrikethroughStyle, Styled, TextRun, TextStyle, UTF16Selection,
+    UnderlineStyle, WeakEntity, Window, div, fill, point, px, relative, size,
 };
 use itertools::Itertools;
 use language::CursorShape as EditorCursorShape;
@@ -1124,8 +1123,11 @@ impl Element for TerminalElement {
                 total_lines: _,
             } => {
                 let rem_size = window.rem_size();
-                let line_height = f32::from(window.text_style().font_size.to_pixels(rem_size))
-                    * TerminalSettings::get_global(cx).line_height.value();
+                let mut text_style = crate::terminal_text_style(cx);
+                if matches!(self.mode, TerminalMode::Embedded { .. }) {
+                    text_style.font_size = window.text_style().font_size;
+                }
+                let line_height = f32::from(text_style.line_height_in_pixels(rem_size));
                 // Round up to a whole device pixel to prevent pixel snapping from rounding down,
                 // which would result in the terminal being one row short after flooring.
                 let scale_factor = window.scale_factor().max(1.);
@@ -1178,44 +1180,14 @@ impl Element for TerminalElement {
             cx,
             |_, _, hitbox, window, cx| {
                 let hitbox = hitbox.unwrap();
-                let settings = ThemeSettings::get_global(cx);
-
-                let buffer_font_size = settings.buffer_font_size(cx);
-
                 let terminal_settings = TerminalSettings::get_global(cx);
                 let minimum_contrast = terminal_settings.minimum_contrast;
-
-                let font_family = terminal_settings.font_family.as_ref().map_or_else(
-                    || settings.buffer_font.family.clone(),
-                    |font_family| font_family.0.clone().into(),
-                );
-
-                let font_fallbacks = terminal_settings
-                    .font_fallbacks
-                    .as_ref()
-                    .or(settings.buffer_font.fallbacks.as_ref())
-                    .cloned();
-
-                let font_features = terminal_settings
-                    .font_features
-                    .as_ref()
-                    .unwrap_or(&FontFeatures::disable_ligatures())
-                    .clone();
-
-                let font_weight = terminal_settings.font_weight.unwrap_or_default();
-
                 let line_height = terminal_settings.line_height.value();
-
-                let font_size = match &self.mode {
-                    TerminalMode::Embedded { .. } => {
-                        window.text_style().font_size.to_pixels(window.rem_size())
-                    }
-                    TerminalMode::Standalone => terminal_settings
-                        .font_size
-                        .map_or(buffer_font_size, |size| {
-                            theme_settings::adjusted_font_size(size, cx)
-                        }),
-                };
+                let mut text_style = crate::terminal_text_style(cx);
+                if matches!(self.mode, TerminalMode::Embedded { .. }) {
+                    text_style.font_size = window.text_style().font_size;
+                }
+                let font_weight = text_style.font_weight;
 
                 let theme = cx.theme().clone();
 
@@ -1233,20 +1205,7 @@ impl Element for TerminalElement {
                     fade_out: None,
                 };
 
-                let text_style = TextStyle {
-                    font_family,
-                    font_features,
-                    font_weight,
-                    font_fallbacks,
-                    font_size: font_size.into(),
-                    font_style: FontStyle::Normal,
-                    line_height: px(line_height).into(),
-                    background_color: Some(theme.colors().terminal_ansi_background),
-                    white_space: WhiteSpace::Normal,
-                    // These are going to be overridden per-cell
-                    color: theme.colors().terminal_foreground,
-                    ..Default::default()
-                };
+                text_style.background_color = Some(theme.colors().terminal_ansi_background);
 
                 let text_system = cx.text_system();
                 let player_color = theme.players().local();

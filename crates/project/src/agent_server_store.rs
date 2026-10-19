@@ -1634,7 +1634,7 @@ impl From<settings::CustomAgentServerSettings> for CustomAgentServerSettings {
                 favorite_config_option_values,
             } => CustomAgentServerSettings::Custom {
                 command: AgentServerCommand {
-                    path: PathBuf::from(shellexpand::tilde(&path.to_string_lossy()).as_ref()),
+                    path: PathBuf::from(&*shellexpand::tilde(&path.to_string_lossy())),
                     args,
                     env: Some(env),
                 },

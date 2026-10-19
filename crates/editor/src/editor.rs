@@ -7126,7 +7126,7 @@ impl Editor {
                 .collect();
 
             for line in lines.iter_mut().filter(|line| !line.is_empty()) {
-                let mut chars = line.as_ref().chars();
+                let mut chars = line.chars();
                 let mut col = 0;
                 let mut changed = false;
 

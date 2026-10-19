@@ -1,8 +1,12 @@
+mod command_blocks;
+pub mod completions;
 mod mappings;
+pub mod prompt_context;
+pub use command_blocks::{CommandBlock, CommandInputState};
 
-mod alacritty;
 mod pty_info;
 pub mod terminal_settings;
+mod warp;
 
 #[cfg(not(windows))]
 use anyhow::Context as _;
@@ -15,7 +19,6 @@ use futures::{
     channel::mpsc::{UnboundedReceiver, unbounded},
 };
 
-use alacritty_terminal::grid::Dimensions as _;
 use itertools::Itertools as _;
 use mappings::mouse::{
     alt_scroll, grid_point, grid_point_and_side, mouse_button_report, mouse_moved_report,
@@ -59,22 +62,21 @@ use gpui::{
     Point as GpuiPoint, Rgba, ScrollWheelEvent, Size, Task, TouchPhase, Window, actions, black, px,
 };
 
-#[cfg(not(windows))]
-use crate::alacritty::current_child_signal_mask;
-use crate::alacritty::{
-    AlacrittyCell, AlacrittyGridIterator, AlacrittyHyperlink, AlacrittySearch, AlacrittyTerm,
-    AlacrittyTermConfig, AlacrittyTermLock, HyperlinkMatch, PtySender, RegexSearches,
-    append_text_to_term, apply_config, clear_saved_screen, content_text, display_offset,
-    display_only_term_config, find_from_terminal_point, full_content_range, last_non_empty_lines,
-    make_content, new_term, open_pty, pty_options, pty_term_config, resize, screen_lines,
-    scroll_display, scroll_to_point, search_matches, selection_text, set_default_cursor_style,
-    set_selection as set_term_selection, shrink_to_used, spawn_event_loop,
-    toggle_vi_mode as toggle_term_vi_mode, total_lines, update_selection as update_term_selection,
-    update_selection_to_vi_cursor, update_vi_cursor_for_scroll, used_lines, vi_goto_point,
-    vi_motion,
-};
 use crate::mappings::colors::to_vte_rgb;
 use crate::mappings::keys::to_esc_str;
+#[cfg(not(windows))]
+use crate::warp::current_child_signal_mask;
+use crate::warp::{
+    BackendSearch, BackendTerm, BackendTermConfig, BackendTermLock, CellFlags, HyperlinkMatch,
+    PtySender, RegexSearches, append_text_to_term, apply_config, clear_saved_screen, content_text,
+    display_offset, display_only_term_config, find_from_terminal_point, full_content_range,
+    last_non_empty_lines, make_content, new_term, open_pty, pty_options, pty_term_config, resize,
+    screen_lines, scroll_display, scroll_to_point, search_matches, selection_text,
+    set_default_cursor_style, set_selection as set_term_selection, shrink_to_used,
+    spawn_event_loop, toggle_vi_mode as toggle_term_vi_mode, total_lines,
+    update_selection as update_term_selection, update_selection_to_vi_cursor,
+    update_vi_cursor_for_scroll, used_lines, vi_goto_point, vi_motion,
+};
 
 /// Process-wide flag set by headless hosts (e.g. the eval CLI) that have no
 /// controlling TTY. In such sandboxes PTY allocation and acquiring a
@@ -124,7 +126,7 @@ enum ViMotion {
 
 #[derive(Clone, Debug)]
 pub struct Search {
-    search: AlacrittySearch,
+    search: BackendSearch,
 }
 
 #[derive(Clone, Debug)]
@@ -318,22 +320,23 @@ impl Handler for PlainAnsiTextHandler {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Hyperlink {
-    data: HyperlinkData,
+    id: Option<Arc<str>>,
+    uri: Arc<str>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-enum HyperlinkData {
-    Alacritty(AlacrittyHyperlink),
-    Owned { id: Option<Arc<str>>, uri: Arc<str> },
-}
-
-#[derive(Default, Debug, Clone, Eq, PartialEq)]
 pub struct Cell {
-    cell: AlacrittyCell,
+    character: char,
+    foreground: Color,
+    background: Color,
+    flags: CellFlags,
+    zerowidth: Option<Arc<Vec<char>>>,
+    hyperlink: Option<Hyperlink>,
 }
 
 pub struct RenderableCells<'a> {
-    cells: AlacrittyGridIterator<'a>,
+    cells: std::vec::IntoIter<IndexedCell>,
+    lifetime: std::marker::PhantomData<&'a ()>,
 }
 
 #[derive(Debug, Clone)]
@@ -601,7 +604,7 @@ mod domain_tests {
 
         let clone = cell.clone();
 
-        match (&cell.cell.extra, &clone.cell.extra) {
+        match (&cell.zerowidth, &clone.zerowidth) {
             (Some(extra), Some(clone_extra)) => assert!(Arc::ptr_eq(extra, clone_extra)),
             _ => panic!("expected extra storage on both cells"),
         }
@@ -1027,6 +1030,7 @@ impl TerminalBuilder {
 
         let terminal = Terminal {
             task: None,
+            command_blocks: Vec::new(),
             terminal_type: TerminalType::DisplayOnly,
             subprocess: None,
             completion_tx: None,
@@ -1220,7 +1224,7 @@ impl TerminalBuilder {
             };
             let config = pty_term_config(scrolling_history, cursor_shape);
 
-            //Spawn a task so the Alacritty EventLoop (or the subprocess reader) can communicate with us
+            //Spawn a task so the Warp PTY worker (or the subprocess reader) can communicate with us
             //TODO: Remove with a bounded sender which can be dispatched on &self
             let (events_tx, events_rx) = unbounded();
             //Set up the terminal...
@@ -1231,6 +1235,14 @@ impl TerminalBuilder {
                 alternate_scroll,
                 0,
             );
+
+            let startup =
+                if !no_pty && !is_remote_terminal && task.is_none() && completion_tx.is_none() {
+                    command_blocks::ShellStartup::prepare(&shell, &env, &activation_script)?
+                } else {
+                    None
+                };
+            let has_startup = startup.is_some();
 
             // When `no_pty` is set (headless hosts), run the task as a plain
             // subprocess and pump its piped output into the same emulator the
@@ -1265,16 +1277,24 @@ impl TerminalBuilder {
                 };
                 (TerminalType::DisplayOnly, Some(subprocess))
             } else {
-                let alacritty_shell = shell_params.as_ref().map(|params| {
+                let pty_shell = shell_params.as_ref().map(|params| {
                     (
                         params.program.clone(),
                         params.args.clone().unwrap_or_default(),
                     )
                 });
+                let mut pty_env = env.clone();
+                let pty_shell = if let Some(startup) = startup {
+                    let (program, args, integration) = startup.into_launch(&mut pty_env);
+                    term.lock().shell = Some(integration);
+                    Some((program, args))
+                } else {
+                    pty_shell
+                };
                 let pty_options = pty_options(
-                    alacritty_shell,
+                    pty_shell,
                     working_directory.clone(),
-                    env.clone(),
+                    pty_env,
                     // We pass in the foreground thread's signal mask to the child process via pty_options,
                     // so terminal construction can run on a background thread without breaking Ctrl-C and other signals
                     // otherwise the terminal would inherit the background executor's signal mask which blocks
@@ -1317,6 +1337,7 @@ impl TerminalBuilder {
             let no_task = task.is_none();
             let terminal = Terminal {
                 task,
+                command_blocks: Vec::new(),
                 terminal_type,
                 subprocess,
                 completion_tx,
@@ -1388,7 +1409,7 @@ impl TerminalBuilder {
                 pty_write_log: Default::default(),
             };
 
-            if !activation_script.is_empty() && no_task {
+            if !activation_script.is_empty() && no_task && !has_startup {
                 for activation_script in activation_script {
                     terminal.write_to_pty(activation_script.into_bytes());
                     // Simulate enter key press
@@ -1400,7 +1421,7 @@ impl TerminalBuilder {
                 // 1. We can send a shell-specific command such as "clear" or "cls"
                 // 2. We can "echo" a marker message that we will then catch when handling a Wakeup event
                 //    and clear the screen using `terminal.clear()` method
-                // We cannot issue a `terminal.clear()` command at this point as alacritty is evented
+                // We cannot issue a `terminal.clear()` command at this point because terminal updates are evented
                 // and while we have sent the activation script to the pty, it will be executed asynchronously.
                 // Therefore, we somehow need to wait for the activation script to finish executing before we
                 // can proceed with clearing the screen.
@@ -1520,14 +1541,15 @@ enum TerminalType {
 }
 
 pub struct Terminal {
+    command_blocks: Vec<CommandBlock>,
     terminal_type: TerminalType,
     /// Set for non-PTY terminals (see [`HeadlessTerminal`]); owns the spawned
     /// subprocess and the task pumping its output into the grid.
     subprocess: Option<SubprocessHandle>,
     completion_tx: Option<Sender<Option<ExitStatus>>>,
-    term: Arc<AlacrittyTermLock>,
-    term_config: AlacrittyTermConfig,
-    output_processor: Option<Processor<StdSyncHandler>>,
+    term: Arc<BackendTermLock>,
+    term_config: BackendTermConfig,
+    output_processor: Option<warp::Processor>,
     output_events_tx: Option<futures::channel::mpsc::UnboundedSender<PtyEvent>>,
     output_generation: u64,
     events: VecDeque<InternalEvent>,
@@ -1694,11 +1716,15 @@ impl Terminal {
             TerminalBackendEvent::Bell => {
                 cx.emit(Event::Bell);
             }
-            TerminalBackendEvent::Exit => self.register_task_finished(None, cx),
+            TerminalBackendEvent::Exit => {
+                self.finish_command_blocks(cx);
+                self.register_task_finished(None, cx);
+            }
             TerminalBackendEvent::MouseCursorDirty => {
                 //NOOP, Handled in render
             }
             TerminalBackendEvent::Wakeup => {
+                self.collect_command_blocks(cx);
                 self.detect_init_command_startup_marker();
                 cx.emit(Event::Wakeup);
 
@@ -1721,6 +1747,7 @@ impl Terminal {
                 self.write_to_pty(format(color).into_bytes());
             }
             TerminalBackendEvent::ChildExit(exit_status) => {
+                self.finish_command_blocks(cx);
                 self.register_task_finished(Some(exit_status), cx);
             }
         }
@@ -1733,7 +1760,7 @@ impl Terminal {
     fn process_terminal_event(
         &mut self,
         event: &InternalEvent,
-        term: &mut AlacrittyTerm,
+        term: &mut BackendTerm,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1996,8 +2023,8 @@ impl Terminal {
     pub fn write_raw_output(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         let mut term = self.term.lock();
         self.output_processor
-            .get_or_insert_with(Processor::<StdSyncHandler>::new)
-            .advance(&mut *term, bytes);
+            .get_or_insert_with(warp::Processor::new)
+            .advance(&mut term, bytes);
         drop(term);
         self.detect_init_command_startup_marker();
         cx.emit(Event::Wakeup);
@@ -2059,15 +2086,15 @@ impl Terminal {
     }
 
     pub fn total_lines(&self) -> usize {
-        total_lines(&self.term.lock_unfair())
+        total_lines(&self.term.lock())
     }
 
     pub fn viewport_lines(&self) -> usize {
-        screen_lines(&self.term.lock_unfair())
+        screen_lines(&self.term.lock())
     }
 
     pub fn used_lines(&self) -> usize {
-        used_lines(&self.term.lock_unfair())
+        used_lines(&self.term.lock())
     }
 
     //To test:
@@ -2216,6 +2243,9 @@ impl Terminal {
 
     pub fn input(&mut self, input: impl Into<Cow<'static, [u8]>>) {
         self.keyboard_input_sent = true;
+        if let Some(shell) = &mut self.term.lock().shell {
+            shell.ready = false;
+        }
         self.complete_init_command_startup_handshake();
         self.write_input(input);
     }
@@ -2261,7 +2291,7 @@ impl Terminal {
         };
 
         let has_marker = {
-            let term = self.term.lock_unfair();
+            let term = self.term.lock();
             last_non_empty_lines(&term, INIT_COMMAND_STARTUP_MARKER_SEARCH_LINES)
                 .iter()
                 .any(|line| line.contains(marker))
@@ -2312,7 +2342,7 @@ impl Terminal {
     }
 
     fn clear_for_init_command(&mut self, cx: &mut Context<Self>) {
-        let mut term = self.term.lock_unfair();
+        let mut term = self.term.lock();
         clear_saved_screen(&mut term);
         self.last_content = make_content(&term, &self.last_content);
         drop(term);
@@ -2323,9 +2353,9 @@ impl Terminal {
     fn write_input(&mut self, input: impl Into<Cow<'static, [u8]>>) {
         let input = input.into();
         if !self.is_remote_terminal && input.contains(&b'\r') {
-            let term = self.term.lock_unfair();
+            let term = self.term.lock();
             self.pending_cwd_boundary = Some(Self::scrollback_position(
-                term.grid().cursor.point.line.0,
+                term.cursor_line(),
                 term.history_size(),
             ));
         }
@@ -2497,7 +2527,7 @@ impl Terminal {
 
     pub fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let term = self.term.clone();
-        let mut terminal = term.lock_unfair();
+        let mut terminal = term.lock();
         //Note that the ordering of events matters for event processing
         while let Some(e) = self.events.pop_front() {
             self.process_terminal_event(&e, &mut terminal, window, cx)
@@ -2517,18 +2547,17 @@ impl Terminal {
     }
 
     pub fn with_renderable_cells<R>(&self, f: impl for<'a> FnOnce(RenderableCells<'a>) -> R) -> R {
-        let term = self.term.lock_unfair();
-        let content = term.renderable_content();
-        f(RenderableCells::new(content.display_iter))
+        let term = self.term.lock();
+        f(RenderableCells::new(&term))
     }
 
     pub fn get_content(&self) -> String {
-        let term = self.term.lock_unfair();
+        let term = self.term.lock();
         content_text(&term)
     }
 
     pub fn last_n_non_empty_lines(&self, n: usize) -> Vec<String> {
-        let terminal = self.term.lock_unfair();
+        let terminal = self.term.lock();
         last_non_empty_lines(&terminal, n)
     }
 
@@ -2980,7 +3009,14 @@ impl Terminal {
             // the working directory on the client and persist that.
             None
         } else {
-            self.client_side_working_directory()
+            self.term
+                .lock()
+                .shell
+                .as_ref()
+                .and_then(|shell| shell.prompt.as_ref())
+                .and_then(|prompt| prompt.pwd.as_ref())
+                .map(PathBuf::from)
+                .or_else(|| self.client_side_working_directory())
         }
     }
 
@@ -3019,8 +3055,8 @@ impl Terminal {
         }
 
         let scrollback_position = self.pending_cwd_boundary.take().unwrap_or_else(|| {
-            let term = self.term.lock_unfair();
-            Self::scrollback_position(term.grid().cursor.point.line.0, term.history_size())
+            let term = self.term.lock();
+            Self::scrollback_position(term.cursor_line(), term.history_size())
         });
         self.cwd_history.push(CwdHistoryEntry {
             scrollback_position,
@@ -3350,10 +3386,10 @@ fn task_summary(task: &TaskState, exit_status: Option<ExitStatus>) -> (bool, Str
 }
 
 /// Converts bare LFs into CRLFs so output captured from a pipe (rather than a
-/// PTY) wraps correctly in Alacritty. A PTY's line discipline performs this
+/// PTY) wraps correctly in the terminal. A PTY's line discipline performs this
 /// `ONLCR` translation for us; piped output (e.g. `ls` run outside a PTY) only
-/// emits `\n`, which moves Alacritty's cursor down without returning it to
-/// column zero and makes the rendered output look misaligned. Alacritty has no
+/// emits `\n`, which moves the terminal's cursor down without returning it to
+/// column zero and makes the rendered output look misaligned. The parser has no
 /// setting for this, so we insert a `\r` before each `\n` that lacks one.
 fn convert_lf_to_crlf(bytes: &[u8], previous_byte_was_cr: &mut bool) -> Vec<u8> {
     let mut converted = Vec::with_capacity(bytes.len());
@@ -3384,14 +3420,14 @@ impl SubprocessHandle {
 }
 
 /// Spawns `program`/`args` as a plain subprocess with piped stdout/stderr and
-/// drives its output into `term`, mirroring what the Alacritty event loop does
+/// drives its output into `term`, using the same Warp parser as the PTY worker
 /// for a PTY but without one. Used when [`HeadlessTerminal`] is enabled.
 fn spawn_task_subprocess(
     program: String,
     args: Vec<String>,
     env: HashMap<String, String>,
     working_directory: Option<PathBuf>,
-    term: Arc<AlacrittyTermLock>,
+    term: Arc<BackendTermLock>,
     events_tx: futures::channel::mpsc::UnboundedSender<PtyEvent>,
     executor: &BackgroundExecutor,
 ) -> Result<SubprocessHandle> {
@@ -3423,22 +3459,22 @@ fn spawn_task_subprocess(
                 let events_tx = events_tx.clone();
                 async move {
                     let Some(mut reader) = reader else { return };
-                    let mut processor = Processor::<StdSyncHandler>::new();
+                    let mut processor = warp::Processor::new();
                     let mut buffer = [0u8; 8192];
                     let mut previous_byte_was_cr = false;
                     loop {
                         match reader.read(&mut buffer).await {
-                            Ok(0) => return,
+                            Ok(0) => break,
                             Err(error) => {
                                 log::warn!("failed to read subprocess output: {error}");
-                                return;
+                                break;
                             }
                             Ok(count) => {
                                 let converted =
                                     convert_lf_to_crlf(&buffer[..count], &mut previous_byte_was_cr);
                                 {
                                     let mut term = term.lock();
-                                    processor.advance(&mut *term, &converted);
+                                    processor.advance(&mut term, &converted);
                                 }
                                 events_tx
                                     .unbounded_send(PtyEvent::Event(
@@ -3449,6 +3485,9 @@ fn spawn_task_subprocess(
                             }
                         }
                     }
+                    let mut term = term.lock();
+                    processor.finish_sync_output(&mut term);
+                    term.emit(TerminalBackendEvent::Wakeup);
                 }
             };
             let stdout = stdout.map(|reader| Box::new(reader) as BoxedReader);
@@ -3579,8 +3618,8 @@ fn content_index_for_mouse(pos: GpuiPoint<Pixels>, terminal_bounds: &TerminalBou
 }
 
 /// Converts an 8 bit ANSI color to its GPUI equivalent.
-/// Accepts `usize` for compatibility with the `alacritty::Colors` interface,
-/// Other than that use case, should only be called with values in the `[0,255]` range
+/// Indices 0–255 select ANSI colors; 256–268 select the terminal defaults,
+/// cursor color, and dim ANSI colors.
 pub fn get_color_at_index(index: usize, theme: &Theme) -> Hsla {
     let colors = theme.colors();
 
@@ -3618,8 +3657,7 @@ pub fn get_color_at_index(index: usize, theme: &Theme) -> Hsla {
             let value = i * 10 + 8;
             rgba_color(value, value, value)
         }
-        // For compatibility with the alacritty::Colors interface
-        // See: https://github.com/alacritty/alacritty/blob/master/alacritty_terminal/src/term/color.rs
+        // Extended palette indices shared by terminal color requests and theme defaults.
         256 => colors.terminal_foreground,
         257 => colors.terminal_background,
         258 => theme.players().local().cursor,
@@ -4852,7 +4890,7 @@ mod tests {
 
         // Get the content by directly accessing the term
         let content = terminal.update(cx, |terminal, _cx| {
-            let term = terminal.term.lock_unfair();
+            let term = terminal.term.lock();
             make_content(&term, &terminal.last_content)
         });
 
@@ -4899,7 +4937,7 @@ mod tests {
 
         // Get the content by directly accessing the term
         let content = terminal.update(cx, |terminal, _cx| {
-            let term = terminal.term.lock_unfair();
+            let term = terminal.term.lock();
             make_content(&term, &terminal.last_content)
         });
 
@@ -4940,7 +4978,7 @@ mod tests {
 
         // Get the content by directly accessing the term
         let content = terminal.update(cx, |terminal, _cx| {
-            let term = terminal.term.lock_unfair();
+            let term = terminal.term.lock();
             make_content(&term, &terminal.last_content)
         });
 
@@ -4981,7 +5019,7 @@ mod tests {
             terminal.update(cx, |terminal, cx| terminal.write_raw_output(chunk, cx));
         }
         terminal.read_with(cx, |terminal, _| {
-            let term = terminal.term.lock_unfair();
+            let term = terminal.term.lock();
             make_content(&term, &terminal.last_content)
         })
     }
@@ -5012,7 +5050,7 @@ mod tests {
             terminal.write_raw_output(b"old history\r\n\x1b[?1049h\x1b[Hold alternate", cx);
             {
                 let mut term = terminal.term.lock();
-                alacritty::set_selection(
+                warp::set_selection(
                     &mut term,
                     Some(&Selection::simple_range(Range::new(
                         Point::new(0, 0),
@@ -5041,13 +5079,7 @@ mod tests {
             assert!(terminal.matches.is_empty());
             assert!(terminal.last_content.selection_text.is_none());
             assert!(terminal.events.is_empty());
-            assert!(
-                !terminal
-                    .term
-                    .lock_unfair()
-                    .mode()
-                    .contains(alacritty_terminal::term::TermMode::ALT_SCREEN)
-            );
+            assert!(!terminal.term.lock().alternate_active);
         });
         assert_eq!(terminal.entity_id(), entity_id);
     }
@@ -5116,7 +5148,7 @@ mod tests {
         let normalized_terminal = display_only_terminal(cx);
         normalized_terminal.update(cx, |terminal, cx| terminal.write_output(bytes, cx));
         let normalized = normalized_terminal.read_with(cx, |terminal, _| {
-            let term = terminal.term.lock_unfair();
+            let term = terminal.term.lock();
             make_content(&term, &terminal.last_content)
         });
 

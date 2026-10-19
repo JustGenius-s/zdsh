@@ -251,7 +251,7 @@ pub fn init(cx: &mut App) {
         with_active_or_new_workspace(cx, |_, window, cx| {
             open_settings_file(
                 paths::keymap_file(),
-                || settings::initial_keymap_content().as_ref().into(),
+                || (&*settings::initial_keymap_content()).into(),
                 window,
                 cx,
             );
@@ -261,7 +261,7 @@ pub fn init(cx: &mut App) {
         with_active_or_new_workspace(cx, |_, window, cx| {
             open_settings_file(
                 paths::settings_file(),
-                || settings::initial_user_settings_content().as_ref().into(),
+                || (&*settings::initial_user_settings_content()).into(),
                 window,
                 cx,
             );
@@ -276,7 +276,7 @@ pub fn init(cx: &mut App) {
         with_active_or_new_workspace(cx, |_, window, cx| {
             open_settings_file(
                 paths::tasks_file(),
-                || settings::initial_tasks_content().as_ref().into(),
+                || (&*settings::initial_tasks_content()).into(),
                 window,
                 cx,
             );
@@ -286,7 +286,7 @@ pub fn init(cx: &mut App) {
         with_active_or_new_workspace(cx, |_, window, cx| {
             open_settings_file(
                 paths::debug_scenarios_file(),
-                || settings::initial_debug_tasks_content().as_ref().into(),
+                || (&*settings::initial_debug_tasks_content()).into(),
                 window,
                 cx,
             );
@@ -2675,7 +2675,7 @@ fn open_bundled_file(
     let existing = workspace.items_of_type::<Editor>(cx).find(|editor| {
         editor.read_with(cx, |editor, cx| {
             editor.read_only(cx)
-                && editor.title(cx).as_ref() == title
+                && &*editor.title(cx) == title
                 && editor
                     .buffer()
                     .read(cx)

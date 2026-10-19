@@ -7232,7 +7232,7 @@ fn apply_dirty_filename_style(
         .file_name()
         .and_then(|f| {
             let filename_str = f.to_string_lossy();
-            segment.text.rfind(filename_str.as_ref())
+            segment.text.rfind(&*filename_str)
         })?;
 
     let bold_weight = FontWeight::BOLD;

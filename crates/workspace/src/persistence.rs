@@ -2638,10 +2638,7 @@ VALUES {placeholders};"#
                 let mut next_index = 1;
                 for (abs_path, host) in trusted_worktrees {
                     let abs_path = abs_path.as_ref().map(|abs_path| abs_path.to_string_lossy());
-                    next_index = statement.bind(
-                        &abs_path.as_ref().map(|abs_path| abs_path.as_ref()),
-                        next_index,
-                    )?;
+                    next_index = statement.bind(&abs_path.as_deref(), next_index)?;
                     next_index = statement.bind(
                         &host
                             .as_ref()

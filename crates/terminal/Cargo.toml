@@ -20,6 +20,13 @@ path = "src/terminal.rs"
 doctest = false
 
 [dependencies]
+smol.workspace = true
+tempfile.workspace = true
+terminal_core.workspace = true
+terminal_completion.workspace = true
+async-trait.workspace = true
+typed-path.workspace = true
+polling = "3"
 async-channel.workspace = true
 alacritty_terminal.workspace = true
 anyhow.workspace = true

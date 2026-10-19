@@ -6399,7 +6399,7 @@ impl RepositorySnapshot {
         let repo_path = repo_path.display(self.path_style);
         PathBuf::from(
             self.path_style
-                .join(&self.work_directory_abs_path, repo_path.as_ref())
+                .join(&self.work_directory_abs_path, &*repo_path)
                 .unwrap(),
         )
     }

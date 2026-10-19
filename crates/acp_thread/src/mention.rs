@@ -118,7 +118,7 @@ impl MentionUri {
                 } else {
                     decoded
                 };
-                let path = normalized.as_ref();
+                let path: &str = normalized.as_ref();
 
                 if let Some(fragment) = url.fragment() {
                     validate_query_params(&url, &["symbol", "column"])?;

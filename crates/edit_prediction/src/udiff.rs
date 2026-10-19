@@ -147,7 +147,7 @@ pub async fn apply_diff(
         .filter_map(|line| {
             if let DiffLine::OldPath { path } = DiffLine::parse(line) {
                 if path != "/dev/null" {
-                    return Some(PathBuf::from(path.as_ref()));
+                    return Some(PathBuf::from(&*path));
                 }
             }
             None
@@ -166,7 +166,7 @@ pub async fn apply_diff(
             DiffEvent::Hunk { path, hunk, status } => {
                 if status == FileStatus::Deleted {
                     let delete_task = project.update(cx, |project, cx| {
-                        if let Some(path) = project.find_project_path(path.as_ref(), cx) {
+                        if let Some(path) = project.find_project_path(&*path, cx) {
                             project.delete_file(path, cx)
                         } else {
                             None
@@ -194,7 +194,7 @@ pub async fn apply_diff(
                                 } else {
                                     let project_path = project
                                         .update(cx, |project, cx| {
-                                            project.find_project_path(path.as_ref(), cx)
+                                            project.find_project_path(&*path, cx)
                                         })
                                         .with_context(|| format!("no such path: {}", path))?;
                                     project
@@ -232,7 +232,7 @@ pub async fn apply_diff(
                     project
                         .update(cx, |project, cx| {
                             let new_project_path = project
-                                .find_project_path(Path::new(renamed_to.as_ref()), cx)
+                                .find_project_path(Path::new(&*renamed_to), cx)
                                 .with_context(|| {
                                     format!("Failed to find worktree for new path: {}", renamed_to)
                                 })?;

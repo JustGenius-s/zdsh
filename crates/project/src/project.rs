@@ -1094,7 +1094,7 @@ impl DirectoryLister {
                 cx.background_spawn(async move {
                     let mut results = vec![];
                     let expanded = shellexpand::tilde(&path);
-                    let query = Path::new(expanded.as_ref());
+                    let query = Path::new(&*expanded);
                     let mut response = fs.read_dir(query).await?;
                     while let Some(path) = response.next().await {
                         let path = path?;

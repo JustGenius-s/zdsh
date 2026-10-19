@@ -75,7 +75,7 @@ impl Project {
             } else {
                 let cwd = cwd.to_string_lossy();
                 let tilde_substituted = shellexpand::tilde(&cwd);
-                Some(Arc::from(Path::new(tilde_substituted.as_ref())))
+                Some(Arc::from(Path::new(&*tilde_substituted)))
             }
         } else {
             self.active_project_directory(cx)

@@ -1,37 +1,29 @@
-# Terminal View
+# Terminal view
 
-## Design Notes
+`terminal_view` renders the terminal crate's backend-neutral cells, cursor, selection, hyperlinks, and modes using GPUI. `terminal_core` owns ANSI processing and grids; `terminal` owns PTY transport, process lifecycle, and shell hooks; `terminal_completion` owns command parsing and matching. See [Terminal backend](../terminal/README.md) for dependency pins and supported shell integration.
 
-This crate is split into two conceptual halves:
-- The terminal.rs file and the src/mappings/ folder, these contain the code for interacting with terminal emulator backends and maintaining the pty event loop. Some behavior in this file is constrained by terminal protocols and standards. The Zed init function is also placed here.
-- Everything else. These other files integrate the `Terminal` struct created in terminal.rs into the rest of GPUI. The main entry point for GPUI is the terminal_view.rs file and the modal.rs file.
+## Command blocks
 
-ttys are created externally, and so can fail in unexpected ways. However, GPUI currently does not have an API for models than can fail to instantiate. `TerminalBuilder` solves this by using Rust's type system to split tty instantiation into a 2 step process: first attempt to create the file handles with `TerminalBuilder::new()`, check the result, then call `TerminalBuilder::subscribe(cx)` from within a model context.
+Standalone local Bash and Zsh shells use `src/command_blocks.rs`. Completed commands form a compact record separated by subtle horizontal rules. A single header row shows the command, home-relative working directory, and duration; nonzero exit codes are highlighted, and an unknown exit status is marked separately. Long commands and directories truncate with their full values available on hover. Collapse and copy actions appear when hovering over a command block without shifting the header. Output remains independently selectable and can be collapsed. Completed output expands to its full retained height, including outputs longer than 1,000 lines. Command output views use inline rendering without their own scrollbars or wheel scrolling; the surrounding command history owns scrolling. Only cells intersecting the visible viewport are painted. Running interactive programs retain a terminal viewport, and alternate-screen programs occupy the full terminal surface.
 
-The TerminalView struct abstracts over failed and successful terminals, passing focus through to the associated view and allowing clients to build a terminal without worrying about errors.
+The compact input header shows the home-relative working directory, Git branch or detached HEAD, and project-relevant Rust, Node, Python, or virtual-environment labels. Tags use terminal theme colors, wrap at narrow widths, and show full values on hover. Environment queries run in the background and refresh after each command; outdated results are discarded. The permanent shortcut hint is omitted.
 
-## Backend Boundary
+Command input, command headers, and standalone output share the terminal font family, size, weight, fallbacks, OpenType features, and line height. Unset terminal family, size, and fallbacks inherit the corresponding buffer settings. Input styling refreshes when settings change. Directory labels, environment tags, and status labels use the application UI typography. The bottom input uses Zed's editor for multiline editing and IME input. Enter runs the buffer, Shift+Enter inserts a newline, Up/Down browse in-session history at the first/last input line, Ctrl+P/Ctrl+N browse history directly, Ctrl+C clears the draft, and Ctrl+L clears completed blocks. The input buffer is quoted as one shell entry and evaluated in the interactive shell, preserving changes such as `cd` and exported variables.
 
-`terminal.rs` exposes backend-neutral domain types such as terminal content, cells, modes, points, ranges, scroll commands, vi motions, hyperlinks, and search matches. UI code should depend on those types instead of importing backend-specific terminal types directly.
+`src/command_blocks/completions.rs` keeps typing quiet: only a longer matching command from in-session history appears as an inline hint. Right Arrow accepts the entire hint; Alt+Right accepts its next word. Enter runs only the actual buffer. Up Arrow with a nonempty prefix opens up to twelve distinct matching history entries, newest first; further typing filters that list. Plain history navigation retains the draft for restoration with Down Arrow.
 
-The current implementation is still Alacritty-backed, but the abstraction boundary keeps backend details concentrated in the terminal crate:
+Tab or Ctrl+Space requests core completions immediately. A single candidate is inserted directly. Multiple candidates extend a shared prefix when possible and open a compact, virtualized floating menu above the input without moving the command output. The first candidate is selected; Up/Down and Shift+Tab change selection, Enter/Tab accept it without running the command, and Escape or an outside click dismisses the menu. Editing closes a command completion menu. Completion edits preserve surrounding arguments and participate in editor undo.
 
-- `terminal_view` renders `TerminalContent` and dispatches backend-neutral actions.
-- Panels and tools use terminal-domain types for mode, cursor, range, hyperlink, and search behavior.
-- Backend-specific conversions stay near the terminal event loop and render snapshot code.
+A view-owned keystroke subscription handles command-input keys before editor key bindings. It acts only while this terminal is ready and its command editor is focused, and yields to IME composition and platform character input. Other editors retain their own bindings.
 
-This keeps the user-facing terminal behavior unchanged while making future backend experiments reviewable as backend implementations instead of UI-wide refactors.
+Pending queries are cancelled on edits, cursor moves, focus loss, and command execution; stale results are rejected before display and acceptance. IME composition retains its own keys. Hints and menus are hidden for selections, multiple cursors, and active commands. See the [backend completion scope](../terminal/README.md#completions) for available data sources.
 
-## Input
+The command editor remains mounted during execution, preserving its layout instead of replacing it with a status message. It is dimmed and read-only until the shell is ready; focusing it while busy redirects focus to the terminal. During command execution, keyboard input, paste, and Ctrl+C go to the PTY. Alternate-screen applications occupy the terminal area and return to the block document on exit. Focus returns to the command editor when the shell reports completion, provided the user has not focused another view.
 
-There are currently many distinct paths for getting keystrokes to the terminal:
+Block integration is initialized only for editable standalone interactive terminals. Task, Agent-owned, embedded, read-only, and remote terminals retain the continuous terminal view. Command-block history is not persisted. Search and text selection are scoped to individual terminal surfaces.
 
-1. Terminal specific characters and bindings. Things like ctrl-a mapping to ASCII control character 1, ANSI escape codes associated with the function keys, etc. These are caught with a raw key-down handler in the element and are processed immediately. This is done with the `try_keystroke()` method on Terminal
+## Rendering and input
 
-2. GPU Action handlers. GPUI clobbers a few vital keys by adding bindings to them in the global context. These keys are synthesized and then dispatched through the same `try_keystroke()` API as the above mappings
+`terminal_element.rs` lays out and paints terminal cells and handles terminal mouse protocols, local selection, hyperlinks, and IME text. The renderer depends on terminal-domain types rather than Warp implementation types. Completed block outputs reuse read-only `TerminalView` entities, so ANSI styling and text selection share the live renderer.
 
-3. IME text. When the special character mappings fail, we pass the keystroke back to GPUI to hand it to the IME system. This comes back to us in the `View::replace_text_in_range()` method, and we then send that to the terminal directly, bypassing `try_keystroke()`.
-
-4. Pasted text has a separate pathway.
-
-Generally, there's a distinction between 'keystrokes that need to be mapped' and 'strings which need to be written'. I've attempted to unify these under the '.try_keystroke()' API and the `.input()` API (which try_keystroke uses) so we have consistent input handling across the terminal
+Mapped key events and GPUI actions use `Terminal::try_keystroke`; text, IME commits, and paste use `Terminal::input`. The independent command editor owns its text until submission. PTY creation remains fallible through `TerminalBuilder::new`, followed by `TerminalBuilder::subscribe` inside a GPUI entity context.

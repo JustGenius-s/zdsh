@@ -537,11 +537,11 @@ fn main() {
                 // TODO: Expose this setting
                 allow_binary_download: true,
                 use_paths: settings.path.as_ref().map(|node_path| {
-                    let node_path = PathBuf::from(shellexpand::tilde(node_path).as_ref());
+                    let node_path = PathBuf::from(&*shellexpand::tilde(node_path));
                     let npm_path = settings
                         .npm_path
                         .as_ref()
-                        .map(|path| PathBuf::from(shellexpand::tilde(&path).as_ref()));
+                        .map(|path| PathBuf::from(&*shellexpand::tilde(&path)));
                     (
                         node_path.clone(),
                         npm_path.unwrap_or_else(|| {

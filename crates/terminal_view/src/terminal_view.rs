@@ -1,3 +1,4 @@
+mod command_blocks;
 mod persistence;
 pub mod terminal_element;
 pub mod terminal_panel;
@@ -61,6 +62,41 @@ use workspace::{
     },
 };
 use zed_actions::{agent::AddSelectionToThread, assistant::InlineAssist};
+
+fn terminal_text_style(cx: &App) -> gpui::TextStyle {
+    let settings = TerminalSettings::get_global(cx);
+    let theme_settings = theme_settings::ThemeSettings::get_global(cx);
+    gpui::TextStyle {
+        font_family: settings.font_family.as_ref().map_or_else(
+            || theme_settings.buffer_font.family.clone(),
+            |family| family.0.clone().into(),
+        ),
+        // An explicit empty list prevents command editors from inheriting UI font fallbacks.
+        font_fallbacks: Some(
+            settings
+                .font_fallbacks
+                .as_ref()
+                .or(theme_settings.buffer_font.fallbacks.as_ref())
+                .cloned()
+                .unwrap_or_default(),
+        ),
+        font_features: settings
+            .font_features
+            .clone()
+            .unwrap_or_else(gpui::FontFeatures::disable_ligatures),
+        font_weight: settings.font_weight.unwrap_or_default(),
+        font_size: settings
+            .font_size
+            .map_or_else(
+                || theme_settings.buffer_font_size(cx),
+                |size| theme_settings::adjusted_font_size(size, cx),
+            )
+            .into(),
+        line_height: relative(settings.line_height.value()),
+        color: cx.theme().colors().terminal_foreground,
+        ..Default::default()
+    }
+}
 
 struct ImeState {
     marked_text: String,
@@ -129,6 +165,8 @@ pub struct BlockContext<'a, 'b> {
 
 ///A terminal view, maintains the PTY's file handles and communicates with the terminal
 pub struct TerminalView {
+    command_ui: Option<command_blocks::CommandBlockUi>,
+    command_ui_initialized: bool,
     terminal: Entity<Terminal>,
     workspace: WeakEntity<Workspace>,
     project: WeakEntity<Project>,
@@ -173,6 +211,8 @@ pub struct TerminalView {
 pub enum TerminalMode {
     #[default]
     Standalone,
+    /// Completed command output expands inside the command history's scroll container.
+    CommandOutput,
     Embedded {
         max_lines_when_unfocused: Option<usize>,
     },
@@ -215,8 +255,9 @@ impl EventEmitter<ItemEvent> for TerminalView {}
 impl EventEmitter<SearchEvent> for TerminalView {}
 
 impl Focusable for TerminalView {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus_handle.clone()
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.command_editor_focus(cx)
+            .unwrap_or_else(|| self.focus_handle.clone())
     }
 }
 
@@ -288,6 +329,8 @@ impl TerminalView {
         ];
 
         Self {
+            command_ui: None,
+            command_ui_initialized: false,
             terminal,
             workspace: workspace_handle,
             project,
@@ -405,6 +448,14 @@ impl TerminalView {
     pub fn content_mode(&self, window: &Window, cx: &App) -> ContentMode {
         match &self.mode {
             TerminalMode::Standalone => ContentMode::Scrollable,
+            TerminalMode::CommandOutput => {
+                let terminal = self.terminal.read(cx);
+                let total_lines = terminal.total_lines();
+                ContentMode::Inline {
+                    displayed_lines: terminal.used_lines().min(total_lines).max(1),
+                    total_lines,
+                }
+            }
             TerminalMode::Embedded {
                 max_lines_when_unfocused,
             } => {
@@ -744,7 +795,12 @@ impl TerminalView {
             return;
         }
         self.scroll_top = px(0.);
-        self.terminal.update(cx, |term, _| term.clear());
+        if self.command_ui.is_some() {
+            self.terminal
+                .update(cx, |term, cx| term.clear_command_blocks(cx));
+        } else {
+            self.terminal.update(cx, |term, _| term.clear());
+        }
         cx.notify();
     }
 
@@ -913,6 +969,9 @@ impl TerminalView {
     }
 
     pub fn should_show_cursor(&self, focused: bool, cx: &mut Context<Self>) -> bool {
+        if self.read_only && !self.terminal.read(cx).vi_mode_enabled() {
+            return false;
+        }
         // Hide cursor when in embedded mode and not focused (read-only output like Agent panel)
         if let TerminalMode::Embedded { .. } = &self.mode {
             if !focused {
@@ -1223,6 +1282,7 @@ fn subscribe_for_terminal_events(
 
             match event {
                 Event::Wakeup => {
+                    terminal_view.update_command_ui(window, cx);
                     cx.notify();
                     window.invalidate_character_coordinates();
                     cx.emit(Event::Wakeup);
@@ -1443,6 +1503,19 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.command_ui_initialized {
+            self.command_ui_initialized = true;
+            if !self.read_only
+                && matches!(self.mode, TerminalMode::Standalone)
+                && self.terminal.read(cx).supports_command_blocks()
+            {
+                self.command_ui = Some(command_blocks::CommandBlockUi::new(window, cx));
+            }
+        }
+        if self.command_ui.is_some() && !self.terminal.read(cx).command_uses_alternate_screen() {
+            return self.render_command_blocks(window, cx);
+        }
+
         // TODO: this should be moved out of render
         self.scroll_handle.update(self.terminal.read(cx));
 
@@ -1573,6 +1646,7 @@ impl Render for TerminalView {
                 )
                 .with_priority(1)
             }))
+            .into_any_element()
     }
 }
 

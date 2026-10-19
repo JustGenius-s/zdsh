@@ -180,7 +180,7 @@ pub fn new_journal_entry(workspace: &Workspace, window: &mut Window, cx: &mut Ap
 
 fn journal_dir(path: &str) -> Option<PathBuf> {
     let expanded = shellexpand::full(path).ok()?;
-    let base_path = Path::new(expanded.as_ref());
+    let base_path = Path::new(&*expanded);
     let absolute_path = if base_path.is_absolute() {
         base_path.to_path_buf()
     } else {

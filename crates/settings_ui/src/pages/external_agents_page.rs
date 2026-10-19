@@ -902,7 +902,7 @@ async fn add_custom_agent_settings_entry(
     let item = workspace
         .update_in(cx, |_, window, cx| {
             create_and_open_local_file(paths::settings_file(), window, cx, || {
-                settings::initial_user_settings_content().as_ref().into()
+                (&*settings::initial_user_settings_content()).into()
             })
         })?
         .await?;

@@ -123,7 +123,7 @@ pub fn install_ipykernel_and_assign(
                 .await
                 .context("failed to run uv pip install ipykernel")?
         } else {
-            util::command::new_command(python_path.to_string_lossy().as_ref())
+            util::command::new_command(&*python_path.to_string_lossy())
                 .args(&["-m", "pip", "install", "ipykernel"])
                 .output()
                 .await
