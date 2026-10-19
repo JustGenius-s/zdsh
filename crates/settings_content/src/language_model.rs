@@ -13,6 +13,7 @@ pub struct AllLanguageModelSettingsContent {
     pub anthropic: Option<AnthropicSettingsContent>,
     pub anthropic_compatible: Option<HashMap<Arc<str>, AnthropicCompatibleSettingsContent>>,
     pub bedrock: Option<AmazonBedrockSettingsContent>,
+    pub codebuddy: Option<CodeBuddySettingsContent>,
     pub deepseek: Option<DeepseekSettingsContent>,
     pub google: Option<GoogleSettingsContent>,
     #[serde(rename = "llama.cpp")]
@@ -367,6 +368,13 @@ pub struct DeepseekAvailableModel {
     pub display_name: Option<String>,
     pub max_tokens: u64,
     pub max_output_tokens: Option<u64>,
+}
+
+#[with_fallible_options]
+#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct CodeBuddySettingsContent {
+    pub api_url: Option<String>,
+    pub custom_headers: Option<HashMap<String, String>>,
 }
 
 #[with_fallible_options]

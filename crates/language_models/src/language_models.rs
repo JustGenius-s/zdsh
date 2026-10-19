@@ -18,7 +18,9 @@ use crate::provider::anthropic::AnthropicLanguageModelProvider;
 use crate::provider::anthropic_compatible::AnthropicCompatibleLanguageModelProvider;
 use crate::provider::bedrock::BedrockLanguageModelProvider;
 use crate::provider::cloud::CloudLanguageModelProvider;
+use crate::provider::codebuddy::CodeBuddyLanguageModelProvider;
 use crate::provider::copilot_chat::CopilotChatLanguageModelProvider;
+use crate::provider::cursor::CursorLanguageModelProvider;
 use crate::provider::google::GoogleLanguageModelProvider;
 use crate::provider::llama_cpp::LlamaCppLanguageModelProvider;
 use crate::provider::lmstudio::LmStudioLanguageModelProvider;
@@ -273,6 +275,22 @@ fn register_language_model_providers(
     );
     registry.register_provider(
         Arc::new(DeepSeekLanguageModelProvider::new(
+            client.http_client(),
+            credentials_provider.clone(),
+            cx,
+        )),
+        cx,
+    );
+    registry.register_provider(
+        Arc::new(CodeBuddyLanguageModelProvider::new(
+            client.http_client(),
+            credentials_provider.clone(),
+            cx,
+        )),
+        cx,
+    );
+    registry.register_provider(
+        Arc::new(CursorLanguageModelProvider::new(
             client.http_client(),
             credentials_provider.clone(),
             cx,

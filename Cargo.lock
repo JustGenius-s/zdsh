@@ -3371,6 +3371,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "codebuddy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures 0.3.34",
+ "http_client",
+ "open_ai",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4564,6 +4576,29 @@ name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
+
+[[package]]
+name = "cursor_agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bytes 1.11.1",
+ "collections",
+ "credentials_provider",
+ "futures 0.3.34",
+ "gpui",
+ "gpui_util",
+ "http_client",
+ "language_model",
+ "log",
+ "parking_lot",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
 
 [[package]]
 name = "cxx"
@@ -9960,12 +9995,14 @@ dependencies = [
  "cloud_api_client",
  "cloud_api_types",
  "cloud_llm_client",
+ "codebuddy",
  "collections",
  "component",
  "convert_case 0.11.0",
  "copilot_chat",
  "copilot_ui",
  "credentials_provider",
+ "cursor_agent",
  "db",
  "deepseek",
  "extension",

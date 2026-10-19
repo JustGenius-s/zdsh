@@ -1,0 +1,36 @@
+[package]
+name = "cursor_agent"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/cursor_agent.rs"
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+bytes.workspace = true
+collections.workspace = true
+credentials_provider.workspace = true
+futures.workspace = true
+gpui.workspace = true
+gpui_util.workspace = true
+http_client.workspace = true
+language_model.workspace = true
+log.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+http_client = { workspace = true, features = ["test-support"] }
