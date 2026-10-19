@@ -406,6 +406,14 @@ impl MultiWorkspace {
         }
     }
 
+    /// Keeps an open thread list visible when another tab takes over, without moving focus.
+    pub fn move_sidebar_to_item(&mut self, item_id: EntityId, cx: &mut Context<Self>) {
+        if self.sidebar_open() && self.sidebar_host != Some(item_id) {
+            self.sidebar_host = Some(item_id);
+            cx.notify();
+        }
+    }
+
     pub fn release_sidebar_item(&mut self, item_id: EntityId, cx: &mut Context<Self>) {
         if self.sidebar_host == Some(item_id) {
             self.sidebar_host = None;

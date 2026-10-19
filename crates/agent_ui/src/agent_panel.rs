@@ -4478,6 +4478,17 @@ impl AgentPanel {
                 self.conversation_items.insert(id, item.downgrade());
                 item
             });
+        // Must run before the item is activated, while the current host tab is still visible.
+        let item_id = item.entity_id();
+        window.defer(cx, move |window, cx| {
+            if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten()
+                && multi_workspace.read(cx).sidebar_visible(cx)
+            {
+                multi_workspace.update(cx, |multi_workspace, cx| {
+                    multi_workspace.move_sidebar_to_item(item_id, cx)
+                });
+            }
+        });
         self.open_item_in_center(Box::new(item), window, cx);
         true
     }
