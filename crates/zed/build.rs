@@ -37,6 +37,19 @@ fn main() {
 
         // weak link to support Catalina
         println!("cargo:rustc-link-arg=-Wl,-weak_framework,ScreenCaptureKit");
+
+        // Debug builds outgrow the 16MB of `__eh_frame` that compact unwind can address, which
+        // only slows exception handling, so the linker's warning about it is silenced there.
+        // Linkers that predate the warning don't know the option, so it's only passed to one
+        // that accepts it.
+        if std::env::var("PROFILE").is_ok_and(|profile| profile == "debug")
+            && Command::new("ld")
+                .args(["-no_warn_eh_frame_too_large", "-v"])
+                .output()
+                .is_ok_and(|output| output.status.success())
+        {
+            println!("cargo:rustc-link-arg-bin=zed=-Wl,-no_warn_eh_frame_too_large");
+        }
     }
 
     // Populate git sha environment variable if git is available
