@@ -8682,6 +8682,7 @@ impl Workspace {
         &self,
         position: DockPosition,
         dock: &Entity<Dock>,
+        header: Option<AnyElement>,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Stateful<Div>> {
@@ -8722,7 +8723,26 @@ impl Workspace {
             .flex()
             .overflow_hidden()
             .flex_none()
-            .child(dock.clone())
+            .map(|this| match header {
+                // The header continues the dock's edge so the line beside the center reaches
+                // the top of the window.
+                Some(header) => this
+                    .flex_col()
+                    .child(
+                        div()
+                            .w_full()
+                            .flex_none()
+                            .map(|header_container| match position {
+                                DockPosition::Left => header_container.border_r_1(),
+                                DockPosition::Right => header_container.border_l_1(),
+                                DockPosition::Bottom => header_container,
+                            })
+                            .border_color(cx.theme().colors().border)
+                            .child(header),
+                    )
+                    .child(div().flex().flex_1().min_h_0().w_full().child(dock.clone())),
+                None => this.child(dock.clone()),
+            })
             .children(leader_border);
 
         // Apply sizing only when the dock is open. When closed the dock is still
@@ -8915,27 +8935,74 @@ impl Workspace {
     /// focusing it announces "Editor" instead of falling back to the whole
     /// window. We only make it focusable in that case so it never adds a hitbox
     /// or intercepts mouse focus for other users.
+    /// The title bar as an ARIA toolbar so region navigation (FocusNextPart) can reach its
+    /// controls and assistive technology announces it as a toolbar. The contained controls form
+    /// a tab group: region navigation lands on the first control (per the ARIA toolbar pattern),
+    /// Tab steps through them, and arrow keys move between them once focus is inside.
+    fn render_titlebar_region(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let item = self.titlebar_item.clone()?;
+        Some(
+            div()
+                .id("titlebar-region")
+                .track_focus(&self.titlebar_focus_handle)
+                .tab_group()
+                .role(gpui::Role::Toolbar)
+                .aria_label("Title bar")
+                .on_key_down(
+                    cx.listener(|workspace, event: &gpui::KeyDownEvent, window, cx| {
+                        if event.keystroke.modifiers.modified() {
+                            return;
+                        }
+                        match event.keystroke.key.as_str() {
+                            "right" => {
+                                workspace.move_titlebar_item_focus(true, window, cx);
+                                cx.stop_propagation();
+                            }
+                            "left" => {
+                                workspace.move_titlebar_item_focus(false, window, cx);
+                                cx.stop_propagation();
+                            }
+                            _ => {}
+                        }
+                    }),
+                )
+                .w_full()
+                .child(item)
+                .into_any_element(),
+        )
+    }
+
     fn render_center(
         &self,
         render_cx: &PaneRenderContext,
+        header: Option<AnyElement>,
         window: &mut Window,
         cx: &mut App,
     ) -> impl IntoElement {
+        let is_a11y_active = window.is_a11y_active();
+        let center = self.center.render(
+            self.zoomed.as_ref(),
+            self.maximized_pane.as_ref(),
+            render_cx,
+            window,
+            cx,
+        );
         div()
             .id("editor-region")
             .role(gpui::Role::Main)
             .aria_label("Editor")
-            .when(window.is_a11y_active(), |this| {
+            .when(is_a11y_active, |this| {
                 this.track_focus(&self.region_focus_handles.editor)
             })
             .size_full()
-            .child(self.center.render(
-                self.zoomed.as_ref(),
-                self.maximized_pane.as_ref(),
-                render_cx,
-                window,
-                cx,
-            ))
+            .map(|this| match header {
+                Some(header) => this
+                    .flex()
+                    .flex_col()
+                    .child(header)
+                    .child(div().flex().flex_1().min_h_0().w_full().child(center)),
+                None => this.child(center),
+            })
     }
 
     pub fn for_window(window: &Window, cx: &App) -> Option<Entity<Workspace>> {
@@ -9654,6 +9721,29 @@ impl Render for Workspace {
             .collect::<Vec<_>>();
         let bottom_dock_layout = WorkspaceSettings::get_global(cx).bottom_dock_layout;
 
+        // macOS draws its window controls over the content, so the title bar can head the left
+        // dock and let the center and right dock reach the top of the window. Elsewhere the
+        // window controls need the full-width bar. A zoomed item covers the docks, so it keeps
+        // the bar too.
+        let embedded_titlebar =
+            cfg!(target_os = "macos") && self.titlebar_item.is_some() && self.zoomed.is_none();
+        let titlebar_heads_left_dock = embedded_titlebar && self.left_dock.read(cx).is_open();
+        let top_titlebar = if embedded_titlebar {
+            None
+        } else {
+            self.render_titlebar_region(cx)
+        };
+        let left_dock_header = if titlebar_heads_left_dock {
+            self.render_titlebar_region(cx)
+        } else {
+            None
+        };
+        let center_header = if embedded_titlebar && !titlebar_heads_left_dock {
+            self.render_titlebar_region(cx)
+        } else {
+            None
+        };
+
         let pane_render_context = PaneRenderContext {
             follower_states: &self.follower_states,
             active_call: self.active_call(),
@@ -9674,42 +9764,7 @@ impl Render for Workspace {
             .items_start()
             .text_color(colors.text)
             .overflow_hidden()
-            // Expose the title bar as an ARIA toolbar so region navigation
-            // (FocusNextPart) can reach the top bar's controls and assistive
-            // technology announces it as a toolbar. The contained controls form
-            // a tab group: region navigation lands on the first control (per
-            // the ARIA toolbar pattern), Tab steps through them, and arrow keys
-            // move between them once focus is inside.
-            .when_some(self.titlebar_item.clone(), |this, item| {
-                this.child(
-                    div()
-                        .id("titlebar-region")
-                        .track_focus(&self.titlebar_focus_handle)
-                        .tab_group()
-                        .role(gpui::Role::Toolbar)
-                        .aria_label("Title bar")
-                        .on_key_down(cx.listener(
-                            |workspace, event: &gpui::KeyDownEvent, window, cx| {
-                                if event.keystroke.modifiers.modified() {
-                                    return;
-                                }
-                                match event.keystroke.key.as_str() {
-                                    "right" => {
-                                        workspace.move_titlebar_item_focus(true, window, cx);
-                                        cx.stop_propagation();
-                                    }
-                                    "left" => {
-                                        workspace.move_titlebar_item_focus(false, window, cx);
-                                        cx.stop_propagation();
-                                    }
-                                    _ => {}
-                                }
-                            },
-                        ))
-                        .w_full()
-                        .child(item),
-                )
-            })
+            .children(top_titlebar)
             .on_modifiers_changed(move |_, _, cx| {
                 for &id in &notification_entities {
                     cx.notify(id);
@@ -9732,8 +9787,9 @@ impl Render for Workspace {
                             .flex()
                             .flex_col()
                             .overflow_hidden()
-                            .border_t_1()
-                            .border_b_1()
+                            // With the title bar embedded, the docks and the status bar share
+                            // one surface and only the center is outlined.
+                            .when(!embedded_titlebar, |this| this.border_t_1().border_b_1())
                             .border_color(colors.border)
                             .child({
                                 let this = cx.entity();
@@ -9830,6 +9886,7 @@ impl Render for Workspace {
                                                 .children(self.render_dock(
                                                     DockPosition::Left,
                                                     &self.left_dock,
+                                                    left_dock_header,
                                                     window,
                                                     cx,
                                                 ))
@@ -9850,6 +9907,7 @@ impl Render for Workspace {
                                                                 )
                                                                 .child(self.render_center(
                                                                     &pane_render_context,
+                                                                    center_header,
                                                                     window,
                                                                     cx,
                                                                 ))
@@ -9864,6 +9922,7 @@ impl Render for Workspace {
                                                 .children(self.render_dock(
                                                     DockPosition::Right,
                                                     &self.right_dock,
+                                                    None,
                                                     window,
                                                     cx,
                                                 )),
@@ -9871,6 +9930,7 @@ impl Render for Workspace {
                                         .child(div().w_full().children(self.render_dock(
                                             DockPosition::Bottom,
                                             &self.bottom_dock,
+                                            None,
                                             window,
                                             cx,
                                         ))),
@@ -9893,6 +9953,7 @@ impl Render for Workspace {
                                                         .children(self.render_dock(
                                                             DockPosition::Left,
                                                             &self.left_dock,
+                                                            left_dock_header,
                                                             window,
                                                             cx,
                                                         ))
@@ -9915,6 +9976,7 @@ impl Render for Workspace {
                                                                         )
                                                                         .child(self.render_center(
                                                                             &pane_render_context,
+                                                                            center_header,
                                                                             window,
                                                                             cx,
                                                                         ))
@@ -9932,6 +9994,7 @@ impl Render for Workspace {
                                                 .child(div().w_full().children(self.render_dock(
                                                     DockPosition::Bottom,
                                                     &self.bottom_dock,
+                                                    None,
                                                     window,
                                                     cx,
                                                 ))),
@@ -9939,6 +10002,7 @@ impl Render for Workspace {
                                         .children(self.render_dock(
                                             DockPosition::Right,
                                             &self.right_dock,
+                                            None,
                                             window,
                                             cx,
                                         )),
@@ -9949,6 +10013,7 @@ impl Render for Workspace {
                                         .children(self.render_dock(
                                             DockPosition::Left,
                                             &self.left_dock,
+                                            left_dock_header,
                                             window,
                                             cx,
                                         ))
@@ -9982,6 +10047,7 @@ impl Render for Workspace {
                                                                         )
                                                                         .child(self.render_center(
                                                                             &pane_render_context,
+                                                                            center_header,
                                                                             window,
                                                                             cx,
                                                                         ))
@@ -9998,6 +10064,7 @@ impl Render for Workspace {
                                                         .children(self.render_dock(
                                                             DockPosition::Right,
                                                             &self.right_dock,
+                                                            None,
                                                             window,
                                                             cx,
                                                         )),
@@ -10005,6 +10072,7 @@ impl Render for Workspace {
                                                 .child(div().w_full().children(self.render_dock(
                                                     DockPosition::Bottom,
                                                     &self.bottom_dock,
+                                                    None,
                                                     window,
                                                     cx,
                                                 ))),
@@ -10016,6 +10084,7 @@ impl Render for Workspace {
                                         .children(self.render_dock(
                                             DockPosition::Left,
                                             &self.left_dock,
+                                            left_dock_header,
                                             window,
                                             cx,
                                         ))
@@ -10025,6 +10094,9 @@ impl Render for Workspace {
                                                 .flex_col()
                                                 .flex_1()
                                                 .overflow_hidden()
+                                                .when(embedded_titlebar, |this| {
+                                                    this.border_b_1().border_color(colors.border)
+                                                })
                                                 .child(
                                                     h_flex()
                                                         .flex_1()
@@ -10034,6 +10106,7 @@ impl Render for Workspace {
                                                         )
                                                         .child(self.render_center(
                                                             &pane_render_context,
+                                                            center_header,
                                                             window,
                                                             cx,
                                                         ))
@@ -10045,6 +10118,7 @@ impl Render for Workspace {
                                                 .children(self.render_dock(
                                                     DockPosition::Bottom,
                                                     &self.bottom_dock,
+                                                    None,
                                                     window,
                                                     cx,
                                                 )),
@@ -10052,6 +10126,7 @@ impl Render for Workspace {
                                         .children(self.render_dock(
                                             DockPosition::Right,
                                             &self.right_dock,
+                                            None,
                                             window,
                                             cx,
                                         )),

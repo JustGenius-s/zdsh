@@ -442,6 +442,8 @@ pub struct Pane {
     /// Otherwise, when `display_nav_history_buttons` is Some, it determines whether nav buttons should be displayed.
     display_nav_history_buttons: Option<bool>,
     double_click_dispatch_action: Box<dyn Action>,
+    /// Set while the left button is down on the empty tab bar, so the next move drags the window.
+    window_move_pending: bool,
     save_modals_spawned: HashSet<EntityId>,
     close_pane_if_empty: bool,
     pub new_item_context_menu_handle: PopoverMenuHandle<ContextMenu>,
@@ -615,6 +617,7 @@ impl Pane {
             ),
             _subscriptions: subscriptions,
             double_click_dispatch_action,
+            window_move_pending: false,
             save_modals_spawned: HashSet::default(),
             close_pane_if_empty: true,
             split_item_context_menu_handle: Default::default(),
@@ -3740,6 +3743,25 @@ impl Pane {
                     window.dispatch_action(this.double_click_dispatch_action.boxed_clone(), cx);
                 }
             }))
+            // On macOS the tab bar can sit at the top edge of the window where the title bar used
+            // to be, so its empty space moves the window like a title bar does.
+            .when(cfg!(target_os = "macos"), |this| {
+                this.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, _| this.window_move_pending = true),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, _| this.window_move_pending = false),
+                )
+                .on_mouse_down_out(cx.listener(|this, _, _, _| this.window_move_pending = false))
+                .on_mouse_move(cx.listener(|this, _, window, _| {
+                    if this.window_move_pending {
+                        this.window_move_pending = false;
+                        window.start_window_move();
+                    }
+                }))
+            })
     }
 
     fn render_pinned_tab_bar_drop_target(&self, cx: &mut Context<Pane>) -> impl IntoElement {
