@@ -1,4 +1,3 @@
-pub mod items;
 mod toolbar_controls;
 
 mod buffer_diagnostics;
@@ -45,7 +44,7 @@ pub use toolbar_controls::ToolbarControls;
 use ui::{Icon, IconName, Label, h_flex, prelude::*};
 use util::ResultExt;
 use workspace::{
-    ItemNavHistory, Workspace,
+    ItemNavHistory, RailItem, Workspace,
     item::{Item, ItemEvent, ItemHandle, SaveOptions, TabContentParams},
     searchable::SearchableItemHandle,
 };
@@ -70,6 +69,17 @@ pub fn init(cx: &mut App) {
     editor::set_diagnostic_renderer(diagnostic_renderer::DiagnosticRenderer {}, cx);
     cx.observe_new(ProjectDiagnosticsEditor::register).detach();
     cx.observe_new(BufferDiagnosticsEditor::register).detach();
+}
+
+/// The rail's entry for the project diagnostics, which the `diagnostics.button` setting hides.
+pub fn rail_item() -> RailItem {
+    RailItem {
+        icon: IconName::ToolDiagnostics,
+        tooltip: "Project Diagnostics",
+        action: Box::new(Deploy),
+        is_visible: |cx| ProjectSettings::get_global(cx).diagnostics.button,
+        is_active: |item| item.downcast::<ProjectDiagnosticsEditor>().is_some(),
+    }
 }
 
 pub(crate) struct ProjectDiagnosticsEditor {

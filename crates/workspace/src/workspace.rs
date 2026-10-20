@@ -41,8 +41,9 @@ pub use multi_workspace::{
     RemovalIntent, SerializedProjectGroupState, Sidebar, SidebarEvent, SidebarHandle,
     SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar,
 };
-pub use panel_header::{PickerTrigger, panel_header};
+pub use panel_header::{KitIconButton, PickerTrigger, panel_header};
 pub use path_list::{PathList, SerializedPathList};
+pub use rail::RailItem;
 pub use remote::{
     RemoteConnectionIdentity, remote_connection_identity, same_remote_connection_identity,
 };
@@ -1603,6 +1604,7 @@ pub struct Workspace {
     last_active_center_pane: Option<WeakEntity<Pane>>,
     last_active_view_id: Option<proto::ViewId>,
     status_bar: Entity<StatusBar>,
+    rail_items: Vec<RailItem>,
     pub(crate) modal_layer: Entity<ModalLayer>,
     toast_layer: Entity<ToastLayer>,
     titlebar_item: Option<AnyView>,
@@ -2106,6 +2108,7 @@ impl Workspace {
             last_active_center_pane: Some(center_pane.downgrade()),
             last_active_view_id: None,
             status_bar,
+            rail_items: Vec::new(),
             modal_layer,
             toast_layer,
             titlebar_item: None,

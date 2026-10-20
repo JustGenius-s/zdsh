@@ -26,8 +26,6 @@ mod module_list;
 #[cfg(test)]
 mod new_process_modal;
 #[cfg(test)]
-mod persistence;
-#[cfg(test)]
 mod stack_frame_list;
 #[cfg(test)]
 mod variable_list;

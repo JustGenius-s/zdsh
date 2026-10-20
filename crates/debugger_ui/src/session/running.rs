@@ -1739,11 +1739,6 @@ impl RunningState {
         &self.variable_list
     }
 
-    #[cfg(test)]
-    pub(crate) fn serialized_layout(&self, cx: &App) -> SerializedLayout {
-        persistence::build_serialized_layout(&self.panes.root, self.dock_axis, cx)
-    }
-
     pub fn capabilities(&self, cx: &App) -> Capabilities {
         self.session().read(cx).capabilities().clone()
     }
@@ -2070,11 +2065,6 @@ impl RunningState {
         );
 
         Member::Axis(group_root)
-    }
-
-    pub(crate) fn invert_axies(&mut self, cx: &mut App) {
-        self.dock_axis = self.dock_axis.invert();
-        self.panes.invert_axies(cx);
     }
 }
 

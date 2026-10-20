@@ -14,6 +14,7 @@ use gpui_kit::{
     component::{
         Icon as KitIcon, Theme as KitTheme,
         menu::{DropdownMenu, PopupMenu, PopupMenuItem},
+        separator::Separator,
     },
 };
 use project::DisableAiSettings;
@@ -23,9 +24,25 @@ use theme_settings::{ThemeAppearanceMode, ThemeSelection, ThemeSettings};
 use ui::{IconName, Tooltip, v_flex};
 use util::ResultExt as _;
 
-use crate::{UseAgenticLayout, UseClassicLayout, Workspace};
+use crate::{ItemHandle, UseAgenticLayout, UseClassicLayout, Workspace};
+
+/// A view that an action opens as a tab, listed on the rail in a group of its own below the left
+/// dock's panels. The app adds these, since the views live in crates the workspace doesn't
+/// depend on.
+pub struct RailItem {
+    pub icon: IconName,
+    pub tooltip: &'static str,
+    pub action: Box<dyn Action>,
+    pub is_visible: fn(&App) -> bool,
+    pub is_active: fn(&dyn ItemHandle) -> bool,
+}
 
 impl Workspace {
+    pub fn add_rail_item(&mut self, item: RailItem, cx: &mut Context<Self>) {
+        self.rail_items.push(item);
+        cx.notify();
+    }
+
     /// The rail at the window's left edge, beside the content block. It stays when the left dock
     /// collapses, and switches the dock between its panels.
     pub(crate) fn render_rail(
@@ -64,6 +81,28 @@ impl Workspace {
                 )
             })
             .collect::<Vec<_>>();
+        let active_item = self.active_item(cx);
+        let item_buttons = self
+            .rail_items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| (item.is_visible)(cx))
+            .map(|(index, item)| {
+                let is_selected = active_item
+                    .as_ref()
+                    .is_some_and(|active_item| (item.is_active)(active_item.as_ref()));
+                let tooltip = item.tooltip;
+                let tooltip_action = item.action.boxed_clone();
+                let action = item.action.boxed_clone();
+                RailButton::new(
+                    SharedString::from(format!("rail-item-{index}")),
+                    item.icon.path(),
+                )
+                .selected(is_selected)
+                .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+                .tooltip(move |_, cx| Tooltip::for_action(tooltip, &*tooltip_action, cx))
+            })
+            .collect::<Vec<_>>();
         let fs = self.app_state().fs.clone();
 
         v_flex()
@@ -86,6 +125,10 @@ impl Workspace {
                         Tooltip::for_action("Extensions", &zed_actions::Extensions::default(), cx)
                     }),
             )
+            .when(!item_buttons.is_empty(), |rail| {
+                rail.child(Separator::horizontal().w_5())
+                    .children(item_buttons)
+            })
             .child(div().flex_1())
             .child(
                 RailButton::new("rail-theme", KitIconName::Palette.path())

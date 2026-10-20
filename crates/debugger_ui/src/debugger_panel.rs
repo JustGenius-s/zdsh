@@ -14,7 +14,7 @@ use anyhow::{Context as _, Result, anyhow};
 use collections::IndexMap;
 use dap::adapters::DebugAdapterName;
 use dap::{DapRegistry, StartDebuggingRequestArguments};
-use dap::{client::SessionId, debugger_settings::DebuggerSettings};
+use dap::client::SessionId;
 use editor::Editor;
 use feature_flags::{FeatureFlag, FeatureFlagAppExt as _, PresenceFlag, register_feature_flag};
 use gpui::{
@@ -26,11 +26,9 @@ use gpui::{
 use itertools::Itertools as _;
 use language::Buffer;
 use project::debugger::session::{Session, SessionQuirks, SessionState, SessionStateEvent};
-use project::{DebugScenarioContext, Fs, ProjectPath, TaskSourceKind, WorktreeId};
+use project::{DebugScenarioContext, ProjectPath, TaskSourceKind, WorktreeId};
 use project::{Project, debugger::session::ThreadStatus};
 use rpc::proto::{self};
-use settings::Settings;
-use std::sync::Arc;
 use task::{DebugScenario, SharedTaskContext};
 
 use ui::{
@@ -69,8 +67,6 @@ pub struct DebugPanel {
         IndexMap<Entity<DebugSession>, Vec<WeakEntity<DebugSession>>>,
     pub(crate) thread_picker_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub(crate) session_picker_menu_handle: PopoverMenuHandle<ContextMenu>,
-    fs: Arc<dyn Fs>,
-    is_zoomed: bool,
     _subscriptions: [Subscription; 2],
     breakpoint_list: Entity<BreakpointList>,
 }
@@ -114,10 +110,8 @@ impl DebugPanel {
                 project,
                 workspace: workspace.weak_handle(),
                 context_menu: None,
-                fs: workspace.app_state().fs.clone(),
                 thread_picker_menu_handle,
                 session_picker_menu_handle,
-                is_zoomed: false,
                 _subscriptions: [focus_subscription, breakpoint_subscription],
                 debug_scenario_scheduled_last: true,
             }
@@ -1273,22 +1267,6 @@ impl DebugPanel {
         self.session_picker_menu_handle.toggle(window, cx);
     }
 
-    fn toggle_zoom(
-        &mut self,
-        _: &workspace::ToggleZoom,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.is_zoomed {
-            cx.emit(PanelEvent::ZoomOut);
-        } else {
-            if !self.focus_handle(cx).contains_focused(window, cx) {
-                cx.focus_self(window);
-            }
-            cx.emit(PanelEvent::ZoomIn);
-        }
-    }
-
     fn label_for_child_session(
         &self,
         parent_session: &Entity<Session>,
@@ -1519,32 +1497,22 @@ impl Panel for DebugPanel {
         DEBUG_PANEL_KEY
     }
 
-    fn position(&self, _window: &Window, cx: &App) -> DockPosition {
-        DebuggerSettings::get_global(cx).dock.into()
+    /// Shown as a tab, the panel stays out of sight in the bottom dock, and lays itself out as it
+    /// would there, for the width of the center.
+    fn position(&self, _window: &Window, _cx: &App) -> DockPosition {
+        DockPosition::Bottom
     }
 
-    fn position_is_valid(&self, _: DockPosition) -> bool {
-        true
+    fn position_is_valid(&self, position: DockPosition) -> bool {
+        position == DockPosition::Bottom
     }
 
     fn set_position(
         &mut self,
-        position: DockPosition,
-        window: &mut Window,
-        cx: &mut Context<Self>,
+        _position: DockPosition,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
     ) {
-        if position.axis() != self.position(window, cx).axis() {
-            self.sessions_with_children.keys().for_each(|session_item| {
-                session_item.update(cx, |item, cx| {
-                    item.running_state()
-                        .update(cx, |state, cx| state.invert_axies(cx))
-                })
-            });
-        }
-
-        settings::update_settings_file(self.fs.clone(), cx, move |settings, _| {
-            settings.debugger.get_or_insert_default().dock = Some(position.into());
-        });
     }
 
     fn default_size(&self, _window: &Window, _: &App) -> Pixels {
@@ -1555,18 +1523,12 @@ impl Panel for DebugPanel {
         Some(proto::PanelId::DebugPanel)
     }
 
-    fn icon(&self, _window: &Window, cx: &App) -> Option<IconName> {
-        DebuggerSettings::get_global(cx)
-            .button
-            .then_some(IconName::Debug)
+    fn icon(&self, _window: &Window, _cx: &App) -> Option<IconName> {
+        None
     }
 
-    fn icon_tooltip(&self, _window: &Window, cx: &App) -> Option<&'static str> {
-        if DebuggerSettings::get_global(cx).button {
-            Some("Debug Panel")
-        } else {
-            None
-        }
+    fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {
+        None
     }
 
     fn toggle_action(&self) -> Box<dyn Action> {
@@ -1581,21 +1543,52 @@ impl Panel for DebugPanel {
         7
     }
 
-    fn hide_button_setting(&self, _: &App) -> Option<workspace::HideStatusItem> {
-        Some(workspace::HideStatusItem::new(|settings| {
-            settings.debugger.get_or_insert_default().button = Some(false);
-        }))
+    fn focus_in_center(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let panel = cx.entity();
+        let workspace = self.workspace.clone();
+        // Panel actions can run while the workspace is borrowed, so the tab opens after them.
+        window.defer(cx, move |window, cx| {
+            workspace
+                .update(cx, |workspace, cx| {
+                    for dock in workspace.all_docks() {
+                        let shows_panel = dock
+                            .read(cx)
+                            .visible_panel()
+                            .is_some_and(|visible| visible.panel_id() == panel.entity_id());
+                        if shows_panel {
+                            dock.update(cx, |dock, cx| dock.set_open(false, window, cx));
+                        }
+                    }
+                    if !workspace.activate_item(&panel, true, true, window, cx) {
+                        workspace.add_item_to_active_pane(Box::new(panel), None, true, window, cx);
+                    }
+                })
+                .log_err();
+        });
+        true
     }
 
-    fn set_active(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) {}
+    /// A dock that opens the panel hands it over to the center, such as when it's restored open.
+    fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if active {
+            self.focus_in_center(window, cx);
+        }
+    }
+}
 
-    fn is_zoomed(&self, _window: &Window, _cx: &App) -> bool {
-        self.is_zoomed
+impl Item for DebugPanel {
+    type Event = PanelEvent;
+
+    fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
+        "Debug".into()
     }
 
-    fn set_zoomed(&mut self, zoomed: bool, _window: &mut Window, cx: &mut Context<Self>) {
-        self.is_zoomed = zoomed;
-        cx.notify();
+    fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
+        Some(Icon::new(IconName::Debug))
+    }
+
+    fn show_toolbar(&self) -> bool {
+        false
     }
 }
 
@@ -1734,7 +1727,6 @@ impl Render for DebugPanel {
                     .ok();
                 }
             })
-            .on_action(cx.listener(Self::toggle_zoom))
             .on_action(cx.listener(|panel, _: &ToggleExpandItem, _, cx| {
                 let Some(session) = panel.active_session() else {
                     return;

@@ -109,7 +109,7 @@ impl RenderOnce for PickerTrigger {
 /// A GPUI Kit icon button that can trigger a [`ui::PopoverMenu`], with a tooltip of Zed's for the
 /// same reason as [`PickerTrigger`].
 #[derive(IntoElement)]
-pub(crate) struct KitIconButton {
+pub struct KitIconButton {
     id: ElementId,
     icon: KitIconName,
     selected: bool,
@@ -119,7 +119,7 @@ pub(crate) struct KitIconButton {
 }
 
 impl KitIconButton {
-    pub(crate) fn new(id: impl Into<ElementId>, icon: KitIconName) -> Self {
+    pub fn new(id: impl Into<ElementId>, icon: KitIconName) -> Self {
         Self {
             id: id.into(),
             icon,
@@ -130,15 +130,12 @@ impl KitIconButton {
         }
     }
 
-    pub(crate) fn disabled(mut self, disabled: bool) -> Self {
+    pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    pub(crate) fn tooltip(
-        mut self,
-        tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
-    ) -> Self {
+    pub fn tooltip(mut self, tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static) -> Self {
         self.tooltip = Some(Rc::new(tooltip));
         self
     }

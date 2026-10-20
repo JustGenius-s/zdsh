@@ -15074,6 +15074,7 @@ dependencies = [
  "git",
  "git_ui",
  "git_ui_core",
+ "gpui-kit",
  "gpui-pre",
  "itertools 0.14.0",
  "language",

@@ -1,5 +1,6 @@
 use std::any::TypeId;
 
+use dap::debugger_settings::DebuggerSettings;
 use debugger_panel::DebugPanel;
 use editor::{Editor, MultiBufferOffsetUtf16};
 use gpui::{Action, App, DispatchPhase, EntityInputHandler, TaskExt, actions};
@@ -8,11 +9,12 @@ use project::debugger::{self, breakpoint_store::SourceBreakpoint, session::Threa
 use schemars::JsonSchema;
 use serde::Deserialize;
 use session::DebugSession;
+use settings::Settings as _;
 
 use tasks_ui::{Spawn, TaskOverrides};
-use ui::{FluentBuilder, InteractiveElement};
+use ui::{FluentBuilder, IconName, InteractiveElement};
 use util::maybe;
-use workspace::{ShutdownDebugAdapters, Workspace};
+use workspace::{RailItem, ShutdownDebugAdapters, Workspace};
 use zed_actions::debug_panel::{Toggle, ToggleFocus};
 
 pub mod attach_modal;
@@ -107,6 +109,17 @@ actions!(
         CopyDebugAdapterArguments
     ]
 );
+
+/// The rail's entry for the debug panel, which the `debugger.button` setting hides.
+pub fn rail_item() -> RailItem {
+    RailItem {
+        icon: IconName::Debug,
+        tooltip: "Debug",
+        action: Box::new(ToggleFocus),
+        is_visible: |cx| DebuggerSettings::get_global(cx).button,
+        is_active: |item| item.downcast::<DebugPanel>().is_some(),
+    }
+}
 
 pub fn init(cx: &mut App) {
     workspace::FollowableViewRegistry::register::<DebugSession>(cx);
