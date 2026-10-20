@@ -56,7 +56,7 @@ use client::{
     proto::{self, ErrorCode, PanelId, PeerId},
 };
 use collections::{HashMap, HashSet, TypeIdHashMap, hash_map};
-use dock::{Dock, DockPosition, PanelButtons, PanelHandle, RESIZE_HANDLE_SIZE};
+use dock::{Dock, DockPosition, PanelHandle, RESIZE_HANDLE_SIZE};
 use fs::Fs;
 use futures::{
     Future, FutureExt, StreamExt,
@@ -1982,19 +1982,11 @@ impl Workspace {
         let left_dock = Dock::new(DockPosition::Left, modal_layer.clone(), window, cx);
         let bottom_dock = Dock::new(DockPosition::Bottom, modal_layer.clone(), window, cx);
         let right_dock = Dock::new(DockPosition::Right, modal_layer.clone(), window, cx);
-        let bottom_dock_buttons = cx.new(|cx| PanelButtons::new(bottom_dock.clone(), cx));
-        let right_dock_buttons = cx.new(|cx| PanelButtons::new(right_dock.clone(), cx));
         let multi_workspace = window
             .root::<MultiWorkspace>()
             .flatten()
             .map(|mw| mw.downgrade());
-        let status_bar = cx.new(|cx| {
-            let mut status_bar = StatusBar::new(&center_pane.clone(), window, cx);
-            // The rail switches the left dock's panels, so the status bar has no buttons for it.
-            status_bar.add_right_item(right_dock_buttons, window, cx);
-            status_bar.add_right_item(bottom_dock_buttons, window, cx);
-            status_bar
-        });
+        let status_bar = cx.new(|cx| StatusBar::new(&center_pane.clone(), window, cx));
 
         let session_id = app_state.session.read(cx).id().to_owned();
 
@@ -9737,6 +9729,12 @@ impl Render for Workspace {
 
         let top_titlebar = self.render_titlebar_region(cx);
         let content_block_radius = gpui_kit::component::Theme::global(cx).radius_lg;
+        // Below the center, showing the status of the focused tab when it has any.
+        let status_bar = (self.status_bar_visible(cx)
+            && self
+                .active_item(cx)
+                .is_some_and(|item| item.show_status_bar(cx)))
+        .then(|| self.status_bar.clone());
 
         let pane_render_context = PaneRenderContext {
             follower_states: &self.follower_states,
@@ -9921,7 +9919,8 @@ impl Render for Workspace {
                                                                         this.child(p.border_l_1())
                                                                     },
                                                                 ),
-                                                        ),
+                                                        )
+                                                        .children(status_bar),
                                                 )
                                                 .children(self.render_dock(
                                                     DockPosition::Right,
@@ -9988,7 +9987,8 @@ impl Render for Workspace {
                                                                                 )
                                                                             },
                                                                         ),
-                                                                ),
+                                                                )
+                                                                .children(status_bar),
                                                         ),
                                                 )
                                                 .child(div().w_full().children(self.render_dock(
@@ -10055,7 +10055,8 @@ impl Render for Workspace {
                                                                                 )
                                                                             },
                                                                         ),
-                                                                ),
+                                                                )
+                                                                .children(status_bar),
                                                         )
                                                         .children(self.render_dock(
                                                             DockPosition::Right,
@@ -10104,6 +10105,7 @@ impl Render for Workspace {
                                                             |this, p| this.child(p.border_l_1()),
                                                         ),
                                                 )
+                                                .children(status_bar)
                                                 .children(self.render_dock(
                                                     DockPosition::Bottom,
                                                     &self.bottom_dock,
@@ -10191,9 +10193,6 @@ impl Render for Workspace {
                                     )),
                             ),
                     )
-                    .when(self.status_bar_visible(cx), |parent| {
-                        parent.child(self.status_bar.clone())
-                    })
                     .child(self.toast_layer.clone()),
             )
     }

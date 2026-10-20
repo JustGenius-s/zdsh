@@ -612,6 +612,10 @@ impl Item for ImageView {
             .map(Icon::from_path)
     }
 
+    fn show_status_bar(&self) -> bool {
+        true
+    }
+
     fn breadcrumb_location(&self, cx: &App) -> ToolbarItemLocation {
         let show_breadcrumb = EditorSettings::get_global(cx).toolbar.breadcrumbs;
         if show_breadcrumb {

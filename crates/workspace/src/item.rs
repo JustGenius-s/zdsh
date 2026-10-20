@@ -371,6 +371,12 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
         true
     }
 
+    /// Whether the status bar below the center shows while this item is the active one. Only
+    /// items whose state the status bar describes, such as a file's language or cursor, show it.
+    fn show_status_bar(&self) -> bool {
+        false
+    }
+
     fn pixel_position_of_cursor(&self, _: &App) -> Option<Point<Pixels>> {
         None
     }
@@ -565,6 +571,7 @@ pub trait ItemHandle: 'static + Send {
     fn breadcrumbs(&self, cx: &App) -> Option<(Vec<HighlightedText>, Option<Font>)>;
     fn breadcrumb_prefix(&self, window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement>;
     fn show_toolbar(&self, cx: &App) -> bool;
+    fn show_status_bar(&self, cx: &App) -> bool;
     fn pixel_position_of_cursor(&self, cx: &App) -> Option<Point<Pixels>>;
     fn downgrade_item(&self) -> Box<dyn WeakItemHandle>;
     fn workspace_settings<'a>(&self, cx: &'a App) -> &'a WorkspaceSettings;
@@ -1128,6 +1135,10 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn show_toolbar(&self, cx: &App) -> bool {
         self.read(cx).show_toolbar()
+    }
+
+    fn show_status_bar(&self, cx: &App) -> bool {
+        self.read(cx).show_status_bar()
     }
 
     fn pixel_position_of_cursor(&self, cx: &App) -> Option<Point<Pixels>> {

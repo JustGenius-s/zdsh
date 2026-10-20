@@ -768,6 +768,10 @@ impl Item for Editor {
             .map(Icon::from_path)
     }
 
+    fn show_status_bar(&self) -> bool {
+        true
+    }
+
     fn tab_content(&self, params: TabContentParams, _: &Window, cx: &App) -> AnyElement {
         let label_color = if ItemSettings::get_global(cx).git_status {
             self.buffer()

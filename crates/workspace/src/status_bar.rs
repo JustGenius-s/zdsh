@@ -1,11 +1,10 @@
 use crate::{ItemHandle, Pane};
 use gpui::{
-    AnyView, App, Context, Decorations, Entity, FocusHandle, Focusable, IntoElement, ParentElement,
-    Render, Role, SharedString, Styled, Subscription, Window,
+    AnyView, App, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, Role,
+    SharedString, Styled, Subscription, Window,
 };
 use settings::{SettingsContent, update_settings_file};
 use std::{any::TypeId, sync::Arc};
-use theme::CLIENT_SIDE_DECORATION_ROUNDING;
 use ui::{ContextMenu, IconPosition, prelude::*, right_click_menu};
 
 /// Describes how a status-bar item can be hidden by the user.
@@ -82,7 +81,7 @@ impl Focusable for StatusBar {
 }
 
 impl Render for StatusBar {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .id("status-bar")
             .track_focus(&self.focus_handle)
@@ -115,35 +114,13 @@ impl Render for StatusBar {
                 }),
             )
             .w_full()
+            .flex_none()
             .justify_between()
             .gap(DynamicSpacing::Base08.rems(cx))
             .p(DynamicSpacing::Base04.rems(cx))
             .bg(cx.theme().colors().status_bar_background)
-            .map(|el| match window.window_decorations() {
-                Decorations::Server => el,
-                Decorations::Client { tiling, .. } => el
-                    .when(!(tiling.bottom || tiling.right), |el| {
-                        el.rounded_br(CLIENT_SIDE_DECORATION_ROUNDING)
-                    })
-                    .when(!(tiling.bottom || tiling.left), |el| {
-                        el.rounded_bl(CLIENT_SIDE_DECORATION_ROUNDING)
-                    })
-                    // This border is to avoid a transparent gap in the rounded corners
-                    .mb(px(-1.))
-                    .mt({
-                        #[cfg(target_os = "linux")]
-                        let needs_gap_fix = {
-                            // Running on Wayland and using some scaling levels other than 100% causes a
-                            // 1px gap above the status bar; adding a margin avoids this.
-                            gpui::guess_compositor() == "Wayland" && window.scale_factor() != 1.0
-                        };
-                        #[cfg(not(target_os = "linux"))]
-                        let needs_gap_fix = false;
-                        if needs_gap_fix { px(-1.) } else { px(0.) }
-                    })
-                    .border_b(px(1.0))
-                    .border_color(cx.theme().colors().status_bar_background),
-            })
+            .border_t_1()
+            .border_color(cx.theme().colors().border)
             .child(self.render_left_tools(cx))
             .child(self.render_right_tools(cx))
     }
