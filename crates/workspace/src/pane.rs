@@ -20,11 +20,20 @@ use collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use futures::{StreamExt, stream::FuturesUnordered};
 use git::{CopyFilePermalink, OpenFilePermalink};
 use gpui::{
-    Action, Anchor, AnyElement, App, AsyncWindowContext, ClickEvent, ClipboardItem, Context, Div,
-    DragMoveEvent, Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, FocusOutEvent,
-    Focusable, KeyContext, MouseButton, NavigationDirection, Pixels, Point, PromptLevel, Render,
-    ScrollHandle, Subscription, Task, TaskExt, WeakEntity, WeakFocusHandle, Window, actions,
-    anchored, deferred, prelude::*,
+    Action, Anchor, AnyElement, App, AsyncWindowContext, ClickEvent, ClipboardItem, Context,
+    DismissEvent, Div, DragMoveEvent, Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle,
+    FocusOutEvent, Focusable, KeyContext, MouseButton, MouseDownEvent, NavigationDirection, Pixels,
+    Point, PromptLevel, Render, ScrollHandle, Subscription, Task, TaskExt, WeakEntity,
+    WeakFocusHandle, Window, actions, anchored, deferred, prelude::*,
+};
+use gpui_kit::{
+    base::{POPUP_PRIORITY, Selectable as _},
+    component::{
+        Icon as KitIcon, IconName as KitIconName, Sizable as _,
+        button::{Button, ButtonVariants as _},
+        menu::{PopupMenu, PopupMenuItem},
+        tab::{Tab, TabBar},
+    },
 };
 use itertools::Itertools;
 use language::{Capability, DiagnosticSeverity};
@@ -47,14 +56,17 @@ use std::{
 };
 use theme_settings::ThemeSettings;
 use ui::{
-    ContextMenu, ContextMenuEntry, ContextMenuItem, DecoratedIcon, IconButtonShape, IconDecoration,
-    IconDecorationKind, Indicator, PopoverMenu, PopoverMenuHandle, Tab, TabBar, TabPosition,
-    Tooltip, prelude::*, right_click_menu,
+    ContextMenu, DecoratedIcon, IconButtonShape, IconDecoration, IconDecorationKind, Indicator,
+    PopoverMenu, PopoverMenuHandle, Tooltip, prelude::*,
 };
 use util::{
     ResultExt, debug_panic, markdown::MarkdownInlineCode, maybe, paths::PathStyle,
     serde::default_true, truncate_and_remove_front,
 };
+
+/// The height of GPUI Kit's segmented tabs at their default size, which empty tab bar space
+/// matches so it stays a drop target of the same size.
+const SEGMENTED_TAB_HEIGHT: Pixels = px(32.);
 
 /// A selected entry in e.g. project panel.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -435,6 +447,7 @@ pub struct Pane {
     use_max_tabs: bool,
     _subscriptions: Vec<Subscription>,
     tab_bar_scroll_handle: ScrollHandle,
+    tab_context_menu: Option<(Entity<PopupMenu>, Point<Pixels>, Subscription)>,
     /// This is set to true if a user scroll has occurred more recently than a system scroll
     /// We want to suppress certain system scrolls when the user has intentionally scrolled
     suppress_scroll: bool,
@@ -600,6 +613,7 @@ impl Pane {
             }))),
             toolbar: cx.new(|_| Toolbar::new()),
             tab_bar_scroll_handle: ScrollHandle::new(),
+            tab_context_menu: None,
             suppress_scroll: false,
             drag_split_direction: None,
             workspace,
@@ -2844,10 +2858,9 @@ impl Pane {
         ix: usize,
         item: &dyn ItemHandle,
         detail: usize,
-        focus_handle: &FocusHandle,
         window: &mut Window,
         cx: &mut Context<Pane>,
-    ) -> impl IntoElement + use<> {
+    ) -> Tab {
         let is_active = ix == self.active_item_index;
         let is_preview = self
             .preview_item_id
@@ -2875,10 +2888,7 @@ impl Pane {
         let indicator = render_item_indicator(item.boxed_clone(), cx);
         let tab_tooltip_content = item.tab_tooltip_content(cx);
         let item_id = item.item_id();
-        let is_first_item = ix == 0;
-        let is_last_item = ix == self.items.len() - 1;
         let is_pinned = self.is_tab_pinned(ix);
-        let position_relative_to_active_item = ix.cmp(&self.active_item_index);
 
         let read_only_toggle = |toggleable: bool| {
             IconButton::new("toggle_read_only", IconName::FileLock)
@@ -2909,19 +2919,80 @@ impl Pane {
         let has_file_icon = icon.is_some();
 
         let capability = item.capability(cx);
-        let tab = Tab::new(ix)
-            .position(if is_first_item {
-                TabPosition::First
-            } else if is_last_item {
-                TabPosition::Last
-            } else {
-                TabPosition::Middle(position_relative_to_active_item)
+        let tab_button = if is_pinned {
+            Some((
+                Button::new("unpin tab").icon(KitIcon::empty().path(IconName::Pin.path())),
+                &TogglePinTab as &'static dyn Action,
+                "Unpin Tab",
+            ))
+        } else {
+            let close_button = Button::new("close tab").icon(KitIconName::Close);
+            let close_tab: &'static dyn Action = &CloseActiveItem {
+                save_intent: None,
+                close_pinned: false,
+            };
+            match show_close_button {
+                ShowCloseButton::Always => Some((close_button, close_tab, "Close Tab")),
+                ShowCloseButton::Hover => {
+                    Some((close_button.visible_on_hover(""), close_tab, "Close Tab"))
+                }
+                ShowCloseButton::Hidden => None,
+            }
+        }
+        .map(|(button, action, tooltip)| {
+            button
+                .ghost()
+                .xsmall()
+                .tab_stop(false)
+                .map(|button| {
+                    if is_active {
+                        button.tooltip_with_action(tooltip, action, Some("Pane"))
+                    } else {
+                        button.tooltip(tooltip)
+                    }
+                })
+                .on_click(cx.listener(move |pane, _, window, cx| {
+                    // The button sits inside the tab, which would otherwise activate as well.
+                    cx.stop_propagation();
+                    if is_pinned {
+                        pane.unpin_tab_at(ix, window, cx);
+                    } else {
+                        pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
+                            .detach_and_log_err(cx);
+                    }
+                }))
+        });
+
+        let leading_icon = if let Some(icon) = icon {
+            Some(icon)
+        } else if !capability.editable() {
+            Some(read_only_toggle(capability == Capability::Read).into_any_element())
+        } else {
+            None
+        };
+        let (leading_button, trailing_button) = match close_side {
+            ClosePosition::Left => (tab_button, None),
+            ClosePosition::Right => (None, tab_button),
+        };
+        let has_prefix = indicator.is_some() || leading_icon.is_some() || leading_button.is_some();
+
+        let tab = Tab::new()
+            .debug_selector(|| format!("TAB-{ix}"))
+            // Close buttons shown on hover reveal themselves for the hovered tab.
+            .group("")
+            .when(has_prefix, |tab| {
+                tab.prefix(
+                    h_flex()
+                        .pl_2()
+                        .gap_1()
+                        .children(leading_button)
+                        .children(indicator)
+                        .children(leading_icon),
+                )
             })
-            .close_side(match close_side {
-                ClosePosition::Left => ui::TabCloseSide::Start,
-                ClosePosition::Right => ui::TabCloseSide::End,
+            .when_some(trailing_button, |tab, button| {
+                tab.suffix(h_flex().pr_1().child(button))
             })
-            .toggle_state(is_active)
             .on_click(cx.listener({
                 let item_handle = item.boxed_clone();
                 move |pane: &mut Self, event: &ClickEvent, window, cx| {
@@ -3000,71 +3071,10 @@ impl Pane {
                 this.drag_split_direction = None;
                 this.handle_external_paths_drop(paths, window, cx)
             }))
-            .start_slot::<Indicator>(indicator)
-            .map(|this| {
-                let end_slot_action: &'static dyn Action;
-                let end_slot_tooltip_text: &'static str;
-                let end_slot = if is_pinned {
-                    end_slot_action = &TogglePinTab;
-                    end_slot_tooltip_text = "Unpin Tab";
-                    IconButton::new("unpin tab", IconName::Pin)
-                        .shape(IconButtonShape::Square)
-                        .icon_color(Color::Muted)
-                        .size(ButtonSize::None)
-                        .icon_size(IconSize::Small)
-                        .on_click(cx.listener(move |pane, _, window, cx| {
-                            pane.unpin_tab_at(ix, window, cx);
-                        }))
-                } else {
-                    end_slot_action = &CloseActiveItem {
-                        save_intent: None,
-                        close_pinned: false,
-                    };
-                    end_slot_tooltip_text = "Close Tab";
-                    match show_close_button {
-                        ShowCloseButton::Always => IconButton::new("close tab", IconName::Close),
-                        ShowCloseButton::Hover => {
-                            IconButton::new("close tab", IconName::Close).visible_on_hover("")
-                        }
-                        ShowCloseButton::Hidden => return this,
-                    }
-                    .shape(IconButtonShape::Square)
-                    .icon_color(Color::Muted)
-                    .size(ButtonSize::None)
-                    .icon_size(IconSize::Small)
-                    .on_click(cx.listener(move |pane, _, window, cx| {
-                        pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
-                            .detach_and_log_err(cx);
-                    }))
-                }
-                .map(|this| {
-                    if is_active {
-                        let focus_handle = focus_handle.clone();
-                        this.tooltip(move |window, cx| {
-                            Tooltip::for_action_in(
-                                end_slot_tooltip_text,
-                                end_slot_action,
-                                &window.focused(cx).unwrap_or_else(|| focus_handle.clone()),
-                                cx,
-                            )
-                        })
-                    } else {
-                        this.tooltip(Tooltip::text(end_slot_tooltip_text))
-                    }
-                });
-                this.end_slot(end_slot)
-            })
             .child(
                 h_flex()
                     .id(("pane-tab-content", ix))
                     .gap_1()
-                    .children(if let Some(icon) = icon {
-                        Some(icon)
-                    } else if !capability.editable() {
-                        Some(read_only_toggle(capability == Capability::Read).into_any_element())
-                    } else {
-                        None
-                    })
                     .child(label)
                     .map(|this| match tab_tooltip_content {
                         Some(TabTooltipContent::Text(text)) => {
@@ -3105,278 +3115,278 @@ impl Pane {
         let menu_context = item.item_focus_handle(cx);
         let item_handle = item.boxed_clone();
 
-        right_click_menu(ix)
-            .trigger(|_, _, _| tab)
-            .menu(move |window, cx| {
-                let pane = pane.clone();
-                let menu_context = menu_context.clone();
-                let extra_actions = item_handle.tab_extra_context_menu_actions(window, cx);
-                ContextMenu::build(window, cx, move |mut menu, window, cx| {
-                    let close_active_item_action = CloseActiveItem {
-                        save_intent: None,
-                        close_pinned: true,
-                    };
-                    let close_inactive_items_action = CloseOtherItems {
-                        save_intent: None,
-                        close_pinned: false,
-                    };
-                    let close_multibuffers_action = CloseMultibufferItems {
-                        save_intent: None,
-                        close_pinned: false,
-                    };
-                    let close_items_to_the_left_action = CloseItemsToTheLeft {
-                        close_pinned: false,
-                    };
-                    let close_items_to_the_right_action = CloseItemsToTheRight {
-                        close_pinned: false,
-                    };
-                    let close_clean_items_action = CloseCleanItems {
-                        close_pinned: false,
-                    };
-                    let close_all_items_action = CloseAllItems {
-                        save_intent: None,
-                        close_pinned: false,
-                    };
-                    if let Some(pane) = pane.upgrade() {
-                        menu = menu
-                            .entry(
-                                "Close",
-                                Some(Box::new(close_active_item_action)),
+        let build_context_menu = move |window: &mut Window, cx: &mut App| {
+            let pane = pane.clone();
+            let menu_context = menu_context.clone();
+            let extra_actions = item_handle.tab_extra_context_menu_actions(window, cx);
+            PopupMenu::build(window, cx, move |mut menu, window, cx| {
+                let close_active_item_action = CloseActiveItem {
+                    save_intent: None,
+                    close_pinned: true,
+                };
+                let close_inactive_items_action = CloseOtherItems {
+                    save_intent: None,
+                    close_pinned: false,
+                };
+                let close_multibuffers_action = CloseMultibufferItems {
+                    save_intent: None,
+                    close_pinned: false,
+                };
+                let close_items_to_the_left_action = CloseItemsToTheLeft {
+                    close_pinned: false,
+                };
+                let close_items_to_the_right_action = CloseItemsToTheRight {
+                    close_pinned: false,
+                };
+                let close_clean_items_action = CloseCleanItems {
+                    close_pinned: false,
+                };
+                let close_all_items_action = CloseAllItems {
+                    save_intent: None,
+                    close_pinned: false,
+                };
+                if let Some(pane) = pane.upgrade() {
+                    menu = menu
+                        .item(tab_menu_entry(
+                            "Close",
+                            Some(Box::new(close_active_item_action)),
+                            window.handler_for(&pane, move |pane, window, cx| {
+                                pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
+                                    .detach_and_log_err(cx);
+                            }),
+                        ))
+                        .item(
+                            tab_menu_entry(
+                                "Close Others",
+                                Some(Box::new(close_inactive_items_action.clone())),
                                 window.handler_for(&pane, move |pane, window, cx| {
-                                    pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
-                                        .detach_and_log_err(cx);
+                                    pane.close_other_items(
+                                        &close_inactive_items_action,
+                                        Some(item_id),
+                                        window,
+                                        cx,
+                                    )
+                                    .detach_and_log_err(cx);
                                 }),
                             )
-                            .item(ContextMenuItem::Entry(
-                                ContextMenuEntry::new("Close Others")
-                                    .action(Box::new(close_inactive_items_action.clone()))
-                                    .disabled(total_items == 1)
-                                    .handler(window.handler_for(&pane, move |pane, window, cx| {
-                                        pane.close_other_items(
-                                            &close_inactive_items_action,
-                                            Some(item_id),
-                                            window,
-                                            cx,
-                                        )
-                                        .detach_and_log_err(cx);
-                                    })),
-                            ))
-                            // We make this optional, instead of using disabled as to not overwhelm the context menu unnecessarily
-                            .extend(has_multibuffer_items.then(|| {
-                                ContextMenuItem::Entry(
-                                    ContextMenuEntry::new("Close Multibuffers")
-                                        .action(Box::new(close_multibuffers_action.clone()))
-                                        .handler(window.handler_for(
-                                            &pane,
-                                            move |pane, window, cx| {
-                                                pane.close_multibuffer_items(
-                                                    &close_multibuffers_action,
-                                                    window,
-                                                    cx,
-                                                )
-                                                .detach_and_log_err(cx);
-                                            },
-                                        )),
-                                )
-                            }))
-                            .separator()
-                            .item(ContextMenuItem::Entry(
-                                ContextMenuEntry::new("Close Left")
-                                    .action(Box::new(close_items_to_the_left_action.clone()))
-                                    .disabled(!has_items_to_left)
-                                    .handler(window.handler_for(&pane, move |pane, window, cx| {
-                                        pane.close_items_to_the_left_by_id(
-                                            Some(item_id),
-                                            &close_items_to_the_left_action,
-                                            window,
-                                            cx,
-                                        )
-                                        .detach_and_log_err(cx);
-                                    })),
-                            ))
-                            .item(ContextMenuItem::Entry(
-                                ContextMenuEntry::new("Close Right")
-                                    .action(Box::new(close_items_to_the_right_action.clone()))
-                                    .disabled(!has_items_to_right)
-                                    .handler(window.handler_for(&pane, move |pane, window, cx| {
-                                        pane.close_items_to_the_right_by_id(
-                                            Some(item_id),
-                                            &close_items_to_the_right_action,
-                                            window,
-                                            cx,
-                                        )
-                                        .detach_and_log_err(cx);
-                                    })),
-                            ))
-                            .separator()
-                            .item(ContextMenuItem::Entry(
-                                ContextMenuEntry::new("Close Clean")
-                                    .action(Box::new(close_clean_items_action.clone()))
-                                    .disabled(!has_clean_items)
-                                    .handler(window.handler_for(&pane, move |pane, window, cx| {
-                                        pane.close_clean_items(
-                                            &close_clean_items_action,
-                                            window,
-                                            cx,
-                                        )
-                                        .detach_and_log_err(cx)
-                                    })),
-                            ))
-                            .entry(
-                                "Close All",
-                                Some(Box::new(close_all_items_action.clone())),
+                            .disabled(total_items == 1),
+                        )
+                        // We make this optional, instead of using disabled as to not overwhelm the context menu unnecessarily
+                        .when(has_multibuffer_items, |menu| {
+                            menu.item(tab_menu_entry(
+                                "Close Multibuffers",
+                                Some(Box::new(close_multibuffers_action.clone())),
                                 window.handler_for(&pane, move |pane, window, cx| {
-                                    pane.close_all_items(&close_all_items_action, window, cx)
+                                    pane.close_multibuffer_items(
+                                        &close_multibuffers_action,
+                                        window,
+                                        cx,
+                                    )
+                                    .detach_and_log_err(cx);
+                                }),
+                            ))
+                        })
+                        .separator()
+                        .item(
+                            tab_menu_entry(
+                                "Close Left",
+                                Some(Box::new(close_items_to_the_left_action.clone())),
+                                window.handler_for(&pane, move |pane, window, cx| {
+                                    pane.close_items_to_the_left_by_id(
+                                        Some(item_id),
+                                        &close_items_to_the_left_action,
+                                        window,
+                                        cx,
+                                    )
+                                    .detach_and_log_err(cx);
+                                }),
+                            )
+                            .disabled(!has_items_to_left),
+                        )
+                        .item(
+                            tab_menu_entry(
+                                "Close Right",
+                                Some(Box::new(close_items_to_the_right_action.clone())),
+                                window.handler_for(&pane, move |pane, window, cx| {
+                                    pane.close_items_to_the_right_by_id(
+                                        Some(item_id),
+                                        &close_items_to_the_right_action,
+                                        window,
+                                        cx,
+                                    )
+                                    .detach_and_log_err(cx);
+                                }),
+                            )
+                            .disabled(!has_items_to_right),
+                        )
+                        .separator()
+                        .item(
+                            tab_menu_entry(
+                                "Close Clean",
+                                Some(Box::new(close_clean_items_action.clone())),
+                                window.handler_for(&pane, move |pane, window, cx| {
+                                    pane.close_clean_items(&close_clean_items_action, window, cx)
                                         .detach_and_log_err(cx)
                                 }),
-                            );
+                            )
+                            .disabled(!has_clean_items),
+                        )
+                        .item(tab_menu_entry(
+                            "Close All",
+                            Some(Box::new(close_all_items_action.clone())),
+                            window.handler_for(&pane, move |pane, window, cx| {
+                                pane.close_all_items(&close_all_items_action, window, cx)
+                                    .detach_and_log_err(cx)
+                            }),
+                        ));
 
-                        let pin_tab_entries = |menu: ContextMenu| {
-                            menu.separator().map(|this| {
-                                if is_pinned {
-                                    this.entry(
-                                        "Unpin Tab",
-                                        Some(TogglePinTab.boxed_clone()),
-                                        window.handler_for(&pane, move |pane, window, cx| {
-                                            pane.unpin_tab_at(ix, window, cx);
-                                        }),
-                                    )
-                                } else {
-                                    this.entry(
-                                        "Pin Tab",
-                                        Some(TogglePinTab.boxed_clone()),
-                                        window.handler_for(&pane, move |pane, window, cx| {
-                                            pane.pin_tab_at(ix, window, cx);
-                                        }),
-                                    )
-                                }
-                            })
-                        };
-
-                        if capability != Capability::ReadOnly {
-                            let read_only_label = if capability.editable() {
-                                "Make Tab Read-Only"
+                    let pin_tab_entries = |menu: PopupMenu| {
+                        menu.separator().map(|this| {
+                            if is_pinned {
+                                this.item(tab_menu_entry(
+                                    "Unpin Tab",
+                                    Some(TogglePinTab.boxed_clone()),
+                                    window.handler_for(&pane, move |pane, window, cx| {
+                                        pane.unpin_tab_at(ix, window, cx);
+                                    }),
+                                ))
                             } else {
-                                "Make Tab Editable"
-                            };
-                            menu = menu.separator().entry(
-                                read_only_label,
-                                None,
-                                window.handler_for(&pane, move |pane, window, cx| {
-                                    if let Some(item) = pane.item_for_index(ix) {
-                                        item.toggle_read_only(window, cx);
-                                    }
-                                }),
-                            );
-                        }
+                                this.item(tab_menu_entry(
+                                    "Pin Tab",
+                                    Some(TogglePinTab.boxed_clone()),
+                                    window.handler_for(&pane, move |pane, window, cx| {
+                                        pane.pin_tab_at(ix, window, cx);
+                                    }),
+                                ))
+                            }
+                        })
+                    };
 
-                        if let Some(entry) = single_entry_to_resolve {
-                            let project_path = pane
-                                .read(cx)
-                                .item_for_entry(entry, cx)
-                                .and_then(|item| item.project_path(cx));
-                            let worktree = project_path.as_ref().and_then(|project_path| {
-                                pane.read(cx)
-                                    .project
-                                    .upgrade()?
-                                    .read(cx)
-                                    .worktree_for_id(project_path.worktree_id, cx)
-                            });
-                            let has_relative_path = worktree.as_ref().is_some_and(|worktree| {
-                                worktree
-                                    .read(cx)
-                                    .root_entry()
-                                    .is_some_and(|entry| entry.is_dir())
-                            });
+                    if capability != Capability::ReadOnly {
+                        let read_only_label = if capability.editable() {
+                            "Make Tab Read-Only"
+                        } else {
+                            "Make Tab Editable"
+                        };
+                        menu = menu.separator().item(tab_menu_entry(
+                            read_only_label,
+                            None,
+                            window.handler_for(&pane, move |pane, window, cx| {
+                                if let Some(item) = pane.item_for_index(ix) {
+                                    item.toggle_read_only(window, cx);
+                                }
+                            }),
+                        ));
+                    }
 
-                            let entry_abs_path = pane.read(cx).entry_abs_path(entry, cx);
-                            let reveal_path = entry_abs_path.clone();
-                            let parent_abs_path = entry_abs_path
-                                .as_deref()
-                                .and_then(|abs_path| Some(abs_path.parent()?.to_path_buf()));
-                            let has_git_repo = project_path.as_ref().is_some_and(|project_path| {
-                                pane.read(cx).project.upgrade().is_some_and(|project| {
-                                    project
-                                        .read(cx)
-                                        .git_store()
-                                        .read(cx)
-                                        .repository_and_path_for_project_path(project_path, cx)
-                                        .is_some()
-                                })
-                            });
-                            let relative_path = project_path
-                                .as_ref()
-                                .map(|project_path| project_path.path.clone())
-                                .filter(|_| has_relative_path);
-
-                            let visible_in_project_panel = relative_path.is_some()
-                                && worktree.is_some_and(|worktree| worktree.read(cx).is_visible());
-                            let is_local = pane.read(cx).project.upgrade().is_some_and(|project| {
-                                let project = project.read(cx);
-                                project.is_local() || project.is_via_wsl_with_host_interop(cx)
-                            });
-                            let is_remote = pane
-                                .read(cx)
+                    if let Some(entry) = single_entry_to_resolve {
+                        let project_path = pane
+                            .read(cx)
+                            .item_for_entry(entry, cx)
+                            .and_then(|item| item.project_path(cx));
+                        let worktree = project_path.as_ref().and_then(|project_path| {
+                            pane.read(cx)
                                 .project
-                                .upgrade()
-                                .is_some_and(|project| project.read(cx).is_remote());
+                                .upgrade()?
+                                .read(cx)
+                                .worktree_for_id(project_path.worktree_id, cx)
+                        });
+                        let has_relative_path = worktree.as_ref().is_some_and(|worktree| {
+                            worktree
+                                .read(cx)
+                                .root_entry()
+                                .is_some_and(|entry| entry.is_dir())
+                        });
 
-                            let entry_id = entry.to_proto();
+                        let entry_abs_path = pane.read(cx).entry_abs_path(entry, cx);
+                        let reveal_path = entry_abs_path.clone();
+                        let parent_abs_path = entry_abs_path
+                            .as_deref()
+                            .and_then(|abs_path| Some(abs_path.parent()?.to_path_buf()));
+                        let has_git_repo = project_path.as_ref().is_some_and(|project_path| {
+                            pane.read(cx).project.upgrade().is_some_and(|project| {
+                                project
+                                    .read(cx)
+                                    .git_store()
+                                    .read(cx)
+                                    .repository_and_path_for_project_path(project_path, cx)
+                                    .is_some()
+                            })
+                        });
+                        let relative_path = project_path
+                            .as_ref()
+                            .map(|project_path| project_path.path.clone())
+                            .filter(|_| has_relative_path);
 
-                            menu = menu
-                                .separator()
-                                .when_some(entry_abs_path, |menu, abs_path| {
-                                    menu.entry(
-                                        "Copy Path",
-                                        Some(Box::new(zed_actions::workspace::CopyPath)),
-                                        window.handler_for(&pane, move |_, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                abs_path.to_string_lossy().into_owned(),
-                                            ));
-                                        }),
-                                    )
-                                })
-                                .when_some(relative_path, |menu, relative_path| {
-                                    menu.entry(
-                                        "Copy Relative Path",
-                                        Some(Box::new(zed_actions::workspace::CopyRelativePath)),
-                                        window.handler_for(&pane, move |this, _, cx| {
-                                            let Some(project) = this.project.upgrade() else {
-                                                return;
-                                            };
-                                            let path_style = project
-                                                .update(cx, |project, cx| project.path_style(cx));
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                relative_path.display(path_style).to_string(),
-                                            ));
-                                        }),
-                                    )
-                                })
-                                .when(has_git_repo, |menu| {
-                                    menu.separator().when_some(
-                                        project_path.clone(),
-                                        |menu, project_path| {
-                                            menu.entry(
-                                                "Open File Permalink",
-                                                Some(OpenFilePermalink.boxed_clone()),
-                                                window.handler_for(&pane, {
-                                                    let project_path = project_path.clone();
-                                                    move |pane, window, cx| {
-                                                        let Some(project) = pane.project.upgrade()
-                                                        else {
-                                                            return;
-                                                        };
-                                                        crate::open_file_permalink(
-                                                            project,
-                                                            project_path.clone(),
-                                                            pane.workspace.clone(),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    }
-                                                }),
-                                            )
-                                            .entry(
+                        let visible_in_project_panel = relative_path.is_some()
+                            && worktree.is_some_and(|worktree| worktree.read(cx).is_visible());
+                        let is_local = pane.read(cx).project.upgrade().is_some_and(|project| {
+                            let project = project.read(cx);
+                            project.is_local() || project.is_via_wsl_with_host_interop(cx)
+                        });
+                        let is_remote = pane
+                            .read(cx)
+                            .project
+                            .upgrade()
+                            .is_some_and(|project| project.read(cx).is_remote());
+
+                        let entry_id = entry.to_proto();
+
+                        menu = menu
+                            .separator()
+                            .when_some(entry_abs_path, |menu, abs_path| {
+                                menu.item(tab_menu_entry(
+                                    "Copy Path",
+                                    Some(Box::new(zed_actions::workspace::CopyPath)),
+                                    window.handler_for(&pane, move |_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            abs_path.to_string_lossy().into_owned(),
+                                        ));
+                                    }),
+                                ))
+                            })
+                            .when_some(relative_path, |menu, relative_path| {
+                                menu.item(tab_menu_entry(
+                                    "Copy Relative Path",
+                                    Some(Box::new(zed_actions::workspace::CopyRelativePath)),
+                                    window.handler_for(&pane, move |this, _, cx| {
+                                        let Some(project) = this.project.upgrade() else {
+                                            return;
+                                        };
+                                        let path_style = project
+                                            .update(cx, |project, cx| project.path_style(cx));
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            relative_path.display(path_style).to_string(),
+                                        ));
+                                    }),
+                                ))
+                            })
+                            .when(has_git_repo, |menu| {
+                                menu.separator().when_some(
+                                    project_path.clone(),
+                                    |menu, project_path| {
+                                        menu.item(tab_menu_entry(
+                                            "Open File Permalink",
+                                            Some(OpenFilePermalink.boxed_clone()),
+                                            window.handler_for(&pane, {
+                                                let project_path = project_path.clone();
+                                                move |pane, window, cx| {
+                                                    let Some(project) = pane.project.upgrade()
+                                                    else {
+                                                        return;
+                                                    };
+                                                    crate::open_file_permalink(
+                                                        project,
+                                                        project_path.clone(),
+                                                        pane.workspace.clone(),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                            }),
+                                        ))
+                                        .item(
+                                            tab_menu_entry(
                                                 "Copy File Permalink",
                                                 Some(CopyFilePermalink.boxed_clone()),
                                                 window.handler_for(
@@ -3395,77 +3405,115 @@ impl Pane {
                                                         );
                                                     },
                                                 ),
-                                            )
-                                        },
-                                    )
-                                })
-                                .when(is_local, |menu| {
-                                    menu.when_some(reveal_path, |menu, reveal_path| {
-                                        menu.separator().entry(
-                                            ui::utils::reveal_in_file_manager_label(is_remote),
-                                            Some(Box::new(
-                                                zed_actions::editor::RevealInFileManager,
-                                            )),
-                                            window.handler_for(&pane, move |pane, _, cx| {
-                                                if let Some(project) = pane.project.upgrade() {
-                                                    project.update(cx, |project, cx| {
-                                                        project.reveal_path(&reveal_path, cx);
-                                                    });
-                                                } else {
-                                                    cx.reveal_path(&reveal_path);
-                                                }
-                                            }),
+                                            ),
                                         )
-                                    })
-                                })
-                                .map(pin_tab_entries)
-                                .when(visible_in_project_panel, |menu| {
-                                    menu.entry(
-                                        "Reveal In Project Panel",
-                                        Some(Box::new(RevealInProjectPanel::default())),
+                                    },
+                                )
+                            })
+                            .when(is_local, |menu| {
+                                menu.when_some(reveal_path, |menu, reveal_path| {
+                                    menu.separator().item(tab_menu_entry(
+                                        ui::utils::reveal_in_file_manager_label(is_remote),
+                                        Some(Box::new(zed_actions::editor::RevealInFileManager)),
                                         window.handler_for(&pane, move |pane, _, cx| {
-                                            pane.project
-                                                .update(cx, |_, cx| {
-                                                    cx.emit(project::Event::RevealInProjectPanel(
-                                                        ProjectEntryId::from_proto(entry_id),
-                                                    ))
-                                                })
-                                                .ok();
+                                            if let Some(project) = pane.project.upgrade() {
+                                                project.update(cx, |project, cx| {
+                                                    project.reveal_path(&reveal_path, cx);
+                                                });
+                                            } else {
+                                                cx.reveal_path(&reveal_path);
+                                            }
                                         }),
-                                    )
+                                    ))
                                 })
-                                .when_some(parent_abs_path, |menu, parent_abs_path| {
-                                    menu.entry(
-                                        "Open in Terminal",
-                                        Some(Box::new(OpenInTerminal)),
-                                        window.handler_for(&pane, move |_, window, cx| {
-                                            window.dispatch_action(
-                                                OpenTerminal {
-                                                    working_directory: parent_abs_path.clone(),
-                                                    local: false,
-                                                }
-                                                .boxed_clone(),
-                                                cx,
-                                            );
-                                        }),
-                                    )
-                                });
-                        } else {
-                            menu = menu.map(pin_tab_entries);
-                        }
-                    };
-
-                    // Add custom item-specific actions
-                    if !extra_actions.is_empty() {
-                        menu = menu.separator();
-                        for (label, action) in extra_actions {
-                            menu = menu.action(label, action);
-                        }
+                            })
+                            .map(pin_tab_entries)
+                            .when(visible_in_project_panel, |menu| {
+                                menu.item(tab_menu_entry(
+                                    "Reveal In Project Panel",
+                                    Some(Box::new(RevealInProjectPanel::default())),
+                                    window.handler_for(&pane, move |pane, _, cx| {
+                                        pane.project
+                                            .update(cx, |_, cx| {
+                                                cx.emit(project::Event::RevealInProjectPanel(
+                                                    ProjectEntryId::from_proto(entry_id),
+                                                ))
+                                            })
+                                            .ok();
+                                    }),
+                                ))
+                            })
+                            .when_some(parent_abs_path, |menu, parent_abs_path| {
+                                menu.item(tab_menu_entry(
+                                    "Open in Terminal",
+                                    Some(Box::new(OpenInTerminal)),
+                                    window.handler_for(&pane, move |_, window, cx| {
+                                        window.dispatch_action(
+                                            OpenTerminal {
+                                                working_directory: parent_abs_path.clone(),
+                                                local: false,
+                                            }
+                                            .boxed_clone(),
+                                            cx,
+                                        );
+                                    }),
+                                ))
+                            });
+                    } else {
+                        menu = menu.map(pin_tab_entries);
                     }
+                };
 
-                    menu.context(menu_context)
-                })
+                // Add custom item-specific actions
+                if !extra_actions.is_empty() {
+                    menu = menu.separator();
+                    for (label, action) in extra_actions {
+                        menu = menu.menu(label, action);
+                    }
+                }
+
+                menu.action_context(menu_context)
             })
+        };
+
+        let pane = cx.entity().downgrade();
+        tab.on_mouse_down(
+            MouseButton::Right,
+            move |event: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                window.prevent_default();
+                // Building the menu reads the pane, so it happens outside of the pane's update.
+                let menu = build_context_menu(window, cx);
+                pane.update(cx, |pane, cx| {
+                    pane.deploy_tab_context_menu(menu, event.position, window, cx)
+                })
+                .log_err();
+            },
+        )
+    }
+
+    fn deploy_tab_context_menu(
+        &mut self,
+        menu: Entity<PopupMenu>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The menu returns focus to its action context, the tab's item, as it dismisses.
+        let subscription = cx.subscribe_in(&menu, window, |pane, _, _: &DismissEvent, _, cx| {
+            pane.tab_context_menu = None;
+            cx.notify();
+        });
+        // The menu is rendered deferred, so its focus handle only joins the dispatch tree after
+        // the next draw. Focusing it earlier would make the pane briefly look unfocused.
+        let focus_handle = menu.focus_handle(cx);
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |window, cx| {
+                window.focus(&focus_handle, cx);
+            });
+        });
+        self.tab_context_menu = Some((menu, position, subscription));
+        cx.notify();
     }
 
     fn render_tab_bar(&mut self, window: &mut Window, cx: &mut Context<Pane>) -> AnyElement {
@@ -3510,7 +3558,6 @@ impl Pane {
             })
             .disabled(!self.can_navigate_forward())
             .tooltip({
-                let focus_handle = focus_handle.clone();
                 move |window, cx| {
                     Tooltip::for_action_in(
                         "Go Forward",
@@ -3526,10 +3573,7 @@ impl Pane {
             .iter()
             .enumerate()
             .zip(tab_details(&self.items, window, cx))
-            .map(|((ix, item), detail)| {
-                self.render_tab(ix, &**item, detail, &focus_handle, window, cx)
-                    .into_any_element()
-            })
+            .map(|((ix, item), detail)| self.render_tab(ix, &**item, detail, window, cx))
             .collect::<Vec<_>>();
         let tab_count = tab_items.len();
         if self.is_tab_pinned(tab_count) {
@@ -3548,7 +3592,7 @@ impl Pane {
         let tab_bar_settings = TabBarSettings::get_global(cx);
         let use_separate_rows = tab_bar_settings.show_pinned_tabs_in_separate_row;
 
-        if use_separate_rows && !pinned_tabs.is_empty() && !unpinned_tabs.is_empty() {
+        let tab_bar = if use_separate_rows && !pinned_tabs.is_empty() && !unpinned_tabs.is_empty() {
             self.render_two_row_tab_bar(
                 pinned_tabs,
                 unpinned_tabs,
@@ -3568,134 +3612,177 @@ impl Pane {
                 window,
                 cx,
             )
-        }
-    }
+        };
 
-    fn configure_tab_bar_start(
-        &mut self,
-        tab_bar: TabBar,
-        navigate_backward: IconButton,
-        navigate_forward: IconButton,
-        window: &mut Window,
-        cx: &mut Context<Pane>,
-    ) -> TabBar {
-        tab_bar
-            .when(
-                self.display_nav_history_buttons.unwrap_or_default(),
-                |tab_bar| {
-                    tab_bar
-                        .start_child(navigate_backward)
-                        .start_child(navigate_forward)
-                },
-            )
-            .map(|tab_bar| {
-                if self.show_tab_bar_buttons {
-                    let render_tab_buttons = self.render_tab_bar_buttons.clone();
-                    let (left_children, right_children) = render_tab_buttons(self, window, cx);
-                    tab_bar
-                        .start_children(left_children)
-                        .end_children(right_children)
-                } else {
-                    tab_bar
-                }
-            })
-    }
-
-    fn render_single_row_tab_bar(
-        &mut self,
-        pinned_tabs: Vec<AnyElement>,
-        unpinned_tabs: Vec<AnyElement>,
-        tab_count: usize,
-        navigate_backward: IconButton,
-        navigate_forward: IconButton,
-        window: &mut Window,
-        cx: &mut Context<Pane>,
-    ) -> AnyElement {
-        let tab_bar = self
-            .configure_tab_bar_start(
-                TabBar::new("tab_bar"),
-                navigate_backward,
-                navigate_forward,
-                window,
-                cx,
-            )
-            .children(pinned_tabs.len().ne(&0).then(|| {
-                let max_scroll = self.tab_bar_scroll_handle.max_offset().x;
-                // We need to check both because offset returns delta values even when the scroll handle is not scrollable
-                let is_scrolled = self.tab_bar_scroll_handle.offset().x < px(0.);
-                // Avoid flickering when max_offset is very small (< 2px).
-                // The border adds 1-2px which can push max_offset back to 0, creating a loop.
-                let is_scrollable = max_scroll > px(2.0);
-                let has_active_unpinned_tab = self.active_item_index >= self.pinned_tab_count;
-                h_flex()
-                    .children(pinned_tabs)
-                    .when(is_scrollable && is_scrolled, |this| {
-                        this.when(has_active_unpinned_tab, |this| this.border_r_2())
-                            .when(!has_active_unpinned_tab, |this| this.border_r_1())
-                            .border_color(cx.theme().colors().border)
-                    })
-            }))
-            .child(self.render_unpinned_tabs_container(unpinned_tabs, tab_count, cx));
-        tab_bar.into_any_element()
-    }
-
-    fn render_two_row_tab_bar(
-        &mut self,
-        pinned_tabs: Vec<AnyElement>,
-        unpinned_tabs: Vec<AnyElement>,
-        tab_count: usize,
-        navigate_backward: IconButton,
-        navigate_forward: IconButton,
-        window: &mut Window,
-        cx: &mut Context<Pane>,
-    ) -> AnyElement {
-        let pinned_tab_bar = self
-            .configure_tab_bar_start(
-                TabBar::new("pinned_tab_bar"),
-                navigate_backward,
-                navigate_forward,
-                window,
-                cx,
-            )
-            .child(
-                h_flex()
-                    .id("pinned_tabs_row")
-                    .debug_selector(|| "pinned_tabs_row".into())
-                    .overflow_x_scroll()
-                    .w_full()
-                    .children(pinned_tabs)
-                    .child(self.render_pinned_tab_bar_drop_target(cx)),
-            );
-        v_flex()
-            .w_full()
+        div()
             .flex_none()
-            .child(pinned_tab_bar)
-            .child(
-                TabBar::new("unpinned_tab_bar").child(self.render_unpinned_tabs_container(
-                    unpinned_tabs,
-                    tab_count,
-                    cx,
-                )),
+            .w_full()
+            .on_scroll_wheel(cx.listener(|this, _, _, _| {
+                this.suppress_scroll = true;
+            }))
+            .child(tab_bar)
+            .when_some(
+                self.tab_context_menu.as_ref(),
+                |this, (menu, position, _)| {
+                    this.child(
+                        deferred(
+                            anchored()
+                                .position(*position)
+                                .snap_to_window_with_margin(px(8.))
+                                .child(menu.clone()),
+                        )
+                        .with_priority(POPUP_PRIORITY),
+                    )
+                },
             )
             .into_any_element()
     }
 
-    fn render_unpinned_tabs_container(
+    fn render_tab_bar_edges(
         &mut self,
-        unpinned_tabs: Vec<AnyElement>,
+        navigate_backward: IconButton,
+        navigate_forward: IconButton,
+        window: &mut Window,
+        cx: &mut Context<Pane>,
+    ) -> (Vec<AnyElement>, Vec<AnyElement>) {
+        let mut start_children = Vec::new();
+        let mut end_children = Vec::new();
+        if self.display_nav_history_buttons.unwrap_or_default() {
+            start_children.push(navigate_backward.into_any_element());
+            start_children.push(navigate_forward.into_any_element());
+        }
+        if self.show_tab_bar_buttons {
+            let render_tab_buttons = self.render_tab_bar_buttons.clone();
+            let (left_children, right_children) = render_tab_buttons(self, window, cx);
+            start_children.extend(left_children);
+            end_children.extend(right_children);
+        }
+        (start_children, end_children)
+    }
+
+    /// The tabs sit in GPUI Kit's segmented bars, laid out in a row with the bar's buttons.
+    fn render_tab_bar_row(
+        start_children: Vec<AnyElement>,
+        tab_bars: impl IntoIterator<Item = AnyElement>,
+        end_children: Vec<AnyElement>,
+        cx: &App,
+    ) -> Div {
+        h_flex()
+            .w_full()
+            .p_1()
+            .gap_1()
+            .bg(cx.theme().colors().tab_bar_background)
+            .border_b_1()
+            .border_color(cx.theme().colors().border)
+            .when(!start_children.is_empty(), |row| {
+                row.child(h_flex().flex_none().gap_1().children(start_children))
+            })
+            .children(tab_bars)
+            .when(!end_children.is_empty(), |row| {
+                row.child(h_flex().flex_none().gap_1().children(end_children))
+            })
+    }
+
+    fn segmented_tab_bar(id: &'static str, selected_index: Option<usize>) -> TabBar {
+        TabBar::new(id)
+            .segmented()
+            .when_some(selected_index, |tab_bar, selected_index| {
+                tab_bar.selected_index(selected_index)
+            })
+    }
+
+    fn render_unpinned_tab_bar(
+        &self,
+        unpinned_tabs: Vec<Tab>,
         tab_count: usize,
         cx: &mut Context<Pane>,
-    ) -> impl IntoElement {
-        h_flex()
-            .id("unpinned tabs")
-            .overflow_x_scroll()
-            .w_full()
+    ) -> TabBar {
+        let selected_index = self
+            .active_item_index
+            .checked_sub(self.pinned_tab_count)
+            .filter(|index| *index < unpinned_tabs.len());
+        Self::segmented_tab_bar("tab_bar", selected_index)
+            .flex_1()
+            .min_w_0()
             .track_scroll(&self.tab_bar_scroll_handle)
-            .on_scroll_wheel(cx.listener(|this, _, _, _| {
-                this.suppress_scroll = true;
-            }))
             .children(unpinned_tabs)
-            .child(self.render_tab_bar_drop_target(tab_count, cx))
+            .last_empty_space(self.render_tab_bar_drop_target(tab_count, cx))
+            // GPUI Kit only lays out the trailing drop target when the bar has a suffix.
+            .suffix(div())
+    }
+
+    fn pinned_selected_index(&self) -> Option<usize> {
+        (self.active_item_index < self.pinned_tab_count).then_some(self.active_item_index)
+    }
+
+    fn render_single_row_tab_bar(
+        &mut self,
+        pinned_tabs: Vec<Tab>,
+        unpinned_tabs: Vec<Tab>,
+        tab_count: usize,
+        navigate_backward: IconButton,
+        navigate_forward: IconButton,
+        window: &mut Window,
+        cx: &mut Context<Pane>,
+    ) -> AnyElement {
+        let (start_children, end_children) =
+            self.render_tab_bar_edges(navigate_backward, navigate_forward, window, cx);
+        // Pinned tabs get a bar of their own, so they stay put while the unpinned ones scroll.
+        let pinned_tab_bar = (!pinned_tabs.is_empty()).then(|| {
+            Self::segmented_tab_bar("pinned_tabs", self.pinned_selected_index())
+                .flex_none()
+                .children(pinned_tabs)
+                .into_any_element()
+        });
+        let tab_bars = pinned_tab_bar.into_iter().chain([self
+            .render_unpinned_tab_bar(unpinned_tabs, tab_count, cx)
+            .into_any_element()]);
+        Self::render_tab_bar_row(start_children, tab_bars, end_children, cx).into_any_element()
+    }
+
+    fn render_two_row_tab_bar(
+        &mut self,
+        pinned_tabs: Vec<Tab>,
+        unpinned_tabs: Vec<Tab>,
+        tab_count: usize,
+        navigate_backward: IconButton,
+        navigate_forward: IconButton,
+        window: &mut Window,
+        cx: &mut Context<Pane>,
+    ) -> AnyElement {
+        let (start_children, end_children) =
+            self.render_tab_bar_edges(navigate_backward, navigate_forward, window, cx);
+        let pinned_tab_bar =
+            Self::segmented_tab_bar("pinned_tab_bar", self.pinned_selected_index())
+                .flex_1()
+                .min_w_0()
+                .children(pinned_tabs)
+                .last_empty_space(self.render_pinned_tab_bar_drop_target(cx))
+                .suffix(div());
+        v_flex()
+            .w_full()
+            .flex_none()
+            .child(
+                div()
+                    .id("pinned_tabs_row")
+                    .debug_selector(|| "pinned_tabs_row".into())
+                    .w_full()
+                    .child(Self::render_tab_bar_row(
+                        start_children,
+                        [pinned_tab_bar.into_any_element()],
+                        end_children,
+                        cx,
+                    )),
+            )
+            .child(Self::render_tab_bar_row(
+                Vec::new(),
+                [self
+                    .render_unpinned_tab_bar(unpinned_tabs, tab_count, cx)
+                    .into_any_element()],
+                Vec::new(),
+                cx,
+            ))
+            .into_any_element()
     }
 
     fn render_tab_bar_drop_target(
@@ -3706,7 +3793,7 @@ impl Pane {
         div()
             .id("tab_bar_drop_target")
             .min_w_6()
-            .h(Tab::container_height(cx))
+            .h(SEGMENTED_TAB_HEIGHT)
             .flex_grow_1()
             // HACK: This empty child is currently necessary to force the drop target to appear
             // despite us setting a min width above.
@@ -3769,10 +3856,8 @@ impl Pane {
             .id("pinned_tabs_border")
             .debug_selector(|| "pinned_tabs_border".into())
             .min_w_6()
-            .h(Tab::container_height(cx))
+            .h(SEGMENTED_TAB_HEIGHT)
             .flex_grow_1()
-            .border_l_1()
-            .border_color(cx.theme().colors().border)
             // HACK: This empty child is currently necessary to force the drop target to appear
             // despite us setting a min width above.
             .child("")
@@ -5096,6 +5181,16 @@ pub fn render_item_indicator(item: Box<dyn ItemHandle>, cx: &App) -> Option<Indi
     })
 }
 
+fn tab_menu_entry(
+    label: impl Into<SharedString>,
+    action: Option<Box<dyn Action>>,
+    handler: impl Fn(&mut Window, &mut App) + 'static,
+) -> PopupMenuItem {
+    PopupMenuItem::new(label)
+        .when_some(action, |item, action| item.action(action))
+        .on_click(move |_, window, cx| handler(window, cx))
+}
+
 impl Render for DraggedTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui_font = ThemeSettings::get_global(cx).ui_font.clone();
@@ -5115,12 +5210,10 @@ impl Render for DraggedTab {
             self.pane
                 .read(cx)
                 .tab_icon_element(self.item.as_ref(), self.is_active, window, cx);
-        Tab::new("")
-            .toggle_state(self.is_active)
-            .children(icon)
-            .child(label)
-            .render(window, cx)
+        Tab::new()
+            .selected(self.is_active)
             .font(ui_font)
+            .child(h_flex().gap_1().children(icon).child(label))
     }
 }
 
