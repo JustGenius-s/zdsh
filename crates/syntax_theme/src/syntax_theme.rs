@@ -158,6 +158,8 @@ mod bundled_themes {
     #[derive(Deserialize)]
     struct ThemeEntry {
         name: String,
+        // Bundled themes use GPUI Kit's format, which keeps syntax colors under `highlight`.
+        #[serde(rename = "highlight")]
         style: ThemeStyle,
     }
 

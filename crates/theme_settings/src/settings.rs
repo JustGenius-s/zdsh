@@ -590,6 +590,7 @@ pub fn adjust_buffer_font_size(cx: &mut App, f: impl FnOnce(Pixels) -> Pixels) {
         .try_global::<BufferFontSize>()
         .map_or(buffer_font_size, |adjusted_size| adjusted_size.0);
     cx.set_global(BufferFontSize(clamp_font_size(f(adjusted_size))));
+    crate::kit_theme::apply_kit_fonts(cx);
     cx.refresh_windows();
 }
 
@@ -597,6 +598,7 @@ pub fn adjust_buffer_font_size(cx: &mut App, f: impl FnOnce(Pixels) -> Pixels) {
 pub fn reset_buffer_font_size(cx: &mut App) {
     if cx.has_global::<BufferFontSize>() {
         cx.remove_global::<BufferFontSize>();
+        crate::kit_theme::apply_kit_fonts(cx);
         cx.refresh_windows();
     }
 }
@@ -620,6 +622,7 @@ pub fn adjust_ui_font_size(cx: &mut App, f: impl FnOnce(Pixels) -> Pixels) {
         .try_global::<UiFontSize>()
         .map_or(ui_font_size, |adjusted_size| adjusted_size.0);
     cx.set_global(UiFontSize(clamp_font_size(f(adjusted_size))));
+    crate::kit_theme::apply_kit_fonts(cx);
     cx.refresh_windows();
 }
 
@@ -627,6 +630,7 @@ pub fn adjust_ui_font_size(cx: &mut App, f: impl FnOnce(Pixels) -> Pixels) {
 pub fn reset_ui_font_size(cx: &mut App) {
     if cx.has_global::<UiFontSize>() {
         cx.remove_global::<UiFontSize>();
+        crate::kit_theme::apply_kit_fonts(cx);
         cx.refresh_windows();
     }
 }

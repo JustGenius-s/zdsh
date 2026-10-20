@@ -41,7 +41,7 @@ impl ExtensionThemeProxy for ThemeRegistryProxy {
     }
 
     fn remove_user_themes(&self, themes: Vec<SharedString>) {
-        self.theme_registry.remove_user_themes(&themes);
+        theme_settings::remove_user_themes(&self.theme_registry, &themes);
     }
 
     fn load_user_theme(&self, theme_path: PathBuf, fs: Arc<dyn Fs>) -> Task<Result<()>> {

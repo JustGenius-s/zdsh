@@ -377,13 +377,14 @@ git_ui = { path = "crates/git_ui" }
 git_ui_core = { path = "crates/git_ui_core" }
 go_to_line = { path = "crates/go_to_line" }
 google_ai = { path = "crates/google_ai" }
-gpui = { path = "crates/gpui", default-features = false }
+gpui = { path = "crates/gpui", package = "gpui-pre", default-features = false }
 gpui_apple = { path = "crates/gpui_apple" }
 gpui_ios = { path = "crates/gpui_ios" }
+gpui-kit = "0.7.3"
 gpui_linux = { path = "crates/gpui_linux", default-features = false }
 gpui_macos = { path = "crates/gpui_macos", default-features = false }
-gpui_macros = { path = "crates/gpui_macros" }
-gpui_platform = { path = "crates/gpui_platform", default-features = false }
+gpui_macros = { path = "crates/gpui_macros", package = "gpui-pre-macros" }
+gpui_platform = { path = "crates/gpui_platform", package = "gpui-pre-platform", default-features = false }
 gpui_shared_string = { path = "crates/gpui_shared_string" }
 gpui_tokio = { path = "crates/gpui_tokio" }
 gpui_util = { path = "crates/gpui_util" }
@@ -487,7 +488,7 @@ snippets_ui = { path = "crates/snippets_ui" }
 sqlez = { path = "crates/sqlez" }
 sqlez_macros = { path = "crates/sqlez_macros" }
 streaming_diff = { path = "crates/streaming_diff" }
-sum_tree = { path = "crates/sum_tree" }
+sum_tree = { path = "crates/sum_tree", package = "gpui-pre-sum-tree" }
 svg_preview = { path = "crates/svg_preview" }
 syntax_theme = { path = "crates/syntax_theme" }
 system_specs = { path = "crates/system_specs" }
@@ -1028,6 +1029,12 @@ features = [
 ]
 
 [patch.crates-io]
+# GPUI Kit is published against `gpui-pre`, a crates.io snapshot of GPUI. The in-tree crates
+# carry those package names so the kit links against this repository's GPUI instead.
+gpui-pre = { path = "crates/gpui" }
+gpui-pre-macros = { path = "crates/gpui_macros" }
+gpui-pre-platform = { path = "crates/gpui_platform" }
+gpui-pre-sum-tree = { path = "crates/sum_tree" }
 cpal = { git = "https://github.com/RustAudio/cpal", rev = "e1612d5d98152f8dc2a62e1b51ef7cbf4f7f26b7" }
 # Unify `tree_sitter_language::LanguageFn` between crates.io grammar crates and
 # the git tree-sitter above; two instances of the crate would make grammar
@@ -1081,7 +1088,7 @@ debug = "full"
 
 [profile.dev.package]
 # proc-macros start
-gpui_macros = { opt-level = 3 }
+gpui-pre-macros = { opt-level = 3 }
 derive_refineable = { opt-level = 3 }
 feature_flags_macros = { opt-level = 3 }
 settings_macros = { opt-level = 3 }

@@ -23,15 +23,20 @@ util::fs_embed! {
     exclude = ["themes/src/*", "*.DS_Store"],
 }
 
+// GPUI Kit components load their icons from the application's asset source, so paths this
+// crate does not have fall through to GPUI Kit's own icons. Where both have a file, ours wins.
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        Self::get(path)
-            .map(|f| Some(f.data))
+        if let Some(file) = Self::get(path) {
+            return Ok(Some(file.data));
+        }
+        gpui_kit::assets::Assets
+            .load(path)
             .with_context(|| format!("loading asset at path {path:?}"))
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        Ok(Self::iter()
+        let mut paths: Vec<SharedString> = Self::iter()
             .filter_map(|p| {
                 if p.starts_with(path) {
                     Some(p.into())
@@ -39,7 +44,13 @@ impl AssetSource for Assets {
                     None
                 }
             })
-            .collect())
+            .collect();
+        for kit_path in gpui_kit::assets::Assets.list(path)? {
+            if Self::get(&kit_path).is_none() {
+                paths.push(kit_path);
+            }
+        }
+        Ok(paths)
     }
 }
 

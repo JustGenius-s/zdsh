@@ -667,6 +667,8 @@ fn main() {
             cx,
         );
 
+        // GPUI Kit owns theme management, so it has to exist before the theme settings load.
+        gpui_kit::init(cx);
         theme_settings::init(theme::LoadThemes::All(Box::new(Assets)), cx);
         eager_load_active_theme_and_icon_theme(fs.clone(), cx);
         theme_extension::init(

@@ -5,6 +5,7 @@
 //! This crate provides theme settings integration for Zed,
 //! bridging the theme system with the settings infrastructure.
 
+mod kit_theme;
 mod schema;
 mod settings;
 
@@ -12,7 +13,7 @@ use std::sync::Arc;
 
 use ::settings::{IntoGpui, Settings, SettingsStore};
 use anyhow::{Context as _, Result};
-use gpui::{App, Font, HighlightStyle, Pixels, Refineable, px};
+use gpui::{App, Font, HighlightStyle, Pixels, Refineable, SharedString, px};
 use gpui_util::ResultExt;
 use theme::{
     AccentColors, Appearance, AppearanceContent, DEFAULT_DARK_THEME, DEFAULT_ICON_THEME_NAME,
@@ -79,9 +80,25 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
         load_bundled_themes(&registry);
     }
 
-    let theme = configured_theme(cx);
+    // GPUI Kit manages the themes once the app has initialized it; Zed's active theme then
+    // follows GPUI Kit's.
+    if load_user_themes && cx.has_global::<gpui_kit::component::Theme>() {
+        kit_theme::set_managed(cx);
+        kit_theme::sync_kit_registry(cx);
+        kit_theme::apply_configured_theme(cx);
+        kit_theme::sync_zed_theme(cx);
+        cx.observe_global::<gpui_kit::component::Theme>(kit_theme::sync_zed_theme)
+            .detach();
+    } else {
+        // GPUI Kit components read its theme, so it has to exist even where the app hasn't
+        // initialized GPUI Kit, as in tests.
+        if !cx.has_global::<gpui_kit::component::Theme>() {
+            gpui_kit::component::theme::init(cx);
+        }
+        let theme = configured_theme(cx);
+        GlobalTheme::update_theme(cx, theme);
+    }
     let icon_theme = configured_icon_theme(cx);
-    GlobalTheme::update_theme(cx, theme);
     GlobalTheme::update_icon_theme(cx, icon_theme);
 
     let settings = ThemeSettings::get_global(cx);
@@ -157,6 +174,8 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
             prev_icon_theme_name = icon_theme_name;
             reload_icon_theme(cx);
         }
+
+        kit_theme::apply_kit_fonts(cx);
     })
     .detach();
 }
@@ -202,6 +221,11 @@ fn configured_icon_theme(cx: &mut App) -> Arc<theme::IconTheme> {
 
 /// Reloads the current theme from settings.
 pub fn reload_theme(cx: &mut App) {
+    if kit_theme::is_managed(cx) {
+        kit_theme::sync_kit_registry(cx);
+        kit_theme::apply_configured_theme(cx);
+        return;
+    }
     let theme = configured_theme(cx);
     GlobalTheme::update_theme(cx, theme);
     cx.refresh_windows();
@@ -228,29 +252,34 @@ pub fn load_bundled_themes(registry: &ThemeRegistry) {
             continue;
         };
 
-        let Some(theme_family) = serde_json::from_slice(&theme)
-            .with_context(|| format!("failed to parse theme at path \"{path}\""))
-            .log_err()
-        else {
-            continue;
-        };
-
-        let refined = refine_theme_family(theme_family);
-        registry.insert_theme_families([refined]);
+        load_user_theme(registry, &theme)
+            .with_context(|| format!("failed to load theme at path \"{path}\""))
+            .log_err();
     }
 }
 
-/// Loads a user theme from the given bytes into the registry.
+/// Loads a theme file in GPUI Kit's or Zed's format into the registry.
 pub fn load_user_theme(registry: &ThemeRegistry, bytes: &[u8]) -> Result<()> {
-    let theme = deserialize_user_theme(bytes)?;
+    let (theme, kit_entries) = read_theme_file(bytes)?;
     let refined = refine_theme_family(theme);
     registry.insert_theme_families([refined]);
+    kit_theme::store_kit_entries(kit_entries);
     Ok(())
 }
 
-/// Deserializes a user theme from the given bytes.
+/// Removes themes that came from user or extension theme files.
+pub fn remove_user_themes(registry: &ThemeRegistry, themes: &[SharedString]) {
+    registry.remove_user_themes(themes);
+    kit_theme::remove_kit_entries(themes);
+}
+
+/// Deserializes a theme file in GPUI Kit's or Zed's format as Zed theme content.
 pub fn deserialize_user_theme(bytes: &[u8]) -> Result<ThemeFamilyContent> {
-    let theme_family: ThemeFamilyContent = serde_json_lenient::from_slice(bytes)?;
+    Ok(read_theme_file(bytes)?.0)
+}
+
+fn read_theme_file(bytes: &[u8]) -> Result<(ThemeFamilyContent, Vec<serde_json::Value>)> {
+    let (theme_family, kit_entries) = kit_theme::parse_theme_file(bytes)?;
 
     for theme in &theme_family.themes {
         if theme
@@ -266,7 +295,7 @@ pub fn deserialize_user_theme(bytes: &[u8]) -> Result<ThemeFamilyContent> {
         }
     }
 
-    Ok(theme_family)
+    Ok((theme_family, kit_entries))
 }
 
 /// Refines a [`ThemeFamilyContent`] and its [`ThemeContent`]s into a [`ThemeFamily`].

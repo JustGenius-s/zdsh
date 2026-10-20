@@ -16,4 +16,5 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true
+gpui-kit.workspace = true
 util.workspace = true
