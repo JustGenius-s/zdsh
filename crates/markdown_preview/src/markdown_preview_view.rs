@@ -1961,6 +1961,7 @@ impl Render for MarkdownPreviewView {
             .custom_scrollbars(
                 Scrollbars::for_settings::<EditorSettingsScrollbarProxy>()
                     .show_along(ScrollAxes::Vertical)
+                    .overlay()
                     .tracked_scroll_handle(&self.scroll_handle),
                 window,
                 cx,

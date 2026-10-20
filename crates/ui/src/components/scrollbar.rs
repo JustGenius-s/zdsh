@@ -347,6 +347,17 @@ pub enum ScrollAxes {
 }
 
 impl ScrollAxes {
+    /// Vertical scrollbars keep a gutter by default; horizontal ones float over the content,
+    /// since they mostly scroll code and wide tables where a bottom gutter would waste a row.
+    fn apply_default_reservation(self, point: Point<ReservedSpace>) -> Point<ReservedSpace> {
+        let point = self.apply_to(point, ReservedSpace::Thumb);
+        if point.y == ReservedSpace::Thumb {
+            Point::new(point.x, ReservedSpace::Gutter)
+        } else {
+            point
+        }
+    }
+
     fn apply_to<T>(self, point: Point<T>, value: T) -> Point<T>
     where
         T: Debug + Default + PartialEq + Clone,
@@ -363,7 +374,11 @@ impl ScrollAxes {
 enum ReservedSpace {
     #[default]
     None,
+    /// The thumb floats over the content.
     Thumb,
+    /// Space is always kept for the thumb, without painting a track, so the thumb never
+    /// covers content and content does not shift when the thumb appears.
+    Gutter,
     Track,
     StableTrack,
 }
@@ -379,7 +394,7 @@ impl ReservedSpace {
 
     fn needs_space_reserved(&self, max_offset: Pixels) -> bool {
         match self {
-            Self::StableTrack => true,
+            Self::Gutter | Self::StableTrack => true,
             Self::Track => !max_offset.is_zero(),
             _ => false,
         }
@@ -458,7 +473,7 @@ impl Scrollbars {
             get_visibility,
             scrollable_handle: Handle::Untracked(ScrollHandle::new),
             tracked_entity: None,
-            visibility: show_along.apply_to(Default::default(), ReservedSpace::Thumb),
+            visibility: show_along.apply_default_reservation(Default::default()),
             style: None,
             reveal_policy: ScrollbarRevealPolicy::default(),
             track_color: None,
@@ -522,7 +537,16 @@ impl<ScrollHandle: ScrollableHandle> Scrollbars<ScrollHandle> {
     }
 
     pub fn show_along(mut self, along: ScrollAxes) -> Self {
-        self.visibility = along.apply_to(self.visibility, ReservedSpace::Thumb);
+        self.visibility = along.apply_default_reservation(self.visibility);
+        self
+    }
+
+    /// Lets the vertical thumb float over the content instead of keeping a gutter, for
+    /// document-like views (code, conversations) whose right edge is usually empty.
+    pub fn overlay(mut self) -> Self {
+        if self.visibility.y == ReservedSpace::Gutter {
+            self.visibility.y = ReservedSpace::Thumb;
+        }
         self
     }
 

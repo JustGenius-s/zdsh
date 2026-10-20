@@ -13408,7 +13408,15 @@ impl Render for ThreadView {
                     this.flex_1()
                         .size_full()
                         .child(self.render_entries(cx))
-                        .vertical_scrollbar_for(&list_state, window, cx)
+                        // A conversation reads like a document whose right edge is usually
+                        // empty, so the thumb floats instead of taking a gutter.
+                        .custom_scrollbars(
+                            Scrollbars::new(ScrollAxes::Vertical)
+                                .overlay()
+                                .tracked_scroll_handle(&list_state),
+                            window,
+                            cx,
+                        )
                         .into_any()
                 } else {
                     this.into_any()
