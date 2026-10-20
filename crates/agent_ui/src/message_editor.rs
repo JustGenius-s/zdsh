@@ -462,14 +462,16 @@ async fn insert_resolved_pasted_context_items(
 impl MessageEditor {
     fn text_style(cx: &App) -> TextStyle {
         let settings = ThemeSettings::get_global(cx);
+        // The composer reads as an input field rather than a buffer, so it
+        // follows the agent UI font instead of the agent buffer font.
         TextStyle {
             color: cx.theme().colors().text,
-            font_family: settings.agent_buffer_font_family().clone(),
-            font_fallbacks: settings.buffer_font.fallbacks.clone(),
-            font_features: settings.buffer_font.features.clone(),
-            font_size: settings.agent_buffer_font_size(cx).into(),
-            font_weight: settings.buffer_font.weight,
-            line_height: relative(settings.buffer_line_height.value()),
+            font_family: settings.agent_ui_font_family().clone(),
+            font_fallbacks: settings.ui_font.fallbacks.clone(),
+            font_features: settings.ui_font.features.clone(),
+            font_size: settings.agent_ui_font_size(cx).into(),
+            font_weight: settings.ui_font.weight,
+            line_height: relative(1.5),
             ..Default::default()
         }
     }

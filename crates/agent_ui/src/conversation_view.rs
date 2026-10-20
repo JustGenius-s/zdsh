@@ -1933,6 +1933,7 @@ impl ConversationView {
                     active.update(cx, |active, cx| {
                         active.sync_elicitation_state_for_entry(index, window, cx);
                         active.sync_editor_mode(cx);
+                        active.sync_placeholder(window, cx);
                         active.sync_generating_indicator(cx);
                     });
                 }
@@ -1966,6 +1967,7 @@ impl ConversationView {
                     list_state.splice(range.clone(), 0);
                     active.update(cx, |active, cx| {
                         active.sync_editor_mode(cx);
+                        active.sync_placeholder(window, cx);
                     });
                 }
             }
@@ -2248,9 +2250,8 @@ impl ConversationView {
                         let mut session_capabilities = thread_view.session_capabilities.write();
                         session_capabilities.set_available_commands(available_commands.clone());
                         session_capabilities.set_available_skills(available_skills);
-                        thread_view.message_editor.update(cx, |editor, cx| {
-                            editor.set_placeholder_text(&new_placeholder, window, cx);
-                        });
+                        drop(session_capabilities);
+                        thread_view.set_empty_thread_placeholder(new_placeholder, window, cx);
                     });
                 }
             }
@@ -9568,6 +9569,70 @@ pub(crate) mod tests {
     fn release_dropped_entities(cx: &mut VisualTestContext) {
         cx.update(|_, _| ());
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    async fn test_composer_add_menu_items_respond_to_clicks(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let (conversation_view, cx) =
+            setup_conversation_view(StubAgentServer::default_response(), cx).await;
+        add_to_workspace_with_size(conversation_view.clone(), true, cx);
+        let message_editor = message_editor(&conversation_view, cx);
+        message_editor.update_in(cx, |editor, window, cx| {
+            editor.focus_handle(cx).focus(window, cx);
+        });
+        cx.run_until_parked();
+
+        let add_button = cx
+            .debug_bounds("composer-add-context")
+            .expect("composer should render the add button");
+        cx.simulate_click(add_button.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+
+        let files_row = cx
+            .debug_bounds("composer-add-menu-Files")
+            .expect("add menu should list Files");
+        cx.simulate_click(files_row.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+
+        assert!(
+            cx.debug_bounds("composer-add-menu-Files").is_none(),
+            "choosing an item should close the add menu"
+        );
+        message_editor.read_with(cx, |editor, cx| {
+            let text = editor.text(cx);
+            assert!(
+                text.starts_with("@file"),
+                "clicking Files should start a file mention, got {text:?}"
+            );
+        });
+
+        let add_button = cx
+            .debug_bounds("composer-add-context")
+            .expect("composer should render the add button");
+        cx.simulate_click(add_button.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("composer-add-menu-Files").is_some());
+
+        let mcp_row = cx
+            .debug_bounds("composer-add-menu-MCP")
+            .expect("add menu should list MCP");
+        cx.simulate_click(mcp_row.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("composer-add-menu-Manage MCP Servers…")
+                .is_some(),
+            "clicking MCP should open the server list"
+        );
+        assert!(cx.debug_bounds("composer-add-menu-Files").is_none());
+
+        cx.simulate_click(add_button.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("composer-add-menu-Files").is_none(),
+            "clicking the add button again should close the menu"
+        );
     }
 
     #[gpui::test]

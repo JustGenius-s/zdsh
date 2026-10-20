@@ -92,6 +92,18 @@ impl ProfileSelector {
         self.picker_handle.clone()
     }
 
+    pub fn profiles_available(&self, cx: &App) -> bool {
+        self.provider.model_selected(cx) && self.provider.profiles_supported(cx)
+    }
+
+    pub fn active_profile_id(&self, cx: &App) -> AgentProfileId {
+        self.provider.profile_id(cx)
+    }
+
+    pub fn select_profile(&self, profile_id: AgentProfileId, cx: &mut App) {
+        switch_profile(self.fs.clone(), self.provider.clone(), profile_id, cx);
+    }
+
     pub fn cycle_profile(&mut self, cx: &mut Context<Self>) {
         if !self.provider.profiles_supported(cx) {
             return;
@@ -212,16 +224,20 @@ impl Render for ProfileSelector {
             && (self.provider.profile_downgraded(cx)
                 || !ProfilePickerDelegate::restricted_forbidden_tools(&profile_id, cx).is_empty());
 
+        let (profile_icon, profile_color) = if show_warning {
+            (IconName::Warning, Color::Warning)
+        } else {
+            profile_icon(&profile_id)
+        };
+
         let trigger_button = Button::new("profile-selector", selected_profile)
             .label_size(LabelSize::Small)
             .color(Color::Muted)
-            .when(show_warning, |this| {
-                this.start_icon(
-                    Icon::new(IconName::Warning)
-                        .size(IconSize::XSmall)
-                        .color(Color::Warning),
-                )
-            })
+            .start_icon(
+                Icon::new(profile_icon)
+                    .size(IconSize::XSmall)
+                    .color(profile_color),
+            )
             .end_icon(Icon::new(icon).size(IconSize::XSmall).color(Color::Muted));
 
         let tooltip: Box<dyn Fn(&mut Window, &mut App) -> AnyView> = Box::new(Tooltip::element({
@@ -250,12 +266,55 @@ impl Render for ProfileSelector {
             picker,
             trigger_button,
             tooltip,
-            gpui::Anchor::BottomRight,
+            gpui::Anchor::BottomLeft,
             cx,
         )
         .with_handle(self.picker_handle.clone())
         .render(window, cx)
         .into_any_element()
+    }
+}
+
+fn switch_profile(
+    fs: Arc<dyn Fs>,
+    provider: Arc<dyn ProfileProvider>,
+    profile_id: AgentProfileId,
+    cx: &mut App,
+) {
+    update_settings_file(fs, cx, {
+        let profile_id = profile_id.clone();
+        move |settings, _cx| {
+            settings
+                .agent
+                .get_or_insert_default()
+                .set_profile(profile_id.0);
+        }
+    });
+
+    provider.set_profile(profile_id.clone(), cx);
+
+    telemetry::event!(
+        "Agent Profile Switched",
+        profile_id = profile_id.as_str(),
+        source = "picker"
+    );
+}
+
+pub fn profile_description(profile_id: &AgentProfileId) -> Option<&'static str> {
+    match profile_id.as_str() {
+        builtin_profiles::WRITE => Some("Get help to write anything."),
+        builtin_profiles::ASK => Some("Chat about your codebase."),
+        builtin_profiles::MINIMAL => Some("Chat about anything with no tools."),
+        _ => None,
+    }
+}
+
+pub fn profile_icon(profile_id: &AgentProfileId) -> (IconName, Color) {
+    match profile_id.as_str() {
+        builtin_profiles::WRITE => (IconName::Pencil, Color::Default),
+        builtin_profiles::ASK => (IconName::Chat, Color::Success),
+        builtin_profiles::MINIMAL => (IconName::Dash, Color::Warning),
+        _ => (IconName::UserRoundPen, Color::Muted),
     }
 }
 
@@ -387,12 +446,7 @@ impl ProfilePickerDelegate {
     }
 
     fn documentation(candidate: &ProfileCandidate) -> Option<&'static str> {
-        match candidate.id.as_str() {
-            builtin_profiles::WRITE => Some("Get help to write anything."),
-            builtin_profiles::ASK => Some("Chat about your codebase."),
-            builtin_profiles::MINIMAL => Some("Chat about anything with no tools."),
-            _ => None,
-        }
+        profile_description(&candidate.id)
     }
 
     fn entries_from_candidates(candidates: &[ProfileCandidate]) -> Vec<ProfilePickerEntry> {
@@ -574,26 +628,11 @@ impl PickerDelegate for ProfilePickerDelegate {
         match self.filtered_entries.get(self.selected_index) {
             Some(ProfilePickerEntry::Profile(entry)) => {
                 if let Some(candidate) = self.candidates.get(entry.candidate_index) {
-                    let profile_id = candidate.id.clone();
-                    let fs = self.fs.clone();
-                    let provider = self.provider.clone();
-
-                    update_settings_file(fs, cx, {
-                        let profile_id = profile_id.clone();
-                        move |settings, _cx| {
-                            settings
-                                .agent
-                                .get_or_insert_default()
-                                .set_profile(profile_id.0);
-                        }
-                    });
-
-                    provider.set_profile(profile_id.clone(), cx);
-
-                    telemetry::event!(
-                        "Agent Profile Switched",
-                        profile_id = profile_id.as_str(),
-                        source = "picker"
+                    switch_profile(
+                        self.fs.clone(),
+                        self.provider.clone(),
+                        candidate.id.clone(),
+                        cx,
                     );
                 }
 

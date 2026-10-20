@@ -677,7 +677,18 @@ impl<D: PickerDelegate> Picker<D> {
     /// For a plain (no-preview) picker the opening width is also its minimum, so
     /// it can't be resized or clamped narrower than it opens.
     pub fn initial_width(mut self, width: impl Into<RelativeWidth>) -> Self {
-        let width = width.into();
+        self.apply_width(width.into());
+        self
+    }
+
+    /// Resizes an open picker, for pickers that track the width of the
+    /// container they are shown in (e.g. a resizable panel).
+    pub fn set_width(&mut self, width: impl Into<RelativeWidth>, cx: &mut Context<Self>) {
+        self.apply_width(width.into());
+        cx.notify();
+    }
+
+    fn apply_width(&mut self, width: RelativeWidth) {
         self.default_shape.width = width;
         if self.live_shape_is_hidden_default() {
             self.shape.set_initial_width(width);
@@ -689,7 +700,6 @@ impl<D: PickerDelegate> Picker<D> {
         {
             self.size_bounds.min_results.width = rems;
         }
-        self
     }
 
     /// Overrides the picker's max height. Plain pickers default to

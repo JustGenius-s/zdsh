@@ -6,10 +6,13 @@ use crate::{
     thread_metadata_store::{ThreadId, ThreadMetadataStore},
 };
 use agent_client_protocol::schema::v2 as acp_v2;
-use std::{cell::RefCell, path::Path};
+use std::{
+    cell::{Cell, RefCell},
+    path::Path,
+};
 
 use acp_thread::{
-    AgentModelIcon, AgentModelId, AgentModelInfo, AgentModelList, Elicitation, ElicitationEntryId,
+    AgentModelId, AgentModelInfo, AgentModelList, Elicitation, ElicitationEntryId,
     ElicitationStatus, ForegroundActivity, SandboxAuthorizationDetails,
     SandboxFallbackAuthorizationDetails, SandboxNotAppliedReason, SubmissionId, SubmissionResponse,
     SubmissionState, ToolCallLocation, decode_path_escapes,
@@ -39,7 +42,7 @@ use gpui::TaskExt;
 use heapless::Vec as ArrayVec;
 use itertools::Itertools;
 use language_model::{
-    FastModeConfirmation, IconOrSvg, LanguageModel, LanguageModelEffortLevel, LanguageModelId,
+    FastModeConfirmation, LanguageModel, LanguageModelEffortLevel, LanguageModelId,
     LanguageModelProvider, LanguageModelProviderId, LanguageModelRegistry, Speed,
 };
 use notifications::status_toast::StatusToast;
@@ -57,6 +60,8 @@ use super::elicitation::{
     ElicitationCard, ElicitationCardHandlers, ElicitationFormState, should_render_elicitation,
 };
 use super::*;
+
+mod composer;
 
 const DATA_RETENTION_LEARN_MORE_URL: &str = "https://support.claude.com/en/articles/15425996-data-retention-practices-for-mythos-class-models";
 
@@ -626,7 +631,13 @@ pub struct ThreadView {
     pub current_submission: Option<SubmissionId>,
     pub _subscriptions: Vec<Subscription>,
     pub message_editor: Entity<MessageEditor>,
-    pub add_context_menu_handle: PopoverMenuHandle<ContextMenu>,
+    empty_thread_placeholder: String,
+    placeholder_shows_follow_up: Option<bool>,
+    add_menu: Option<Entity<picker::Picker<composer::AddMenuDelegate>>>,
+    add_menu_width: Option<Pixels>,
+    _add_menu_subscriptions: Vec<Subscription>,
+    composer_bounds: Rc<Cell<Option<gpui::Bounds<Pixels>>>>,
+    context_usage_expanded: bool,
     pub thinking_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub model_and_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub fast_mode_menu_handle: PopoverMenuHandle<ContextMenu>,
@@ -1072,7 +1083,13 @@ impl ThreadView {
             hovered_edited_file_buttons: None,
             current_submission,
             message_editor,
-            add_context_menu_handle: PopoverMenuHandle::default(),
+            add_menu: None,
+            add_menu_width: None,
+            _add_menu_subscriptions: Vec::new(),
+            composer_bounds: Rc::default(),
+            context_usage_expanded: false,
+            empty_thread_placeholder: placeholder,
+            placeholder_shows_follow_up: None,
             thinking_effort_menu_handle: PopoverMenuHandle::default(),
             model_and_effort_menu_handle: PopoverMenuHandle::default(),
             fast_mode_menu_handle: PopoverMenuHandle::default(),
@@ -1094,6 +1111,7 @@ impl ThreadView {
         this.sync_reported_activity(cx);
         this.sync_generating_indicator(cx);
         this.sync_editor_mode(cx);
+        this.sync_placeholder(window, cx);
         this.sync_existing_elicitation_states(window, cx);
         let list_state_for_scroll = this.list_state.clone();
         let thread_view = cx.entity().downgrade();
@@ -3636,6 +3654,14 @@ impl ThreadView {
         };
         let has_awaiting_permission = awaiting_permission.is_some();
 
+        // Collapsed edits live in the composer's Changes chip; the activity bar
+        // only carries the expanded file list.
+        let changed_buffers = if self.edits_expanded {
+            changed_buffers
+        } else {
+            Vec::new()
+        };
+
         if changed_buffers.is_empty() && !has_plan && queue_is_empty && !has_awaiting_permission {
             return None;
         }
@@ -4982,155 +5008,6 @@ impl ThreadView {
         )
     }
 
-    pub(crate) fn render_message_editor(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        if self.is_subagent() {
-            return div().into_any_element();
-        }
-
-        let focus_handle = self.message_editor.focus_handle(cx);
-        let opaque_window =
-            cx.theme().window_background_appearance() == gpui::WindowBackgroundAppearance::Opaque;
-
-        let editor_expanded = self.editor_expanded;
-        let (expand_icon, expand_tooltip) = if editor_expanded {
-            (IconName::Minimize, "Minimize Message Editor")
-        } else {
-            (IconName::Maximize, "Expand Message Editor")
-        };
-
-        let max_content_width = AgentSettings::get_global(cx).max_content_width;
-        let has_messages = self.has_visible_conversation(cx);
-        let fills_container = editor_expanded;
-        let composer_is_read_only = self.message_editor.read(cx).editor().read(cx).read_only(cx);
-        let discard_draft_button = composer_is_read_only.then(|| {
-            div()
-                .debug_selector(|| "discard-protected-draft".into())
-                .child(
-                    Button::new("discard-protected-draft", "Discard draft")
-                        .label_size(LabelSize::Small)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this._draft_resolve_task.take();
-                            this.message_editor.update(cx, |editor, cx| {
-                                editor.set_read_only(false, cx);
-                                editor.set_message(Vec::new(), window, cx);
-                            });
-                            this.clear_thread_error(cx);
-                        })),
-                )
-        });
-
-        h_flex()
-            .flex_none()
-            .w_full()
-            .px_4()
-            .pt_2()
-            .pb_4()
-            .justify_center()
-            .on_action(cx.listener(Self::handle_message_editor_move_up))
-            .on_action(cx.listener(Self::expand_message_editor))
-            .when(editor_expanded, |this| this.h(vh(0.8, window)))
-            .child(
-                v_flex()
-                    .w_full()
-                    .when_some(max_content_width, |this, max_w| this.max_w(max_w))
-                    .min_w_0()
-                    .when(fills_container, |this| this.h_full())
-                    .px_4()
-                    .py_3()
-                    .rounded_2xl()
-                    .bg(cx.theme().colors().elevated_surface_background)
-                    .border_1()
-                    .border_color(cx.theme().colors().border_variant)
-                    .when(opaque_window, |this| this.shadow_lg())
-                    .flex_shrink_1()
-                    .flex_grow_0()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        v_flex()
-                            .relative()
-                            .w_full()
-                            .min_h_0()
-                            .when(fills_container, |this| this.flex_1())
-                            .pt_1()
-                            .pr_2p5()
-                            .child(self.message_editor.clone())
-                            .when(has_messages, |this| {
-                                this.child(
-                                    h_flex()
-                                        .absolute()
-                                        .top_0()
-                                        .right_0()
-                                        .opacity(0.5)
-                                        .hover(|s| s.opacity(1.0))
-                                        .child(
-                                            IconButton::new("toggle-height", expand_icon)
-                                                .icon_size(IconSize::Small)
-                                                .icon_color(Color::Muted)
-                                                .tooltip({
-                                                    move |_window, cx| {
-                                                        Tooltip::for_action_in(
-                                                            expand_tooltip,
-                                                            &ExpandMessageEditor,
-                                                            &focus_handle,
-                                                            cx,
-                                                        )
-                                                    }
-                                                })
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.expand_message_editor(
-                                                        &ExpandMessageEditor,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                })),
-                                        ),
-                                )
-                            }),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .min_w_0()
-                            .flex_none()
-                            .flex_wrap()
-                            .justify_between()
-                            .child(
-                                h_flex()
-                                    .min_w_0()
-                                    .flex_wrap()
-                                    .gap_0p5()
-                                    .child(self.render_add_context_button(cx))
-                                    .child(self.render_follow_toggle(cx))
-                                    .children(self.render_fast_mode_control(cx)),
-                            )
-                            .child(
-                                h_flex()
-                                    .min_w_0()
-                                    .flex_wrap()
-                                    .gap_1()
-                                    .children(discard_draft_button)
-                                    .children(self.render_token_usage(cx))
-                                    .children(self.profile_selector.clone())
-                                    .map(|this| match self.config_options_view.clone() {
-                                        Some(config_view) => this
-                                            .child(config_view)
-                                            .children(self.render_thinking_control(cx)),
-                                        None => this
-                                            .children(self.mode_selector.clone())
-                                            .child(self.render_model_and_effort_control(cx)),
-                                    })
-                                    .child(self.render_send_button(cx)),
-                            ),
-                    ),
-            )
-            .into_any()
-    }
-
     fn render_queue_steer_button(
         &self,
         entry_id: QueueEntryId,
@@ -5357,199 +5234,6 @@ impl ThreadView {
         self.as_native_thread(cx)
             .and_then(|thread| thread.read(cx).model())
             .is_some_and(|model| model.supports_split_token_display())
-    }
-
-    fn render_token_usage(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let thread = self.thread.read(cx);
-        let usage = thread.token_usage()?;
-        let show_split = self.supports_split_token_display(cx);
-
-        let cost_label = thread.cost().map(|cost| {
-            let precision = if cost.amount > 0.0 && cost.amount < 0.01 {
-                4
-            } else {
-                2
-            };
-            format!("{:.prec$} {}", cost.amount, cost.currency, prec = precision)
-        });
-
-        let progress_color = |ratio: f32| -> Hsla {
-            if ratio >= 0.85 {
-                cx.theme().status().warning
-            } else {
-                cx.theme().colors().text_muted
-            }
-        };
-
-        let used = crate::humanize_token_count(usage.used_tokens);
-        let max = crate::humanize_token_count(usage.max_tokens);
-        let input_tokens_label = crate::humanize_token_count(usage.input_tokens);
-        let output_tokens_label = crate::humanize_token_count(usage.output_tokens);
-
-        let progress_ratio = if usage.max_tokens > 0 {
-            usage.used_tokens as f32 / usage.max_tokens as f32
-        } else {
-            0.0
-        };
-
-        let ring_size = px(16.0);
-        let stroke_width = px(2.);
-
-        let percentage = format!("{}%", (progress_ratio * 100.0).round() as u32);
-
-        let tooltip_separator_color = Color::Custom(cx.theme().colors().text_disabled.opacity(0.6));
-
-        let (project_rules_count, project_entry_ids) = self
-            .as_native_thread(cx)
-            .map(|thread| {
-                let project_context = thread.read(cx).project_context().read(cx);
-                let project_entry_ids = project_context
-                    .worktrees
-                    .iter()
-                    .filter_map(|wt| wt.rules_file.as_ref())
-                    .map(|rf| ProjectEntryId::from_usize(rf.project_entry_id))
-                    .collect::<Vec<_>>();
-                let project_rules_count = project_entry_ids.len();
-                (project_rules_count, project_entry_ids)
-            })
-            .unwrap_or_default();
-
-        let global_agents_md_loaded = UserAgentsMd::global(cx)
-            .and_then(|md| md.content())
-            .is_some();
-
-        let workspace = self.workspace.clone();
-
-        let (max_input_tokens, max_output_tokens) = self
-            .as_native_thread(cx)
-            .map(|thread| {
-                let thread = thread.read(cx);
-                (
-                    thread.input_token_capacity().unwrap_or(usage.max_tokens),
-                    thread
-                        .model()
-                        .and_then(|model| model.max_output_tokens())
-                        .unwrap_or(0),
-                )
-            })
-            .unwrap_or((usage.max_tokens, 0));
-        let input_max_label = crate::humanize_token_count(max_input_tokens);
-        let output_max_label = crate::humanize_token_count(max_output_tokens);
-
-        let build_tooltip = {
-            move |_window: &mut Window, cx: &mut App| {
-                let percentage = percentage.clone();
-                let used = used.clone();
-                let max = max.clone();
-                let input_tokens_label = input_tokens_label.clone();
-                let output_tokens_label = output_tokens_label.clone();
-                let input_max_label = input_max_label.clone();
-                let output_max_label = output_max_label.clone();
-                let project_entry_ids = project_entry_ids.clone();
-                let workspace = workspace.clone();
-                let cost_label = cost_label.clone();
-                cx.new(move |_cx| TokenUsageTooltip {
-                    percentage,
-                    used,
-                    max,
-                    input_tokens: input_tokens_label,
-                    output_tokens: output_tokens_label,
-                    input_max: input_max_label,
-                    output_max: output_max_label,
-                    show_split,
-                    cost_label,
-                    separator_color: tooltip_separator_color,
-                    global_agents_md_loaded,
-                    project_rules_count,
-                    project_entry_ids,
-                    workspace,
-                })
-                .into()
-            }
-        };
-
-        if show_split {
-            let input_max_raw = max_input_tokens;
-            let output_max_raw = max_output_tokens;
-
-            let input_ratio = if input_max_raw > 0 {
-                usage.input_tokens as f32 / input_max_raw as f32
-            } else {
-                0.0
-            };
-            let output_ratio = if output_max_raw > 0 {
-                usage.output_tokens as f32 / output_max_raw as f32
-            } else {
-                0.0
-            };
-
-            Some(
-                h_flex()
-                    .id("split_token_usage")
-                    .flex_shrink_0()
-                    .gap_1p5()
-                    .mr_1()
-                    .child(
-                        h_flex()
-                            .gap_0p5()
-                            .child(
-                                Icon::new(IconName::ArrowUp)
-                                    .size(IconSize::XSmall)
-                                    .color(Color::Muted),
-                            )
-                            .child(
-                                CircularProgress::new(
-                                    usage.input_tokens as f32,
-                                    input_max_raw as f32,
-                                    ring_size,
-                                    cx,
-                                )
-                                .stroke_width(stroke_width)
-                                .progress_color(progress_color(input_ratio)),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_0p5()
-                            .child(
-                                Icon::new(IconName::ArrowDown)
-                                    .size(IconSize::XSmall)
-                                    .color(Color::Muted),
-                            )
-                            .child(
-                                CircularProgress::new(
-                                    usage.output_tokens as f32,
-                                    output_max_raw as f32,
-                                    ring_size,
-                                    cx,
-                                )
-                                .stroke_width(stroke_width)
-                                .progress_color(progress_color(output_ratio)),
-                            ),
-                    )
-                    .hoverable_tooltip(build_tooltip)
-                    .into_any_element(),
-            )
-        } else {
-            Some(
-                h_flex()
-                    .id("circular_progress_tokens")
-                    .mt_px()
-                    .mr_1()
-                    .child(
-                        CircularProgress::new(
-                            usage.used_tokens as f32,
-                            usage.max_tokens as f32,
-                            ring_size,
-                            cx,
-                        )
-                        .stroke_width(stroke_width)
-                        .progress_color(progress_color(progress_ratio)),
-                    )
-                    .hoverable_tooltip(build_tooltip)
-                    .into_any_element(),
-            )
-        }
     }
 
     fn fast_mode_available(&self, cx: &Context<Self>) -> bool {
@@ -5928,27 +5612,6 @@ impl ThreadView {
             .as_ref()
             .map(|(model, _, _)| model.name().0)
             .unwrap_or_else(|| SharedString::from("Select a Model"));
-        // Prefer the model's own icon; fall back to the provider icon so the
-        // trigger is never icon-less while the picker is still loading models.
-        let model_icon = model_selector
-            .read(cx)
-            .active_model(cx)
-            .and_then(|model| model.icon.clone())
-            .map(|icon| match icon {
-                AgentModelIcon::Path(path) => Icon::from_external_svg(path),
-                AgentModelIcon::Named(icon_name) => Icon::new(icon_name),
-            })
-            .or_else(|| {
-                thinking_state.as_ref().and_then(|(model, _, _)| {
-                    LanguageModelRegistry::read_global(cx)
-                        .provider(&model.provider_id)
-                        .map(|provider| match provider.icon() {
-                            IconOrSvg::Icon(icon_name) => Icon::new(icon_name),
-                            IconOrSvg::Svg(path) => Icon::from_external_svg(path),
-                        })
-                })
-            })
-            .map(|icon| icon.size(IconSize::XSmall).color(Color::Muted));
 
         let weak_self = cx.weak_entity();
         let model_name_for_menu = model_name.clone();
@@ -5956,14 +5619,9 @@ impl ThreadView {
         let trigger = ButtonLike::new("model-effort-trigger").child(
             h_flex()
                 .gap_1()
-                .when_some(model_icon, |this, icon| this.child(icon))
-                .child(
-                    Label::new(model_name)
-                        .size(LabelSize::Small)
-                        .color(Color::Default),
-                )
+                .child(Label::new(model_name).color(Color::Muted))
                 .when_some(effort_label, |this, label| {
-                    this.child(Label::new(label).size(LabelSize::Small).color(Color::Muted))
+                    this.child(Label::new(label).color(Color::Muted))
                 })
                 .child(
                     Icon::new(IconName::ChevronDown)
@@ -6092,12 +5750,7 @@ impl ThreadView {
                 y: px(-6.0),
             });
 
-        div()
-            .rounded_full()
-            .bg(cx.theme().colors().element_background)
-            .px_1()
-            .child(menu)
-            .into_any_element()
+        menu.into_any_element()
     }
 
     fn selected_effort_label(
@@ -6419,290 +6072,6 @@ impl ThreadView {
             .anchor(gpui::Anchor::BottomLeft)
     }
 
-    fn render_send_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let message_editor = self.message_editor.read(cx);
-        let is_editor_empty = message_editor.is_empty(cx);
-        let focus_handle = message_editor.focus_handle(cx);
-
-        let is_generating = self.thread.read(cx).status() != ThreadStatus::Idle;
-
-        if self.is_loading_contents {
-            div()
-                .id("loading-message-content")
-                .px_1()
-                .tooltip(Tooltip::text("Loading Added Context…"))
-                .child(loading_contents_spinner(IconSize::default()))
-                .into_any_element()
-        } else if is_generating && is_editor_empty {
-            IconButton::new("stop-generation", IconName::Stop)
-                .icon_color(Color::Error)
-                .style(ButtonStyle::Tinted(TintColor::Error))
-                .tooltip(move |_window, cx| {
-                    Tooltip::for_action("Stop Generation", &editor::actions::Cancel, cx)
-                })
-                .on_click(cx.listener(|this, _event, _, cx| this.cancel_generation(cx)))
-                .into_any_element()
-        } else {
-            let send_icon = if is_generating {
-                IconName::QueueMessage
-            } else {
-                IconName::Send
-            };
-            IconButton::new("send-message", send_icon)
-                .style(ButtonStyle::Filled)
-                .map(|this| {
-                    if is_editor_empty && !is_generating {
-                        this.disabled(true).icon_color(Color::Muted)
-                    } else {
-                        this.icon_color(Color::Accent)
-                    }
-                })
-                .tooltip(move |_window, cx| {
-                    if is_editor_empty && !is_generating {
-                        Tooltip::for_action("Type to Send", &Chat, cx)
-                    } else if is_generating {
-                        let focus_handle = focus_handle.clone();
-
-                        Tooltip::element(move |_window, cx| {
-                            v_flex()
-                                .gap_1()
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .justify_between()
-                                        .child(Label::new("Queue and Send"))
-                                        .child(KeyBinding::for_action_in(&Chat, &focus_handle, cx)),
-                                )
-                                .child(
-                                    h_flex()
-                                        .pt_1()
-                                        .gap_2()
-                                        .justify_between()
-                                        .border_t_1()
-                                        .border_color(cx.theme().colors().border_variant)
-                                        .child(Label::new("Send Immediately"))
-                                        .child(KeyBinding::for_action_in(
-                                            &SendImmediately,
-                                            &focus_handle,
-                                            cx,
-                                        )),
-                                )
-                                .into_any_element()
-                        })(_window, cx)
-                    } else {
-                        Tooltip::for_action("Send Message", &Chat, cx)
-                    }
-                })
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.send(window, cx);
-                }))
-                .into_any_element()
-        }
-    }
-
-    fn render_add_context_button(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let focus_handle = self.message_editor.focus_handle(cx);
-        let weak_self = cx.weak_entity();
-
-        PopoverMenu::new("add-context-menu")
-            .trigger_with_tooltip(
-                IconButton::new("add-context", IconName::Plus)
-                    .icon_size(IconSize::Small)
-                    .icon_color(Color::Muted),
-                {
-                    move |_window, cx| {
-                        Tooltip::for_action_in(
-                            "Add Context",
-                            &OpenAddContextMenu,
-                            &focus_handle,
-                            cx,
-                        )
-                    }
-                },
-            )
-            .anchor(gpui::Anchor::BottomLeft)
-            .with_handle(self.add_context_menu_handle.clone())
-            .offset(gpui::Point {
-                x: px(0.0),
-                y: px(-2.0),
-            })
-            .menu(move |window, cx| {
-                weak_self
-                    .update(cx, |this, cx| this.build_add_context_menu(window, cx))
-                    .ok()
-            })
-    }
-
-    fn build_add_context_menu(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<ContextMenu> {
-        let message_editor = self.message_editor.clone();
-        let workspace = self.workspace.clone();
-        let session_capabilities = self.session_capabilities.read();
-        let supports_images = session_capabilities.supports_images();
-        let supports_embedded_context = session_capabilities.supports_embedded_context();
-        let available_skills = session_capabilities.completion_skills();
-        drop(session_capabilities);
-
-        let has_editor_selection = workspace
-            .upgrade()
-            .and_then(|ws| {
-                ws.read(cx)
-                    .active_item(cx)
-                    .and_then(|item| item.downcast::<Editor>())
-            })
-            .is_some_and(|editor| {
-                editor.update(cx, |editor, cx| {
-                    editor.has_non_empty_selection(&editor.display_snapshot(cx))
-                })
-            });
-
-        let has_terminal_selection = workspace.upgrade().is_some_and(|workspace| {
-            workspace
-                .read(cx)
-                .items_of_type::<terminal_view::TerminalView>(cx)
-                .any(|view| {
-                    view.read(cx)
-                        .terminal()
-                        .read(cx)
-                        .last_content
-                        .selection_text
-                        .as_ref()
-                        .is_some_and(|text| !text.is_empty())
-                })
-        });
-
-        let has_selection = has_editor_selection || has_terminal_selection;
-
-        ContextMenu::build(window, cx, move |menu, _window, _cx| {
-            menu.key_context("AddContextMenu")
-                .item(
-                    ContextMenuEntry::new("Files & Directories")
-                        .icon(IconName::File)
-                        .icon_color(Color::Muted)
-                        .icon_size(IconSize::XSmall)
-                        .handler({
-                            let message_editor = message_editor.clone();
-                            move |window, cx| {
-                                message_editor.focus_handle(cx).focus(window, cx);
-                                message_editor.update(cx, |editor, cx| {
-                                    editor.insert_context_type("file", window, cx);
-                                });
-                            }
-                        }),
-                )
-                .item(
-                    ContextMenuEntry::new("Symbols")
-                        .icon(IconName::Code)
-                        .icon_color(Color::Muted)
-                        .icon_size(IconSize::XSmall)
-                        .handler({
-                            let message_editor = message_editor.clone();
-                            move |window, cx| {
-                                message_editor.focus_handle(cx).focus(window, cx);
-                                message_editor.update(cx, |editor, cx| {
-                                    editor.insert_context_type("symbol", window, cx);
-                                });
-                            }
-                        }),
-                )
-                .item(
-                    ContextMenuEntry::new("Threads")
-                        .icon(IconName::Thread)
-                        .icon_color(Color::Muted)
-                        .icon_size(IconSize::XSmall)
-                        .handler({
-                            let message_editor = message_editor.clone();
-                            move |window, cx| {
-                                message_editor.focus_handle(cx).focus(window, cx);
-                                message_editor.update(cx, |editor, cx| {
-                                    editor.insert_context_type("thread", window, cx);
-                                });
-                            }
-                        }),
-                )
-                .when(!available_skills.is_empty(), |this| {
-                    this.submenu_with_colored_icon("Skills", IconName::Sparkle, Color::Muted, {
-                        let message_editor = message_editor.clone();
-                        let available_skills = available_skills.clone();
-                        move |mut menu, _window, _cx| {
-                            for skill in &available_skills {
-                                menu = menu
-                                    .item(Self::skill_menu_entry(skill, message_editor.clone()));
-                            }
-                            menu
-                        }
-                    })
-                })
-                .item(
-                    ContextMenuEntry::new("Image")
-                        .icon(IconName::Image)
-                        .icon_color(Color::Muted)
-                        .icon_size(IconSize::XSmall)
-                        .disabled(!supports_images)
-                        .handler({
-                            let message_editor = message_editor.clone();
-                            move |window, cx| {
-                                message_editor.focus_handle(cx).focus(window, cx);
-                                message_editor.update(cx, |editor, cx| {
-                                    editor.add_images_from_picker(window, cx);
-                                });
-                            }
-                        }),
-                )
-                .item(
-                    ContextMenuEntry::new("Selection")
-                        .icon(IconName::CursorIBeam)
-                        .icon_color(Color::Muted)
-                        .icon_size(IconSize::XSmall)
-                        .disabled(!has_selection)
-                        .handler({
-                            move |window, cx| {
-                                window.dispatch_action(
-                                    zed_actions::agent::AddSelectionToThread.boxed_clone(),
-                                    cx,
-                                );
-                            }
-                        }),
-                )
-                .item(
-                    ContextMenuEntry::new("Branch Diff")
-                        .icon(IconName::GitBranch)
-                        .icon_color(Color::Muted)
-                        .icon_size(IconSize::XSmall)
-                        .disabled(!supports_embedded_context)
-                        .handler({
-                            move |window, cx| {
-                                message_editor.update(cx, |editor, cx| {
-                                    editor.insert_branch_diff_crease(window, cx);
-                                });
-                            }
-                        }),
-                )
-        })
-    }
-
-    fn skill_menu_entry(
-        skill: &AvailableSkill,
-        message_editor: Entity<crate::message_editor::MessageEditor>,
-    ) -> ContextMenuEntry {
-        let label = format!("{} ({})", skill.name, skill.source);
-        let skill = skill.clone();
-
-        ContextMenuEntry::new(label)
-            .icon(IconName::Sparkle)
-            .icon_color(Color::Muted)
-            .icon_size(IconSize::XSmall)
-            .handler(move |window, cx| {
-                message_editor.focus_handle(cx).focus(window, cx);
-                message_editor.update(cx, |editor, cx| {
-                    editor.insert_skill_crease(&skill, window, cx);
-                });
-            })
-    }
-
     fn render_follow_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let following = self.is_following(cx);
 
@@ -6740,201 +6109,6 @@ impl ThreadView {
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.toggle_following(window, cx);
             }))
-    }
-}
-
-struct TokenUsageTooltip {
-    percentage: String,
-    used: String,
-    max: String,
-    input_tokens: String,
-    output_tokens: String,
-    input_max: String,
-    output_max: String,
-    show_split: bool,
-    cost_label: Option<String>,
-    separator_color: Color,
-    global_agents_md_loaded: bool,
-    project_rules_count: usize,
-    project_entry_ids: Vec<ProjectEntryId>,
-    workspace: WeakEntity<Workspace>,
-}
-
-impl Render for TokenUsageTooltip {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let separator_color = self.separator_color;
-        let percentage = self.percentage.clone();
-        let used = self.used.clone();
-        let max = self.max.clone();
-        let input_tokens = self.input_tokens.clone();
-        let output_tokens = self.output_tokens.clone();
-        let input_max = self.input_max.clone();
-        let output_max = self.output_max.clone();
-        let show_split = self.show_split;
-        let cost_label = self.cost_label.clone();
-        let global_agents_md_loaded = self.global_agents_md_loaded;
-        let project_rules_count = self.project_rules_count;
-        let project_entry_ids = self.project_entry_ids.clone();
-        let workspace = self.workspace.clone();
-
-        ui::tooltip_container(cx, move |container, cx| {
-            container
-                .min_w_40()
-                .child(
-                    Label::new("Context")
-                        .color(Color::Muted)
-                        .size(LabelSize::Small),
-                )
-                .when(!show_split, |this| {
-                    this.child(
-                        h_flex()
-                            .gap_0p5()
-                            .child(Label::new(percentage.clone()))
-                            .child(Label::new("\u{2022}").color(separator_color).mx_1())
-                            .child(Label::new(used.clone()))
-                            .child(Label::new("/").color(separator_color))
-                            .child(Label::new(max.clone()).color(Color::Muted)),
-                    )
-                })
-                .when(show_split, |this| {
-                    this.child(
-                        v_flex()
-                            .gap_0p5()
-                            .child(
-                                h_flex()
-                                    .gap_0p5()
-                                    .child(Label::new("Input:").color(Color::Muted).mr_0p5())
-                                    .child(Label::new(input_tokens))
-                                    .child(Label::new("/").color(separator_color))
-                                    .child(Label::new(input_max).color(Color::Muted)),
-                            )
-                            .child(
-                                h_flex()
-                                    .gap_0p5()
-                                    .child(Label::new("Output:").color(Color::Muted).mr_0p5())
-                                    .child(Label::new(output_tokens))
-                                    .child(Label::new("/").color(separator_color))
-                                    .child(Label::new(output_max).color(Color::Muted)),
-                            ),
-                    )
-                })
-                .when_some(cost_label, |this, cost_label| {
-                    this.child(
-                        v_flex()
-                            .mt_1p5()
-                            .pt_1p5()
-                            .gap_0p5()
-                            .border_t_1()
-                            .border_color(cx.theme().colors().border_variant)
-                            .child(
-                                Label::new("Cost")
-                                    .color(Color::Muted)
-                                    .size(LabelSize::Small),
-                            )
-                            .child(Label::new(cost_label)),
-                    )
-                })
-                .when(
-                    global_agents_md_loaded || project_rules_count > 0,
-                    move |this| {
-                        this.child(
-                            v_flex()
-                                .mt_1p5()
-                                .pt_1p5()
-                                .pb_0p5()
-                                .gap_0p5()
-                                .border_t_1()
-                                .border_color(cx.theme().colors().border_variant)
-                                .child(
-                                    Label::new("Rules")
-                                        .color(Color::Muted)
-                                        .size(LabelSize::Small),
-                                )
-                                .child(
-                                    v_flex()
-                                        .mx_neg_1()
-                                        .when(global_agents_md_loaded, {
-                                            let workspace = workspace.clone();
-                                            move |this| {
-                                                this.child(
-                                                    Button::new(
-                                                        "open-global-agents-md",
-                                                        "1 global rule",
-                                                    )
-                                                    .end_icon(
-                                                        Icon::new(IconName::ArrowUpRight)
-                                                            .color(Color::Muted)
-                                                            .size(IconSize::XSmall),
-                                                    )
-                                                    .on_click(move |_, window, cx| {
-                                                        workspace
-                                                            .update(cx, |workspace, cx| {
-                                                                workspace
-                                                                    .open_abs_path(
-                                                                        paths::agents_file()
-                                                                            .clone(),
-                                                                        workspace::OpenOptions {
-                                                                            focus: Some(true),
-                                                                            ..Default::default()
-                                                                        },
-                                                                        window,
-                                                                        cx,
-                                                                    )
-                                                                    .detach_and_log_err(cx);
-                                                            })
-                                                            .log_err();
-                                                    }),
-                                                )
-                                            }
-                                        })
-                                        .when(project_rules_count > 0, move |this| {
-                                            let workspace = workspace.clone();
-                                            let project_entry_ids = project_entry_ids.clone();
-                                            this.child(
-                                                Button::new(
-                                                    "open-project-rules",
-                                                    format!(
-                                                        "{} {}",
-                                                        project_rules_count,
-                                                        pluralize(
-                                                            "project rule",
-                                                            project_rules_count
-                                                        )
-                                                    ),
-                                                )
-                                                .end_icon(
-                                                    Icon::new(IconName::ArrowUpRight)
-                                                        .color(Color::Muted)
-                                                        .size(IconSize::XSmall),
-                                                )
-                                                .on_click(move |_, window, cx| {
-                                                    let _ =
-                                                        workspace.update(cx, |workspace, cx| {
-                                                            let project =
-                                                                workspace.project().read(cx);
-                                                            let paths = project_entry_ids
-                                                                .iter()
-                                                                .flat_map(|id| {
-                                                                    project.path_for_entry(*id, cx)
-                                                                })
-                                                                .collect::<Vec<_>>();
-                                                            for path in paths {
-                                                                workspace
-                                                                    .open_path(
-                                                                        path, None, true, window,
-                                                                        cx,
-                                                                    )
-                                                                    .detach_and_log_err(cx);
-                                                            }
-                                                        });
-                                                }),
-                                            )
-                                        }),
-                                ),
-                        )
-                    },
-                )
-        })
     }
 }
 
@@ -13310,10 +12484,7 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let menu_handle = self.add_context_menu_handle.clone();
-        window.defer(cx, move |window, cx| {
-            menu_handle.toggle(window, cx);
-        });
+        self.toggle_add_menu(window, cx);
     }
 
     fn toggle_fast_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -13635,8 +12806,9 @@ impl Render for ThreadView {
                     }
                 }
 
-                if let Some(profile_selector) = this.profile_selector.clone() {
-                    profile_selector.read(cx).menu_handle().toggle(window, cx);
+                // Native profiles are picked from the composer's add menu.
+                if this.profile_selector.is_some() {
+                    this.toggle_add_menu(window, cx);
                 } else if let Some(mode_selector) = this.mode_selector.clone() {
                     mode_selector.read(cx).menu_handle().toggle(window, cx);
                 }
