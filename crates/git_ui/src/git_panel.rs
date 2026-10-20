@@ -31,10 +31,9 @@ use futures::channel::oneshot::Canceled;
 use git::Oid;
 use git::commit::ParsedCommitMessage;
 use git::repository::{
-    Branch, CommitData, CommitDetails, CommitOptions, CommitSummary, DiffType, FetchOptions,
-    GitCommitTemplate, GitCommitter, InitialGraphCommitData, LogOrder, LogSource, PushOptions,
-    Remote, RemoteCommandOutput, ResetMode, Upstream, UpstreamTracking, UpstreamTrackingStatus,
-    get_git_committer,
+    CommitData, CommitDetails, CommitOptions, DiffType, FetchOptions, GitCommitTemplate,
+    GitCommitter, InitialGraphCommitData, LogOrder, LogSource, PushOptions, Remote,
+    RemoteCommandOutput, ResetMode, Upstream, UpstreamTracking, get_git_committer,
 };
 use git::stash::GitStash;
 use git::status::{DiffStat, StageStatus};
@@ -98,7 +97,7 @@ use util::paths::PathStyle;
 use util::{ResultExt, TryFutureExt, markdown::MarkdownInlineCode, maybe, rel_path::RelPath};
 use workspace::SERIALIZATION_THROTTLE_TIME;
 use workspace::{
-    Item, ModalView, Workspace,
+    Item, ModalView, PickerTrigger, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
     notifications::{DetachAndPromptErr, NotificationId, NotifyTaskExt},
 };
@@ -113,6 +112,8 @@ const UPDATE_DEBOUNCE: Duration = Duration::from_millis(50);
 // TODO: We should revise this part. It seems the indentation width is not aligned with the one in project panel
 const TREE_INDENT: f32 = 16.0;
 const MAX_HISTORY_TAG_CHIPS: usize = 3;
+const MAX_BRANCH_NAME_LENGTH: usize = 40;
+const MAX_SHORT_SHA_LENGTH: usize = 8;
 // Horizontal offset that aligns the tree indent guides with the row icon column.
 const INDENT_GUIDE_LEFT_OFFSET: gpui::Pixels = gpui::px(19.);
 
@@ -6762,6 +6763,64 @@ impl GitPanel {
         )
     }
 
+    /// The branch the active repository has checked out, opening the branch picker.
+    fn render_branch_header(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let repository = self.active_repository.clone()?;
+        let (branch_name, is_detached_head) = {
+            let repository = repository.read(cx);
+            let branch_name = repository
+                .branch
+                .as_ref()
+                .map(|branch| util::truncate_and_trailoff(branch.name(), MAX_BRANCH_NAME_LENGTH))
+                .or_else(|| {
+                    repository.head_commit.as_ref().map(|commit| {
+                        commit
+                            .sha
+                            .chars()
+                            .take(MAX_SHORT_SHA_LENGTH)
+                            .collect::<String>()
+                    })
+                })?;
+            (branch_name, repository.branch.is_none())
+        };
+
+        let tooltip_meta = if is_detached_head {
+            format!("Detached HEAD: {}", branch_name)
+        } else {
+            format!("Currently Checked Out: {}", branch_name)
+        };
+        let trigger = if is_detached_head {
+            PickerTrigger::new("branch-picker-trigger", "Create Branch")
+                .icon(IconName::GitBranchPlus)
+        } else {
+            PickerTrigger::new("branch-picker-trigger", branch_name).icon(IconName::GitBranch)
+        };
+        let workspace = self.workspace.clone();
+        Some(
+            workspace::panel_header().child(
+                PopoverMenu::new("branch-picker-menu")
+                    .menu(move |window, cx| {
+                        Some(branch_picker::popover(
+                            workspace.clone(),
+                            false,
+                            Some(repository.clone()),
+                            window,
+                            cx,
+                        ))
+                    })
+                    .trigger(trigger.tooltip(move |_, cx| {
+                        Tooltip::with_meta(
+                            "Switch Branch",
+                            Some(&zed_actions::git::Switch),
+                            tooltip_meta.clone(),
+                            cx,
+                        )
+                    }))
+                    .anchor(Anchor::TopLeft),
+            ),
+        )
+    }
+
     pub fn render_footer(
         &self,
         window: &mut Window,
@@ -6773,8 +6832,6 @@ impl GitPanel {
             git_commit_editor_style(settings.git_commit_buffer_font_size(cx), cx);
         let enable_coauthors = self.render_co_authors(cx);
         let editor_focus_handle = self.commit_editor.focus_handle(cx);
-        let branch = active_repository.read(cx).branch.clone();
-        let head_commit = active_repository.read(cx).head_commit.clone();
 
         let git_panel = cx.entity();
         let display_name = SharedString::from(Arc::from(
@@ -6874,12 +6931,7 @@ impl GitPanel {
 
         let footer = v_flex()
             .when(self.commit_editor_expanded, |this| this.flex_1().min_h_0())
-            .child(PanelRepoFooter::new(
-                display_name,
-                branch,
-                head_commit,
-                Some(git_panel),
-            ))
+            .child(PanelRepoFooter::new(display_name, git_panel))
             .when(title_exceeds_limit, |this| {
                 this.child(
                     h_flex()
@@ -9356,6 +9408,7 @@ impl Render for GitPanel {
             .child(
                 v_flex()
                     .size_full()
+                    .children(self.render_branch_header(cx))
                     .when(!self.commit_editor_expanded, |this| {
                         this.child(self.render_tab_bar(cx))
                     })
@@ -9605,103 +9658,38 @@ impl Render for GitPanelMessageTooltip {
     }
 }
 
-#[derive(IntoElement, RegisterComponent)]
+/// The bar at the bottom of the git panel: which repository it shows, when there are several, and
+/// the remote actions. The branch is in the panel's header.
+#[derive(IntoElement)]
 pub struct PanelRepoFooter {
     active_repository: SharedString,
-    branch: Option<Branch>,
-    head_commit: Option<CommitDetails>,
-
-    // Getting a GitPanel in previews will be difficult.
-    //
-    // For now just take an option here, and we won't bind handlers to buttons in previews.
-    git_panel: Option<Entity<GitPanel>>,
+    git_panel: Entity<GitPanel>,
 }
 
 impl PanelRepoFooter {
-    pub fn new(
-        active_repository: SharedString,
-        branch: Option<Branch>,
-        head_commit: Option<CommitDetails>,
-        git_panel: Option<Entity<GitPanel>>,
-    ) -> Self {
+    pub fn new(active_repository: SharedString, git_panel: Entity<GitPanel>) -> Self {
         Self {
             active_repository,
-            branch,
-            head_commit,
             git_panel,
-        }
-    }
-
-    pub fn new_preview(active_repository: SharedString, branch: Option<Branch>) -> Self {
-        Self {
-            active_repository,
-            branch,
-            head_commit: None,
-            git_panel: None,
         }
     }
 }
 
 impl RenderOnce for PanelRepoFooter {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let project = self
-            .git_panel
-            .as_ref()
-            .map(|panel| panel.read(cx).project.clone());
-
-        let (workspace, repo) = self
-            .git_panel
-            .as_ref()
-            .map(|panel| {
-                let panel = panel.read(cx);
-                (panel.workspace.clone(), panel.active_repository.clone())
-            })
-            .unzip();
-
-        let single_repo = project
-            .as_ref()
-            .map(|project| project.read(cx).git_store().read(cx).repositories().len() == 1)
-            .unwrap_or(true);
-
-        const MAX_SHORT_SHA_LEN: usize = 8;
-        let branch_name = self
-            .branch
-            .as_ref()
-            .map(|branch| branch.name().to_owned())
-            .or_else(|| {
-                self.head_commit.as_ref().map(|commit| {
-                    commit
-                        .sha
-                        .chars()
-                        .take(MAX_SHORT_SHA_LEN)
-                        .collect::<String>()
-                })
-            })
-            .unwrap_or_else(|| " (no branch)".to_owned());
-        let show_separator = self.branch.is_some() || self.head_commit.is_some();
-
-        let active_repo_name = self.active_repository.clone();
+        let project = self.git_panel.read(cx).project.clone();
+        let single_repo = project.read(cx).git_store().read(cx).repositories().len() == 1;
 
         let repo_selector = PopoverMenu::new("repository-switcher")
-            .menu({
-                let project = project;
-                move |window, cx| {
-                    let project = project.clone()?;
-                    Some(cx.new(|cx| RepositorySelector::new(project, rems(20.), window, cx)))
-                }
+            .menu(move |window, cx| {
+                Some(cx.new(|cx| RepositorySelector::new(project.clone(), rems(20.), window, cx)))
             })
             .trigger_with_tooltip(
-                Button::new("repo-selector", active_repo_name)
+                Button::new("repo-selector", self.active_repository)
                     .size(ButtonSize::None)
                     .label_size(LabelSize::Small)
                     .truncate(true),
-                move |_, cx| {
-                    if single_repo {
-                        cx.new(|_| Empty).into()
-                    } else {
-                        Tooltip::simple("Switch Active Repository", cx)
-                    }
-                },
+                Tooltip::text("Switch Active Repository"),
             )
             .anchor(Anchor::BottomLeft)
             .offset(gpui::Point {
@@ -9709,30 +9697,6 @@ impl RenderOnce for PanelRepoFooter {
                 y: px(-2.0),
             })
             .into_any_element();
-
-        let branch_selector_button = Button::new("branch-selector", branch_name)
-            .size(ButtonSize::None)
-            .label_size(LabelSize::Small)
-            .truncate(true)
-            .on_click(|_, window, cx| {
-                window.dispatch_action(zed_actions::git::Switch.boxed_clone(), cx);
-            });
-
-        let branch_selector = PopoverMenu::new("popover-button")
-            .menu(move |window, cx| {
-                let workspace = workspace.clone()?;
-                let repo = repo.clone().flatten();
-                Some(branch_picker::popover(workspace, false, repo, window, cx))
-            })
-            .trigger_with_tooltip(
-                branch_selector_button,
-                Tooltip::for_action_title("Switch Branch", &zed_actions::git::Switch),
-            )
-            .anchor(Anchor::BottomLeft)
-            .offset(gpui::Point {
-                x: px(0.0),
-                y: px(-2.0),
-            });
 
         h_flex()
             .w_full()
@@ -9745,286 +9709,19 @@ impl RenderOnce for PanelRepoFooter {
                     .flex_1()
                     .overflow_hidden()
                     .gap_px()
-                    .child(Icon::new(IconName::GitBranch).size(IconSize::Small).color(
-                        if single_repo {
-                            Color::Disabled
-                        } else {
-                            Color::Muted
-                        },
-                    ))
                     .when(!single_repo, |this| {
-                        this.child(div().child(repo_selector).min_w_0()).when(
-                            show_separator,
-                            |this| {
-                                this.child(Label::new("/").size(LabelSize::Small).color(
-                                    Color::Custom(cx.theme().colors().text_muted.opacity(0.4)),
-                                ))
-                            },
+                        this.child(
+                            Icon::new(IconName::GitBranch)
+                                .size(IconSize::Small)
+                                .color(Color::Muted),
                         )
-                    })
-                    .child(div().child(branch_selector).min_w_0()),
+                        .child(div().child(repo_selector).min_w_0())
+                    }),
             )
-            .children(if let Some(git_panel) = self.git_panel {
-                git_panel.update(cx, |git_panel, cx| git_panel.render_remote_button(cx))
-            } else {
-                None
-            })
-    }
-}
-
-impl Component for PanelRepoFooter {
-    fn scope() -> ComponentScope {
-        ComponentScope::VersionControl
-    }
-
-    fn description() -> &'static str {
-        "The footer shown at the bottom of the git panel."
-    }
-
-    fn preview(_window: &mut Window, _cx: &mut App) -> AnyElement {
-        let unknown_upstream = None;
-        let no_remote_upstream = Some(UpstreamTracking::Gone);
-        let ahead_of_upstream = Some(
-            UpstreamTrackingStatus {
-                ahead: 2,
-                behind: 0,
-            }
-            .into(),
-        );
-        let behind_upstream = Some(
-            UpstreamTrackingStatus {
-                ahead: 0,
-                behind: 2,
-            }
-            .into(),
-        );
-        let ahead_and_behind_upstream = Some(
-            UpstreamTrackingStatus {
-                ahead: 3,
-                behind: 1,
-            }
-            .into(),
-        );
-
-        let not_ahead_or_behind_upstream = Some(
-            UpstreamTrackingStatus {
-                ahead: 0,
-                behind: 0,
-            }
-            .into(),
-        );
-
-        fn branch(upstream: Option<UpstreamTracking>) -> Branch {
-            Branch {
-                is_head: true,
-                ref_name: "some-branch".into(),
-                upstream: upstream.map(|tracking| Upstream {
-                    ref_name: "origin/some-branch".into(),
-                    tracking,
-                }),
-                most_recent_commit: Some(CommitSummary {
-                    sha: "abc123".into(),
-                    subject: "Modify stuff".into(),
-                    commit_timestamp: 1710932954,
-                    author_name: "John Doe".into(),
-                    has_parent: true,
-                }),
-            }
-        }
-
-        fn custom(branch_name: &str, upstream: Option<UpstreamTracking>) -> Branch {
-            Branch {
-                is_head: true,
-                ref_name: branch_name.to_string().into(),
-                upstream: upstream.map(|tracking| Upstream {
-                    ref_name: format!("zed/{}", branch_name).into(),
-                    tracking,
-                }),
-                most_recent_commit: Some(CommitSummary {
-                    sha: "abc123".into(),
-                    subject: "Modify stuff".into(),
-                    commit_timestamp: 1710932954,
-                    author_name: "John Doe".into(),
-                    has_parent: true,
-                }),
-            }
-        }
-
-        fn active_repository(id: usize) -> SharedString {
-            format!("repo-{}", id).into()
-        }
-
-        let example_width = px(340.);
-
-        v_flex()
-            .gap_6()
-            .w_full()
-            .flex_none()
-            .children(vec![
-                example_group_with_title(
-                    "Action Button States",
-                    vec![
-                        single_example(
-                            "No Branch",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(active_repository(1), None))
-                                .into_any_element(),
-                        ),
-                        single_example(
-                            "Remote status unknown",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(
-                                    active_repository(2),
-                                    Some(branch(unknown_upstream)),
-                                ))
-                                .into_any_element(),
-                        ),
-                        single_example(
-                            "No Remote Upstream",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(
-                                    active_repository(3),
-                                    Some(branch(no_remote_upstream)),
-                                ))
-                                .into_any_element(),
-                        ),
-                        single_example(
-                            "Not Ahead or Behind",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(
-                                    active_repository(4),
-                                    Some(branch(not_ahead_or_behind_upstream)),
-                                ))
-                                .into_any_element(),
-                        ),
-                        single_example(
-                            "Behind remote",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(
-                                    active_repository(5),
-                                    Some(branch(behind_upstream)),
-                                ))
-                                .into_any_element(),
-                        ),
-                        single_example(
-                            "Ahead of remote",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(
-                                    active_repository(6),
-                                    Some(branch(ahead_of_upstream)),
-                                ))
-                                .into_any_element(),
-                        ),
-                        single_example(
-                            "Ahead and behind remote",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(
-                                    active_repository(7),
-                                    Some(branch(ahead_and_behind_upstream)),
-                                ))
-                                .into_any_element(),
-                        ),
-                    ],
-                )
-                .grow()
-                .vertical(),
-            ])
-            .children(vec![
-                example_group_with_title(
-                    "Labels",
-                    vec![
-                        single_example(
-                            "Short Branch & Repo",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(
-                                    SharedString::from("zed"),
-                                    Some(custom("main", behind_upstream)),
-                                ))
-                                .into_any_element(),
-                        ),
-                        single_example(
-                            "Long Branch",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(
-                                    SharedString::from("zed"),
-                                    Some(custom(
-                                        "redesign-and-update-git-ui-list-entry-style",
-                                        behind_upstream,
-                                    )),
-                                ))
-                                .into_any_element(),
-                        ),
-                        single_example(
-                            "Long Repo",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(
-                                    SharedString::from("zed-industries-community-examples"),
-                                    Some(custom("gpui", ahead_of_upstream)),
-                                ))
-                                .into_any_element(),
-                        ),
-                        single_example(
-                            "Long Repo & Branch",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(
-                                    SharedString::from("zed-industries-community-examples"),
-                                    Some(custom(
-                                        "redesign-and-update-git-ui-list-entry-style",
-                                        behind_upstream,
-                                    )),
-                                ))
-                                .into_any_element(),
-                        ),
-                        single_example(
-                            "Uppercase Repo",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(
-                                    SharedString::from("LICENSES"),
-                                    Some(custom("main", ahead_of_upstream)),
-                                ))
-                                .into_any_element(),
-                        ),
-                        single_example(
-                            "Uppercase Branch",
-                            div()
-                                .w(example_width)
-                                .overflow_hidden()
-                                .child(PanelRepoFooter::new_preview(
-                                    SharedString::from("zed"),
-                                    Some(custom("update-README", behind_upstream)),
-                                ))
-                                .into_any_element(),
-                        ),
-                    ],
-                )
-                .grow()
-                .vertical(),
-            ])
-            .into_any_element()
+            .children(
+                self.git_panel
+                    .update(cx, |git_panel, cx| git_panel.render_remote_button(cx)),
+            )
     }
 }
 

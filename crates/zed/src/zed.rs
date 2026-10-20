@@ -393,7 +393,8 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
         titlebar: Some(TitlebarOptions {
             title: None,
             appears_transparent: true,
-            traffic_light_position: Some(point(px(9.0), px(9.0))),
+            // Centered in the 40px title bar.
+            traffic_light_position: Some(point(px(9.0), px(12.0))),
         }),
         window_bounds: None,
         focus: false,
@@ -776,6 +777,11 @@ fn show_software_emulation_warning_if_needed(
 
 fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<anyhow::Result<()>> {
     cx.spawn_in(window, async move |workspace_handle, cx| {
+        // Added before the others finish loading, so restoring the docks finds it.
+        workspace_handle.update_in(cx, |workspace, window, cx| {
+            let chat_panel = cx.new(|cx| workspace::ChatPanel::new(workspace, window, cx));
+            workspace.add_panel(chat_panel, window, cx);
+        })?;
         let project_panel = ProjectPanel::load(workspace_handle.clone(), cx.clone());
         let outline_panel = OutlinePanel::load(workspace_handle.clone(), cx.clone());
         let git_panel = GitPanel::load(workspace_handle.clone(), cx.clone());

@@ -469,6 +469,9 @@ pub struct Pane {
     /// If a certain project item wants to get recreated with specific data, it can persist its data before the recreation here.
     pub project_item_restoration_data: HashMap<ProjectItemKind, Box<dyn Any + Send>>,
     welcome_page: Option<Entity<crate::welcome::WelcomePage>>,
+    /// Room kept at the start of the tab bar for the window's traffic lights, which overlap it
+    /// when nothing else heads the window above this pane.
+    tab_bar_leading_inset: Pixels,
 
     pub in_center_group: bool,
 }
@@ -588,6 +591,7 @@ impl Pane {
 
         Self {
             alternate_file_items: (None, None),
+            tab_bar_leading_inset: Pixels::ZERO,
             focus_handle,
             items: Vec::new(),
             activation_history: Vec::new(),
@@ -874,6 +878,17 @@ impl Pane {
     pub fn set_close_pane_if_empty(&mut self, close_pane_if_empty: bool, cx: &mut Context<Self>) {
         self.close_pane_if_empty = close_pane_if_empty;
         cx.notify();
+    }
+
+    pub(crate) fn tab_bar_leading_inset(&self) -> Pixels {
+        self.tab_bar_leading_inset
+    }
+
+    pub(crate) fn set_tab_bar_leading_inset(&mut self, inset: Pixels, cx: &mut Context<Self>) {
+        if self.tab_bar_leading_inset != inset {
+            self.tab_bar_leading_inset = inset;
+            cx.notify();
+        }
     }
 
     pub fn set_can_navigate(&mut self, can_navigate: bool, cx: &mut Context<Self>) {
@@ -3661,19 +3676,22 @@ impl Pane {
     }
 
     /// The tabs sit in GPUI Kit's segmented bars, laid out in a row with the bar's buttons.
+    /// The row is as tall as the title bar, which shares it with the center's tab bar on macOS.
     fn render_tab_bar_row(
         start_children: Vec<AnyElement>,
         tab_bars: impl IntoIterator<Item = AnyElement>,
         end_children: Vec<AnyElement>,
+        leading_inset: Pixels,
+        window: &Window,
         cx: &App,
     ) -> Div {
         h_flex()
             .w_full()
-            .p_1()
+            .h(ui::utils::platform_title_bar_height(window))
+            .px_1()
+            .when(leading_inset > Pixels::ZERO, |row| row.pl(leading_inset))
             .gap_1()
             .bg(cx.theme().colors().tab_bar_background)
-            .border_b_1()
-            .border_color(cx.theme().colors().border)
             .when(!start_children.is_empty(), |row| {
                 row.child(h_flex().flex_none().gap_1().children(start_children))
             })
@@ -3737,7 +3755,15 @@ impl Pane {
         let tab_bars = pinned_tab_bar.into_iter().chain([self
             .render_unpinned_tab_bar(unpinned_tabs, tab_count, cx)
             .into_any_element()]);
-        Self::render_tab_bar_row(start_children, tab_bars, end_children, cx).into_any_element()
+        Self::render_tab_bar_row(
+            start_children,
+            tab_bars,
+            end_children,
+            self.tab_bar_leading_inset,
+            window,
+            cx,
+        )
+        .into_any_element()
     }
 
     fn render_two_row_tab_bar(
@@ -3771,6 +3797,8 @@ impl Pane {
                         start_children,
                         [pinned_tab_bar.into_any_element()],
                         end_children,
+                        self.tab_bar_leading_inset,
+                        window,
                         cx,
                     )),
             )
@@ -3780,6 +3808,8 @@ impl Pane {
                     .render_unpinned_tab_bar(unpinned_tabs, tab_count, cx)
                     .into_any_element()],
                 Vec::new(),
+                Pixels::ZERO,
+                window,
                 cx,
             ))
             .into_any_element()

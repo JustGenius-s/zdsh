@@ -1,3 +1,4 @@
+mod project_header;
 pub mod project_panel_settings;
 mod undo;
 mod utils;
@@ -693,9 +694,18 @@ impl ProjectPanel {
         let project = workspace.project().clone();
         let git_store = project.read(cx).git_store().clone();
         let path_style = project.read(cx).path_style(cx);
+        let workspace_entity = cx.entity();
         let project_panel = cx.new(|cx| {
             let focus_handle = cx.focus_handle();
             cx.on_focus(&focus_handle, window, Self::focus_in).detach();
+
+            // The header shows a worktree while it is being created.
+            cx.subscribe(&workspace_entity, |_, _, event, cx| {
+                if matches!(event, workspace::Event::WorktreeCreationChanged) {
+                    cx.notify();
+                }
+            })
+            .detach();
 
             cx.subscribe_in(
                 &git_store,
@@ -708,6 +718,9 @@ impl ProjectPanel {
                         this.update_visible_entries(None, false, false, window, cx);
                         cx.notify();
                     }
+                    // The header names the active repository.
+                    GitStoreEvent::ActiveRepositoryChanged(_)
+                    | GitStoreEvent::RepositoryUpdated(_, _, true) => cx.notify(),
                     _ => {}
                 },
             )
@@ -7449,6 +7462,17 @@ fn item_width_estimate(depth: usize, item_text_chars: usize, is_symlink: bool) -
 
 impl Render for ProjectPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let header = self.render_project_header(cx);
+        let contents = self.render_contents(window, cx);
+        v_flex()
+            .size_full()
+            .children(header)
+            .child(v_flex().flex_1().min_h_0().w_full().child(contents))
+    }
+}
+
+impl ProjectPanel {
+    fn render_contents(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !cx.has_active_drag() {
             self.clear_drag_state(cx);
         }

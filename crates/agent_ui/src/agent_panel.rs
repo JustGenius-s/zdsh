@@ -365,25 +365,27 @@ pub fn init(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {
             workspace
+                // The thread list shows in the left dock, which the window's multi-workspace
+                // opens. It is updated afterwards, as opening the dock reaches this workspace.
                 .register_action(|workspace, _: &ToggleWorkspaceSidebar, window, cx| {
-                    if let Some(item) = workspace.active_item_as::<ConversationItem>(cx) {
+                    if let Some(multi_workspace) =
+                        workspace.multi_workspace().and_then(WeakEntity::upgrade)
+                    {
                         window.defer(cx, move |window, cx| {
-                            item.update(cx, |item, cx| item.toggle_history(window, cx));
-                        });
-                    } else if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
-                        window.defer(cx, move |window, cx| {
-                            panel.update(cx, |panel, cx| panel.show_thread_history(window, cx));
+                            multi_workspace.update(cx, |multi_workspace, cx| {
+                                multi_workspace.toggle_sidebar(window, cx)
+                            });
                         });
                     }
                 })
                 .register_action(|workspace, _: &FocusWorkspaceSidebar, window, cx| {
-                    if let Some(item) = workspace.active_item_as::<ConversationItem>(cx) {
+                    if let Some(multi_workspace) =
+                        workspace.multi_workspace().and_then(WeakEntity::upgrade)
+                    {
                         window.defer(cx, move |window, cx| {
-                            item.update(cx, |item, cx| item.focus_history(window, cx));
-                        });
-                    } else if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
-                        window.defer(cx, move |window, cx| {
-                            panel.update(cx, |panel, cx| panel.show_thread_history(window, cx));
+                            multi_workspace.update(cx, |multi_workspace, cx| {
+                                multi_workspace.focus_sidebar(window, cx)
+                            });
                         });
                     }
                 })
@@ -2076,9 +2078,7 @@ impl AgentPanel {
         cx: &mut Context<Self>,
     ) {
         // The spawn is async, so the panel keeps its current base view until
-        // the terminal lands. Marking the spawn as pending stops
-        // `ensure_thread_initialized` from treating a still-uninitialized panel
-        // as empty and spawning a second, "initial" terminal on activation.
+        // the terminal lands, and the spawn is marked as pending meanwhile.
         self.pending_terminal_spawn = Some(terminal_id);
         let terminal_working_directory = working_directory.clone();
         let init_command = Self::terminal_init_command(run_init_command, cx);
@@ -2956,9 +2956,7 @@ impl AgentPanel {
 
         if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
             let multi_workspace = multi_workspace.read(cx);
-            if multi_workspace.sidebar_visible(cx)
-                && multi_workspace.is_threads_list_view_active(cx)
-            {
+            if multi_workspace.sidebar_open() && multi_workspace.is_threads_list_view_active(cx) {
                 return true;
             }
 
@@ -4445,24 +4443,6 @@ impl AgentPanel {
         }
     }
 
-    fn show_thread_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.ensure_thread_initialized(window, cx);
-        if self.active_conversation_view().is_none() {
-            self.activate_new_thread(false, AgentThreadSource::AgentPanel, window, cx);
-        }
-        if self.open_conversation_in_center(window, cx)
-            && let Some(view) = self.active_conversation_view()
-            && let Some(item) = self
-                .conversation_items
-                .get(&view.read(cx).thread_id)
-                .and_then(WeakEntity::upgrade)
-        {
-            window.defer(cx, move |window, cx| {
-                item.update(cx, |item, cx| item.show_history(window, cx));
-            });
-        }
-    }
-
     fn open_conversation_in_center(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(conversation) = self.active_conversation_view().cloned() else {
             return false;
@@ -4478,17 +4458,6 @@ impl AgentPanel {
                 self.conversation_items.insert(id, item.downgrade());
                 item
             });
-        // Must run before the item is activated, while the current host tab is still visible.
-        let item_id = item.entity_id();
-        window.defer(cx, move |window, cx| {
-            if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten()
-                && multi_workspace.read(cx).sidebar_visible(cx)
-            {
-                multi_workspace.update(cx, |multi_workspace, cx| {
-                    multi_workspace.move_sidebar_to_item(item_id, cx)
-                });
-            }
-        });
         self.open_item_in_center(Box::new(item), window, cx);
         true
     }
@@ -5405,106 +5374,6 @@ impl Panel for AgentPanel {
 }
 
 impl AgentPanel {
-    fn ensure_thread_initialized(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.base_view, BaseView::Uninitialized) {
-            if self.pending_terminal_spawn.is_some() {
-                return;
-            }
-            if self.should_create_terminal_for_new_entry(cx) {
-                let terminal_id = TerminalId::new();
-                self.pending_terminal_spawn = Some(terminal_id);
-                cx.defer_in(window, move |this, window, cx| {
-                    if matches!(this.base_view, BaseView::Uninitialized)
-                        && this.pending_terminal_spawn == Some(terminal_id)
-                        && this.should_create_terminal_for_new_entry(cx)
-                    {
-                        this.create_initial_terminal(
-                            terminal_id,
-                            AgentThreadSource::AgentPanel,
-                            window,
-                            cx,
-                        );
-                    } else if this.pending_terminal_spawn == Some(terminal_id) {
-                        this.pending_terminal_spawn = None;
-                    }
-                });
-            } else {
-                self.activate_draft(false, AgentThreadSource::AgentPanel, window, cx);
-            }
-        }
-    }
-
-    fn create_initial_terminal(
-        &mut self,
-        terminal_id: TerminalId,
-        source: AgentThreadSource,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.supports_terminal(cx) {
-            if self.pending_terminal_spawn == Some(terminal_id) {
-                self.pending_terminal_spawn = None;
-            }
-            return;
-        }
-        let working_directory = self.terminal_working_directory(None, cx);
-        self.spawn_initial_terminal(terminal_id, working_directory, source, window, cx);
-    }
-
-    #[cfg(not(test))]
-    fn spawn_initial_terminal(
-        &mut self,
-        terminal_id: TerminalId,
-        working_directory: Option<PathBuf>,
-        source: AgentThreadSource,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.spawn_terminal(
-            terminal_id,
-            working_directory,
-            None,
-            None,
-            None,
-            true,
-            false,
-            true,
-            source,
-            window,
-            cx,
-        );
-    }
-
-    #[cfg(test)]
-    fn spawn_initial_terminal(
-        &mut self,
-        terminal_id: TerminalId,
-        working_directory: Option<PathBuf>,
-        source: AgentThreadSource,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Err(error) = self.insert_display_only_terminal(
-            terminal_id,
-            working_directory,
-            None,
-            None,
-            None,
-            true,
-            false,
-            true,
-            source,
-            window,
-            cx,
-        ) {
-            log::error!("failed to spawn test agent panel terminal: {error:#}");
-            if self.pending_terminal_spawn == Some(terminal_id) {
-                self.pending_terminal_spawn = None;
-                cx.notify();
-            }
-        }
-    }
-
     fn destination_has_meaningful_state(&self, cx: &App) -> bool {
         if !self.retained_threads.is_empty() || !self.terminals.is_empty() {
             return true;

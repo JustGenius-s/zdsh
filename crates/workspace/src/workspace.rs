@@ -1,4 +1,5 @@
 pub mod active_file_name;
+mod chat_panel;
 pub mod dock;
 pub mod history_manager;
 pub mod invalid_item_view;
@@ -10,11 +11,13 @@ mod multi_workspace_tests;
 pub mod notifications;
 pub mod pane;
 pub mod pane_group;
+mod panel_header;
 pub mod path_list {
     pub use util::path_list::{PathList, SerializedPathList};
 }
 pub mod path_link;
 mod persistence;
+mod rail;
 pub mod searchable;
 pub mod security_modal;
 pub mod shared_screen;
@@ -29,6 +32,7 @@ pub mod welcome;
 pub mod workspace_error;
 mod workspace_settings;
 
+pub use chat_panel::ChatPanel;
 pub use dock::Panel;
 pub use multi_workspace::{
     CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MoveProjectDown,
@@ -37,6 +41,7 @@ pub use multi_workspace::{
     RemovalIntent, SerializedProjectGroupState, Sidebar, SidebarEvent, SidebarHandle,
     SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar,
 };
+pub use panel_header::{PickerTrigger, panel_header};
 pub use path_list::{PathList, SerializedPathList};
 pub use remote::{
     RemoteConnectionIdentity, remote_connection_identity, same_remote_connection_identity,
@@ -176,6 +181,8 @@ use crate::{
 
 pub const SERIALIZATION_THROTTLE_TIME: Duration = Duration::from_millis(200);
 pub const MAX_RECENT_SELECTIONS: usize = 20;
+/// What GPUI Kit's title bar leaves on macOS for the traffic lights.
+const TRAFFIC_LIGHTS_WIDTH: Pixels = px(80.);
 
 /// Which optional window-title variables are actually referenced by the active
 /// template. Used to skip expensive lookups when the template doesn't need them.
@@ -387,6 +394,10 @@ impl Default for Open {
 actions!(
     workspace,
     [
+        /// Switches to the classic, editor-focused panel layout.
+        UseClassicLayout,
+        /// Switches to the agentic panel layout.
+        UseAgenticLayout,
         /// Activates the next pane in the workspace.
         ActivateNextPane,
         /// Activates the previous pane in the workspace.
@@ -1971,7 +1982,6 @@ impl Workspace {
         let left_dock = Dock::new(DockPosition::Left, modal_layer.clone(), window, cx);
         let bottom_dock = Dock::new(DockPosition::Bottom, modal_layer.clone(), window, cx);
         let right_dock = Dock::new(DockPosition::Right, modal_layer.clone(), window, cx);
-        let left_dock_buttons = cx.new(|cx| PanelButtons::new(left_dock.clone(), cx));
         let bottom_dock_buttons = cx.new(|cx| PanelButtons::new(bottom_dock.clone(), cx));
         let right_dock_buttons = cx.new(|cx| PanelButtons::new(right_dock.clone(), cx));
         let multi_workspace = window
@@ -1980,7 +1990,7 @@ impl Workspace {
             .map(|mw| mw.downgrade());
         let status_bar = cx.new(|cx| {
             let mut status_bar = StatusBar::new(&center_pane.clone(), window, cx);
-            status_bar.add_left_item(left_dock_buttons, window, cx);
+            // The rail switches the left dock's panels, so the status bar has no buttons for it.
             status_bar.add_right_item(right_dock_buttons, window, cx);
             status_bar.add_right_item(bottom_dock_buttons, window, cx);
             status_bar
@@ -8678,6 +8688,49 @@ impl Workspace {
             )
     }
 
+    /// macOS draws its window controls over the content, so the title bar can head the left dock
+    /// and let the center and right dock reach the top of the window. Elsewhere the window
+    /// controls need the full-width bar. A zoomed item covers the docks, so it keeps the bar too.
+    fn has_embedded_titlebar(&self) -> bool {
+        cfg!(target_os = "macos") && self.titlebar_item.is_some() && self.zoomed.is_none()
+    }
+
+    /// With the left dock collapsed, the title bar heads only the rail, which is narrower than
+    /// the traffic lights, so they overlap the tab bar of the center's top-left pane.
+    fn sync_traffic_light_insets(
+        &self,
+        embedded_titlebar: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let covered_pane = (embedded_titlebar
+            && !window.is_fullscreen()
+            && !self.left_dock.read(cx).is_open())
+            .then(|| self.center.first_pane());
+        let stale_panes = self
+            .center
+            .panes()
+            .into_iter()
+            .filter_map(|pane| {
+                let inset = if covered_pane.as_ref() == Some(pane) {
+                    TRAFFIC_LIGHTS_WIDTH - rail::RAIL_WIDTH
+                } else {
+                    Pixels::ZERO
+                };
+                (pane.read(cx).tab_bar_leading_inset() != inset).then(|| (pane.clone(), inset))
+            })
+            .collect::<Vec<_>>();
+        if stale_panes.is_empty() {
+            return;
+        }
+        // Panes can't be updated while the workspace renders.
+        window.defer(cx, move |_, cx| {
+            for (pane, inset) in stale_panes {
+                pane.update(cx, |pane, cx| pane.set_tab_bar_leading_inset(inset, cx));
+            }
+        });
+    }
+
     fn render_dock(
         &self,
         position: DockPosition,
@@ -8710,6 +8763,12 @@ impl Workspace {
         };
         let dock_is_open = dock.read(cx).is_open();
         let a11y_active = window.is_a11y_active();
+        let rail = (position == DockPosition::Left).then(|| self.render_rail(window, cx));
+        let rail_width = if rail.is_some() {
+            rail::RAIL_WIDTH
+        } else {
+            Pixels::ZERO
+        };
 
         let mut container = div()
             .id(dock_element_id)
@@ -8723,25 +8782,30 @@ impl Workspace {
             .flex()
             .overflow_hidden()
             .flex_none()
-            .map(|this| match header {
-                // The header continues the dock's edge so the line beside the center reaches
-                // the top of the window.
-                Some(header) => this
+            .map(|this| match rail {
+                Some(rail) => this
                     .flex_col()
+                    // The header runs on into the center's tab bar as one row, so it has no edge
+                    // of its own.
+                    .when_some(header, |this, header| {
+                        this.child(div().w_full().flex_none().child(header))
+                    })
                     .child(
-                        div()
+                        h_flex()
+                            .flex_1()
+                            .min_h_0()
                             .w_full()
-                            .flex_none()
-                            .map(|header_container| match position {
-                                DockPosition::Left => header_container.border_r_1(),
-                                DockPosition::Right => header_container.border_l_1(),
-                                DockPosition::Bottom => header_container,
-                            })
-                            .border_color(cx.theme().colors().border)
-                            .child(header),
-                    )
-                    .child(div().flex().flex_1().min_h_0().w_full().child(dock.clone())),
-                None => this.child(dock.clone()),
+                            .items_stretch()
+                            .child(rail)
+                            .child(div().flex().flex_1().min_w_0().h_full().child(dock.clone())),
+                    ),
+                None => match header {
+                    Some(header) => this
+                        .flex_col()
+                        .child(div().w_full().flex_none().child(header))
+                        .child(div().flex().flex_1().min_h_0().w_full().child(dock.clone())),
+                    None => this.child(dock.clone()),
+                },
             })
             .children(leader_border);
 
@@ -8771,7 +8835,7 @@ impl Workspace {
                     let size = size_state
                         .and_then(|state| state.size)
                         .unwrap_or_else(|| panel.default_size(window, cx));
-                    container = container.w(size);
+                    container = container.w(size + rail_width);
                     // Allow the fixed-width dock to shrink when there isn't
                     // enough space (e.g. when the sidebar is open). The
                     // stored size is preserved so the dock expands back
@@ -8780,7 +8844,7 @@ impl Workspace {
                     style.flex_shrink = Some(1.0);
                 }
                 if let Some(min) = min_size {
-                    container = container.min_w(min);
+                    container = container.min_w(min + rail_width);
                 }
             } else {
                 let size = size_state
@@ -8788,6 +8852,9 @@ impl Workspace {
                     .unwrap_or_else(|| panel.default_size(window, cx));
                 container = container.h(size);
             }
+        } else if rail_width > Pixels::ZERO {
+            // Keeps the header to the rail's width; the title bar inside would widen it.
+            container = container.w(rail_width);
         }
 
         Some(container)
@@ -8975,7 +9042,6 @@ impl Workspace {
     fn render_center(
         &self,
         render_cx: &PaneRenderContext,
-        header: Option<AnyElement>,
         window: &mut Window,
         cx: &mut App,
     ) -> impl IntoElement {
@@ -8995,14 +9061,7 @@ impl Workspace {
                 this.track_focus(&self.region_focus_handles.editor)
             })
             .size_full()
-            .map(|this| match header {
-                Some(header) => this
-                    .flex()
-                    .flex_col()
-                    .child(header)
-                    .child(div().flex().flex_1().min_h_0().w_full().child(center)),
-                None => this.child(center),
-            })
+            .child(center)
     }
 
     pub fn for_window(window: &Window, cx: &App) -> Option<Entity<Workspace>> {
@@ -9721,28 +9780,20 @@ impl Render for Workspace {
             .collect::<Vec<_>>();
         let bottom_dock_layout = WorkspaceSettings::get_global(cx).bottom_dock_layout;
 
-        // macOS draws its window controls over the content, so the title bar can head the left
-        // dock and let the center and right dock reach the top of the window. Elsewhere the
-        // window controls need the full-width bar. A zoomed item covers the docks, so it keeps
-        // the bar too.
-        let embedded_titlebar =
-            cfg!(target_os = "macos") && self.titlebar_item.is_some() && self.zoomed.is_none();
-        let titlebar_heads_left_dock = embedded_titlebar && self.left_dock.read(cx).is_open();
+        let embedded_titlebar = self.has_embedded_titlebar();
         let top_titlebar = if embedded_titlebar {
             None
         } else {
             self.render_titlebar_region(cx)
         };
-        let left_dock_header = if titlebar_heads_left_dock {
+        // The title bar heads the left dock, or just the rail while the dock is collapsed, so
+        // the center's tab bar stays in the window's top row.
+        let left_dock_header = if embedded_titlebar {
             self.render_titlebar_region(cx)
         } else {
             None
         };
-        let center_header = if embedded_titlebar && !titlebar_heads_left_dock {
-            self.render_titlebar_region(cx)
-        } else {
-            None
-        };
+        self.sync_traffic_light_insets(embedded_titlebar, window, cx);
 
         let pane_render_context = PaneRenderContext {
             follower_states: &self.follower_states,
@@ -9844,7 +9895,8 @@ impl Render for Workspace {
                                                 DockPosition::Left => {
                                                     workspace.resize_left_dock(
                                                         e.event.position.x
-                                                            - workspace.bounds.left(),
+                                                            - workspace.bounds.left()
+                                                            - rail::RAIL_WIDTH,
                                                         window,
                                                         cx,
                                                     );
@@ -9907,7 +9959,6 @@ impl Render for Workspace {
                                                                 )
                                                                 .child(self.render_center(
                                                                     &pane_render_context,
-                                                                    center_header,
                                                                     window,
                                                                     cx,
                                                                 ))
@@ -9976,7 +10027,6 @@ impl Render for Workspace {
                                                                         )
                                                                         .child(self.render_center(
                                                                             &pane_render_context,
-                                                                            center_header,
                                                                             window,
                                                                             cx,
                                                                         ))
@@ -10047,7 +10097,6 @@ impl Render for Workspace {
                                                                         )
                                                                         .child(self.render_center(
                                                                             &pane_render_context,
-                                                                            center_header,
                                                                             window,
                                                                             cx,
                                                                         ))
@@ -10106,7 +10155,6 @@ impl Render for Workspace {
                                                         )
                                                         .child(self.render_center(
                                                             &pane_render_context,
-                                                            center_header,
                                                             window,
                                                             cx,
                                                         ))

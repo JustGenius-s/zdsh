@@ -12,10 +12,18 @@ pub const TRAFFIC_LIGHT_PADDING: f32 = if MACOS_SDK_26_OR_LATER { 78. } else { 7
 /// Returns the platform-appropriate title bar height.
 ///
 /// On Windows, this returns a fixed height of 32px.
-/// On other platforms, it scales with the window's rem size (1.75x) with a minimum of 34px.
-#[cfg(not(target_os = "windows"))]
+/// On other platforms, it scales with the window's rem size (1.75x) with a minimum of 34px, or
+/// 40px on macOS.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn platform_title_bar_height(window: &Window) -> Pixels {
     (1.75 * window.rem_size()).max(px(34.))
+}
+
+/// On macOS the title bar shares its row with the center's tab bar, so it is as tall as the tab
+/// bar's segmented tabs plus their padding.
+#[cfg(target_os = "macos")]
+pub fn platform_title_bar_height(window: &Window) -> Pixels {
+    (1.75 * window.rem_size()).max(px(40.))
 }
 
 #[cfg(target_os = "windows")]

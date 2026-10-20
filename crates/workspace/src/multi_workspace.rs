@@ -23,19 +23,19 @@ use agent_settings::AgentSettings;
 
 use crate::open_remote_project_with_existing_connection;
 use crate::{
-    CloseIntent, CloseWindow, DockPosition, Event as WorkspaceEvent, Item, ModalView, OpenMode,
-    Panel, Workspace, WorkspaceId, client_side_decorations,
+    ChatPanel, CloseIntent, CloseWindow, DockPosition, Event as WorkspaceEvent, Item, ModalView,
+    OpenMode, Panel, Workspace, WorkspaceId, client_side_decorations,
     persistence::model::MultiWorkspaceState,
 };
 
 actions!(
     multi_workspace,
     [
-        /// Toggles thread history in a conversation tab.
+        /// Toggles the thread list in the left dock.
         ToggleWorkspaceSidebar,
-        /// Closes thread history.
+        /// Closes the thread list.
         CloseWorkspaceSidebar,
-        /// Moves focus to or from thread history without closing it.
+        /// Moves focus to or from the thread list without closing it.
         FocusWorkspaceSidebar,
         /// Activates the next project in the sidebar.
         NextProject,
@@ -272,7 +272,6 @@ pub struct MultiWorkspace {
     active_workspace_id: Rc<Cell<EntityId>>,
     sidebar: Option<Box<dyn SidebarHandle>>,
     sidebar_open: bool,
-    sidebar_host: Option<EntityId>,
     sidebar_overlay: Option<AnyView>,
     pending_removal_tasks: Vec<Task<()>>,
     _serialize_task: Option<Task<()>>,
@@ -335,7 +334,6 @@ impl MultiWorkspace {
             active_workspace_id,
             sidebar: None,
             sidebar_open: false,
-            sidebar_host: None,
             sidebar_overlay: None,
             pending_removal_tasks: Vec::new(),
             _serialize_task: None,
@@ -368,59 +366,51 @@ impl MultiWorkspace {
     }
 
     pub fn sidebar_open(&self) -> bool {
-        self.sidebar_open && self.sidebar_host.is_some()
+        self.sidebar_open
     }
 
-    /// Returns the shared thread list only to the tab that owns its presentation.
-    pub fn sidebar_for_item(&self, item_id: EntityId) -> Option<AnyView> {
-        (self.sidebar_open() && self.sidebar_host == Some(item_id))
-            .then(|| self.sidebar.as_ref().map(|sidebar| sidebar.to_any()))
-            .flatten()
-    }
-
-    pub fn sidebar_visible(&self, cx: &App) -> bool {
-        self.sidebar_open()
-            && self.workspace().read(cx).panes().iter().any(|pane| {
-                pane.read(cx)
-                    .active_item()
-                    .is_some_and(|item| Some(item.item_id()) == self.sidebar_host)
-            })
-    }
-
-    /// Transfers the single thread list to a tab without duplicating its observers or effects.
-    pub fn show_sidebar_in_item(
+    /// Takes the open state of the thread list from the active workspace's left dock, after the
+    /// chat panel in it was shown or hidden from the dock.
+    pub(crate) fn sync_sidebar_open_from_dock(
         &mut self,
-        item_id: EntityId,
-        window: &mut Window,
+        workspace: &WeakEntity<Workspace>,
         cx: &mut Context<Self>,
     ) {
-        if !self.multi_workspace_enabled(cx) || self.sidebar.is_none() {
+        let Some(workspace) = workspace.upgrade() else {
+            return;
+        };
+        if &workspace != self.workspace() {
             return;
         }
-        self.sidebar_host = Some(item_id);
-        self.previous_focus_handle = window.focused(cx);
-        self.open_sidebar(cx);
-        if let Some(sidebar) = &self.sidebar {
-            sidebar.prepare_for_focus(window, cx);
-            sidebar.focus(window, cx);
-        }
-    }
-
-    /// Keeps an open thread list visible when another tab takes over, without moving focus.
-    pub fn move_sidebar_to_item(&mut self, item_id: EntityId, cx: &mut Context<Self>) {
-        if self.sidebar_open() && self.sidebar_host != Some(item_id) {
-            self.sidebar_host = Some(item_id);
+        let visible = ChatPanel::is_visible_in(workspace.read(cx), cx);
+        if visible != self.sidebar_open {
+            self.sidebar_open = visible;
+            self.serialize(cx);
             cx.notify();
         }
     }
 
-    pub fn release_sidebar_item(&mut self, item_id: EntityId, cx: &mut Context<Self>) {
-        if self.sidebar_host == Some(item_id) {
-            self.sidebar_host = None;
-            self.sidebar_open = false;
-            self.previous_focus_handle = None;
-            cx.notify();
+    /// Whether the active workspace's chat panel needs to be shown or hidden to match whether the
+    /// thread list is open.
+    fn sidebar_panel_out_of_sync(&self, cx: &App) -> bool {
+        let workspace = self.workspace().read(cx);
+        workspace.panel::<ChatPanel>(cx).is_some()
+            && ChatPanel::is_visible_in(workspace, cx) != self.sidebar_open
+    }
+
+    /// Shows or hides the active workspace's chat panel to match whether the thread list is open.
+    fn sync_sidebar_panel(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.sidebar_panel_out_of_sync(cx) {
+            return;
         }
+        let open = self.sidebar_open;
+        self.workspace().update(cx, |workspace, cx| {
+            if open {
+                workspace.open_panel::<ChatPanel>(window, cx);
+            } else {
+                workspace.close_panel::<ChatPanel>(window, cx);
+            }
+        });
     }
 
     pub fn sidebar_has_notifications(&self, cx: &App) -> bool {
@@ -449,6 +439,7 @@ impl MultiWorkspace {
         } else {
             self.previous_focus_handle = window.focused(cx);
             self.open_sidebar(cx);
+            self.sync_sidebar_panel(window, cx);
             if let Some(sidebar) = &self.sidebar {
                 sidebar.prepare_for_focus(window, cx);
                 sidebar.focus(window, cx);
@@ -489,6 +480,7 @@ impl MultiWorkspace {
         } else {
             self.previous_focus_handle = window.focused(cx);
             self.open_sidebar(cx);
+            self.sync_sidebar_panel(window, cx);
             if let Some(sidebar) = &self.sidebar {
                 sidebar.prepare_for_focus(window, cx);
                 sidebar.focus(window, cx);
@@ -534,6 +526,7 @@ impl MultiWorkspace {
         } else {
             self.previous_focus_handle.take();
         }
+        self.sync_sidebar_panel(window, cx);
         self.serialize(cx);
         cx.notify();
     }
@@ -1988,6 +1981,16 @@ impl Render for MultiWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui_font = theme_settings::setup_ui_font(window, cx);
         let text_color = cx.theme().colors().text;
+
+        // The thread list's open state changes without a window at hand, as when it is restored or
+        // the active workspace changes, so the chat panel catches up here.
+        if self.sidebar_panel_out_of_sync(cx) {
+            let this = cx.weak_entity();
+            window.defer(cx, move |window, cx| {
+                this.update(cx, |this, cx| this.sync_sidebar_panel(window, cx))
+                    .log_err();
+            });
+        }
 
         let workspace = self.workspace().clone();
         let workspace_key_context = workspace.update(cx, |workspace, cx| workspace.key_context(cx));
