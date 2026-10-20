@@ -487,6 +487,7 @@ dependencies = [
  "fuzzy",
  "git",
  "git_ui_core",
+ "gpui-kit",
  "gpui-pre",
  "gpui_tokio",
  "heapless",

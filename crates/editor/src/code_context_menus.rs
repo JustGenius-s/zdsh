@@ -1,9 +1,9 @@
 use crate::scroll::ScrollAmount;
 use fuzzy::{StringMatch, StringMatchCandidate};
 use gpui::{
-    AnyElement, Entity, Focusable, FontWeight, HighlightStyle, ListSizingBehavior, ScrollHandle,
-    ScrollStrategy, SharedString, Size, StrikethroughStyle, StyledText, Task, TaskExt,
-    UniformListScrollHandle, div, px, uniform_list,
+    AnyElement, Entity, Focusable, FontWeight, HighlightStyle, Hsla, ListSizingBehavior,
+    ScrollHandle, ScrollStrategy, SharedString, Size, StrikethroughStyle, StyledText, Task,
+    TaskExt, UniformListScrollHandle, div, px, uniform_list,
 };
 use itertools::Itertools;
 use language::CodeLabel;
@@ -86,6 +86,33 @@ impl CompletionMenuEntry {
     pub fn is_selectable(&self) -> bool {
         matches!(self, CompletionMenuEntry::Match(_))
     }
+}
+
+/// A row of the completions menu, for an editor whose owner draws the menu itself.
+pub enum CompletionsMenuRow {
+    Completion {
+        /// The part of the label the query is matched against.
+        label: SharedString,
+        /// Byte offsets of the characters in `label` that the query matched.
+        match_positions: Vec<usize>,
+        /// Byte ranges of `label` that the completion styles with a syntax highlight.
+        styled_ranges: Vec<Range<usize>>,
+        /// The rest of the label, shown after it.
+        detail: Option<SharedString>,
+        documentation: Option<SharedString>,
+        icon_path: Option<SharedString>,
+        icon_color: Option<Hsla>,
+    },
+    Divider,
+    GroupHeader(SharedString),
+}
+
+/// What an editor's completions menu shows, for an owner that draws the menu itself.
+pub struct CompletionsMenuState {
+    pub rows: Vec<CompletionsMenuRow>,
+    pub selected_index: usize,
+    /// Scrolled by the editor to keep the selected row visible.
+    pub scroll_handle: UniformListScrollHandle,
 }
 
 pub enum CodeContextMenu {
@@ -1229,6 +1256,78 @@ impl CompletionsMenu {
                 ),
             )
             .into_any_element()
+    }
+
+    pub(crate) fn state(&self) -> Option<CompletionsMenuState> {
+        let completions = self.completions.borrow();
+        let label_matches = self.label_match_state.label_matches.borrow();
+        let rows = self
+            .entries
+            .borrow()
+            .iter()
+            .map(|entry| {
+                let mat = match entry {
+                    CompletionMenuEntry::Match(mat) => mat,
+                    CompletionMenuEntry::Divider => return Some(CompletionsMenuRow::Divider),
+                    CompletionMenuEntry::GroupHeader(label) => {
+                        return Some(CompletionsMenuRow::GroupHeader(label.clone()));
+                    }
+                };
+                let completion = completions.get(mat.candidate_id)?;
+                let label = &completion.label;
+                let (label_text, detail) = match (
+                    label.text.get(..label.filter_range.end),
+                    label.text.get(label.filter_range.end..),
+                ) {
+                    (Some(main_text), Some(suffix)) => (main_text, suffix.trim()),
+                    _ => (label.text.as_str(), ""),
+                };
+                let match_positions = label_matches
+                    .get(mat.candidate_id)
+                    .and_then(Option::as_ref)
+                    .filter(|label_match| label_match.string == label.filter_text())
+                    .or_else(|| (completion.filter_text() == label.filter_text()).then_some(mat))
+                    .map(|string_match| {
+                        string_match
+                            .positions
+                            .iter()
+                            .map(|position| label.filter_range.start + position)
+                            .filter(|position| *position < label_text.len())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let styled_ranges = label
+                    .runs
+                    .iter()
+                    .filter(|(range, _)| range.start < label_text.len())
+                    .map(|(range, _)| range.start..range.end.min(label_text.len()))
+                    .collect();
+                let documentation = match &completion.documentation {
+                    Some(CompletionDocumentation::SingleLine(text))
+                    | Some(CompletionDocumentation::SingleLineAndMultiLinePlainText {
+                        single_line: text,
+                        ..
+                    }) if self.show_completion_documentation && !text.trim().is_empty() => {
+                        Some(SharedString::from(text.trim().to_string()))
+                    }
+                    _ => None,
+                };
+                Some(CompletionsMenuRow::Completion {
+                    label: SharedString::from(label_text.to_string()),
+                    match_positions,
+                    styled_ranges,
+                    detail: (!detail.is_empty()).then(|| SharedString::from(detail.to_string())),
+                    documentation,
+                    icon_path: completion.icon_path.clone(),
+                    icon_color: completion.icon_color,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(CompletionsMenuState {
+            rows,
+            selected_index: self.selected_item,
+            scroll_handle: self.scroll_handle.clone(),
+        })
     }
 
     fn render_aside(

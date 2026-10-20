@@ -877,6 +877,46 @@ mod tests {
     }
 }
 
+/// Asks for image files and inserts the chosen ones into the editor as context mentions.
+pub(crate) fn add_images_from_picker(
+    editor: Entity<Editor>,
+    mention_set: Entity<MentionSet>,
+    workspace: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let paths_receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple: true,
+        prompt: Some("Select Images".into()),
+    });
+
+    window
+        .spawn(cx, async move |cx| {
+            let paths = match paths_receiver.await {
+                Ok(Ok(Some(paths))) => paths,
+                _ => return Ok::<(), anyhow::Error>(()),
+            };
+
+            let default_image_name: SharedString = "Image".into();
+            let images = cx
+                .background_spawn(async move {
+                    paths
+                        .into_iter()
+                        .filter_map(|path| {
+                            load_external_image_from_path(&path, &default_image_name)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+
+            insert_images_as_context(images, editor, mention_set, workspace, cx).await;
+            Ok(())
+        })
+        .detach_and_log_err(cx);
+}
+
 /// Inserts a list of images into the editor as context mentions.
 /// This is the shared implementation used by both paste and file picker operations.
 pub(crate) async fn insert_images_as_context(

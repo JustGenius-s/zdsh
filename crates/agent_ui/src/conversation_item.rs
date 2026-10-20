@@ -1,12 +1,12 @@
 use crate::{
-    AgentPanel, ConversationView, OpenActiveThreadAsMarkdown, ToggleNewThreadMenu,
-    ToggleOptionsMenu, thread_metadata_store::ThreadMetadataStore,
+    AgentPanel, ConversationView, OpenActiveThreadAsMarkdown,
+    thread_metadata_store::ThreadMetadataStore,
 };
 use acp_thread::ThreadStatus;
 use gpui::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, Subscription, WeakEntity};
 use settings::Settings;
 use theme_settings::ThemeSettings;
-use ui::{ContextMenu, PopoverMenu, PopoverMenuHandle, Tooltip, prelude::*, utils::WithRemSize};
+use ui::{prelude::*, utils::WithRemSize};
 use util::ResultExt;
 use workspace::item::{Item, ItemEvent, TabContentParams};
 use zed_actions::{
@@ -19,8 +19,7 @@ pub(crate) struct ConversationItem {
     conversation: Entity<ConversationView>,
     panel: WeakEntity<AgentPanel>,
     focus_handle: FocusHandle,
-    new_thread_menu: PopoverMenuHandle<ContextMenu>,
-    options_menu: PopoverMenuHandle<ContextMenu>,
+    _conversation_subscriptions: [Subscription; 2],
     _subscriptions: Vec<Subscription>,
 }
 
@@ -32,17 +31,7 @@ impl ConversationItem {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
-        let mut subscriptions = vec![cx.observe(&conversation, |_, _, cx| {
-            cx.emit(ItemEvent::UpdateTab);
-            cx.notify();
-        })];
-        subscriptions.push(cx.subscribe(
-            &conversation,
-            |_, _, _: &crate::conversation_view::RootThreadUpdated, cx| {
-                cx.emit(ItemEvent::UpdateTab);
-                cx.notify();
-            },
-        ));
+        let mut subscriptions = Vec::new();
         if let Some(store) = ThreadMetadataStore::try_global(cx) {
             subscriptions.push(cx.observe(&store, |_, _, cx| {
                 cx.emit(ItemEvent::UpdateTab);
@@ -77,25 +66,48 @@ impl ConversationItem {
         })
         .detach();
         Self {
+            _conversation_subscriptions: Self::subscribe_to_conversation(&conversation, cx),
             conversation,
             panel,
             focus_handle,
-            new_thread_menu: PopoverMenuHandle::default(),
-            options_menu: PopoverMenuHandle::default(),
             _subscriptions: subscriptions,
         }
+    }
+
+    fn subscribe_to_conversation(
+        conversation: &Entity<ConversationView>,
+        cx: &mut Context<Self>,
+    ) -> [Subscription; 2] {
+        [
+            cx.observe(conversation, |_, _, cx| {
+                cx.emit(ItemEvent::UpdateTab);
+                cx.notify();
+            }),
+            cx.subscribe(
+                conversation,
+                |_, _, _: &crate::conversation_view::RootThreadUpdated, cx| {
+                    cx.emit(ItemEvent::UpdateTab);
+                    cx.notify();
+                },
+            ),
+        ]
     }
 
     pub(crate) fn conversation_id(&self) -> gpui::EntityId {
         self.conversation.entity_id()
     }
 
-    pub(crate) fn toggle_options_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.options_menu.toggle(window, cx);
-    }
-
-    pub(crate) fn toggle_new_thread_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.new_thread_menu.toggle(window, cx);
+    /// Shows `conversation` in this tab in place of the one it shows, as when an empty draft
+    /// switches to another agent.
+    pub(crate) fn replace_conversation(
+        &mut self,
+        conversation: Entity<ConversationView>,
+        cx: &mut Context<Self>,
+    ) {
+        self._conversation_subscriptions = Self::subscribe_to_conversation(&conversation, cx);
+        self.conversation = conversation;
+        cx.emit(ItemEvent::UpdateTab);
+        cx.notify();
     }
 
     fn with_panel(
@@ -186,21 +198,11 @@ impl Item for ConversationItem {
 
 impl Render for ConversationItem {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let panel = self.panel.clone();
-        let options_panel = panel.clone();
-        let focus_handle = self.focus_handle.clone();
-        let new_menu_focus = focus_handle.clone();
         let conversation = self.conversation.clone();
-        let drag_target = panel
-            .update(cx, |panel, cx| {
-                panel.render_drag_target(Some(conversation.clone()), cx)
-            })
+        let drag_target = self
+            .panel
+            .update(cx, |panel, cx| panel.render_drag_target(Some(conversation), cx))
             .log_err();
-        let sandbox_status = conversation
-            .read(cx)
-            .root_thread_view()
-            .and_then(|view| view.update(cx, |view, cx| view.render_sandbox_status(cx)));
-        let agent = conversation.read(cx).agent_key().label();
         let theme = ThemeSettings::get_global(cx);
         WithRemSize::new(theme.agent_ui_font_size(cx))
             .size_full()
@@ -256,83 +258,6 @@ impl Render for ConversationItem {
                         this.conversation
                             .update(cx, |view, cx| view.logout(window, cx))
                     }))
-                    .on_action(cx.listener(|this, _: &ToggleNewThreadMenu, window, cx| {
-                        cx.stop_propagation();
-                        this.new_thread_menu.toggle(window, cx);
-                    }))
-                    .on_action(cx.listener(|this, _: &ToggleOptionsMenu, window, cx| {
-                        cx.stop_propagation();
-                        this.options_menu.toggle(window, cx);
-                    }))
-                    .child(
-                        WithRemSize::new(theme.ui_font_size(cx))
-                            .h_flex()
-                            .font_family(theme.ui_font.family.clone())
-                            .flex_none()
-                            .justify_between()
-                            .gap(DynamicSpacing::Base08.rems(cx))
-                            .px(DynamicSpacing::Base08.rems(cx))
-                            .py(DynamicSpacing::Base06.rems(cx))
-                            .bg(cx.theme().colors().toolbar_background)
-                            .border_b_1()
-                            .border_color(cx.theme().colors().border_variant)
-                            .child(
-                                h_flex()
-                                    .h_8()
-                                    .gap_2()
-                                    .child(Label::new(agent).color(Color::Muted))
-                                    .children(sandbox_status),
-                            )
-                            .child(
-                                h_flex()
-                                    .h_8()
-                                    .gap_1()
-                                    .child(
-                                        PopoverMenu::new("new-agent-tab")
-                                            .trigger(
-                                                IconButton::new("new-agent-tab", IconName::Plus)
-                                                    .tooltip(Tooltip::text("New Agent Chat")),
-                                            )
-                                            .anchor(gpui::Anchor::TopRight)
-                                            .with_handle(self.new_thread_menu.clone())
-                                            .menu(move |window, cx| {
-                                                let builder = panel
-                                                    .update(cx, |panel, cx| {
-                                                        panel.new_thread_menu_builder(
-                                                            new_menu_focus.clone(),
-                                                            cx,
-                                                        )
-                                                    })
-                                                    .log_err()?;
-                                                builder(window, cx)
-                                            }),
-                                    )
-                                    .child(
-                                        PopoverMenu::new("agent-tab-options")
-                                            .trigger(
-                                                IconButton::new(
-                                                    "agent-tab-options",
-                                                    IconName::Ellipsis,
-                                                )
-                                                .tooltip(Tooltip::text("Chat Options")),
-                                            )
-                                            .anchor(gpui::Anchor::TopRight)
-                                            .with_handle(self.options_menu.clone())
-                                            .menu(move |window, cx| {
-                                                let builder = options_panel
-                                                    .update(cx, |panel, cx| {
-                                                        panel.options_menu_builder(
-                                                            Some(conversation.clone()),
-                                                            focus_handle.clone(),
-                                                            cx,
-                                                        )
-                                                    })
-                                                    .log_err()?;
-                                                builder(window, cx)
-                                            }),
-                                    ),
-                            ),
-                    )
                     .child(
                         h_flex()
                             .relative()

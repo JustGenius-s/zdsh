@@ -143,7 +143,7 @@ use client::{Collaborator, ParticipantIndex, parse_zed_link};
 use clock::ReplicaId;
 use code_context_menus::{
     AvailableCodeAction, CodeActionContents, CodeActionsItem, CodeActionsMenu, CodeContextMenu,
-    CompletionsMenu, ContextMenuOrigin,
+    CompletionsMenu, CompletionsMenuState, ContextMenuOrigin,
 };
 use code_lens::CodeLensState;
 use collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -1048,6 +1048,7 @@ pub struct Editor {
     nav_history: Option<ItemNavHistory>,
     context_menu: RefCell<Option<CodeContextMenu>>,
     context_menu_options: Option<ContextMenuOptions>,
+    completions_menu_drawn_externally: bool,
     mouse_context_menu: Option<MouseContextMenu>,
     completion_tasks: Vec<(CompletionId, Task<()>)>,
     inline_blame_popover: Option<InlineBlamePopover>,
@@ -2434,6 +2435,7 @@ impl Editor {
             nav_history: None,
             context_menu: RefCell::new(None),
             context_menu_options: None,
+            completions_menu_drawn_externally: false,
             mouse_context_menu: None,
             completion_tasks: Vec::new(),
             inline_blame_popover: None,
@@ -4909,6 +4911,23 @@ impl Editor {
 
     pub fn set_context_menu_options(&mut self, options: ContextMenuOptions) {
         self.context_menu_options = Some(options);
+    }
+
+    /// Leaves drawing the completions menu to whoever owns this editor, which reads it with
+    /// [`Editor::completions_menu_state`]. The menu still opens, filters, and takes keyboard
+    /// input as usual.
+    pub fn set_completions_menu_drawn_externally(&mut self, drawn_externally: bool) {
+        self.completions_menu_drawn_externally = drawn_externally;
+    }
+
+    pub fn completions_menu_state(&self) -> Option<CompletionsMenuState> {
+        if !self.has_visible_completions_menu() {
+            return None;
+        }
+        match self.context_menu.borrow().as_ref()? {
+            CodeContextMenu::Completions(menu) => menu.state(),
+            CodeContextMenu::CodeActions(_) => None,
+        }
     }
 
     fn current_user_player_color(&self, cx: &mut App) -> PlayerColor {

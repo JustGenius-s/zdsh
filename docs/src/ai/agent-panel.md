@@ -22,7 +22,9 @@ Use the double speech bubble button in the conversation toolbar to open **Thread
 
 On wide panes, history sits to the right of the conversation with a draggable divider. On narrow panes, it overlays the right side of the conversation; click outside it or use the toolbar button to close it. The existing Toggle Threads Sidebar and Focus Sidebar shortcuts target this tab-local history. From a file tab, they open a conversation tab first. History starts collapsed after restarting zdsh.
 
-The conversation uses the toolbar background. The composer sits in a rounded dock with space around its edges and stays at the bottom for both new and ongoing conversations. It follows the configured content width and retains model, mode, thinking, context, and send controls. User messages appear as right-aligned rounded bubbles. Plain-text bubbles fit their content up to 85% of the conversation width, then wrap; messages with attachments keep room for embedded controls. Editing, attachments, and checkpoint actions remain available.
+The conversation uses the toolbar background. In an empty conversation the composer is centered in the tab; once the conversation has messages, it docks at the bottom. It follows the configured content width and retains model, mode, thinking, context, and send controls.
+
+The `+` button in the composer picks a mode, starts a file mention, switches models, and turns MCP servers on or off. The default mode, Write, stays implicit. Picking another mode, such as Ask, shows it as a tag next to the `+` button; remove the tag to return to the default mode. User messages appear as right-aligned rounded bubbles. Plain-text bubbles fit their content up to 85% of the conversation width, then wrap; messages with attachments keep room for embedded controls. Editing, attachments, and checkpoint actions remain available.
 
 Switching tabs keeps work running. Closing a conversation tab requests cancellation and releases its session. Saved conversations remain available through the agent's history support; DSH conversations are currently in memory and cannot be restored after closing. Central Agent tab positions are not restored when restarting zdsh.
 
@@ -66,14 +68,9 @@ The sections below cover what you can do from here.
 
 By default, the Agent Panel uses Zed's first-party agent.
 
-Start a new thread with {#kb agent::NewThread}, or open the "New Thread…" menu using the agent selector button on the left (in the empty state) or the `+` icon in the top-right of the panel toolbar. You can also open that menu with {#kb agent::ToggleNewThreadMenu}.
+Start a new thread with {#kb agent::NewThread}. While a thread is still empty, the agent selector above the message editor switches it to **Zed Agent** or any installed [External Agent](./external-agents.md). Once the thread has messages, its agent stays fixed.
 
-From the "New Thread…" menu you can:
-
-- Pick **Zed Agent** or any installed [External Agent](./external-agents.md) to start a new thread with that agent.
-- Choose **New From Summary** to start a fresh Zed Agent thread seeded with a summary of the current conversation — useful for compacting long threads as you approach the context window limit.
-
-To open a terminal, use **New Terminal** from the pane toolbar’s `+` menu. The Agent menu only lists Agent options.
+To open a terminal, use **New Terminal** from the pane toolbar’s `+` menu. The agent selector only lists agents.
 
 {#action agent::NewExternalAgentThread} creates a new thread with the specified External Agent id.
 
@@ -128,7 +125,7 @@ When focus is in the message editor, you can also use {#kb agent::ScrollOutputPa
 ### Thread titles {#thread-titles}
 
 Thread titles are auto-generated based on the content of the conversation.
-But you can also edit them manually by clicking the title and typing, or regenerate them by clicking the "Regenerate Thread Title" button in the ellipsis menu in the top right of the panel.
+You can rename a thread from the [Threads Sidebar](./parallel-agents.md#threads-sidebar).
 
 ### Following the Agent {#following-the-agent}
 
@@ -181,14 +178,14 @@ To paste content without this automatic formatting, use {#kb agent::PasteRaw} to
 
 ### Selection as Context
 
-Additionally, you can also select text in a buffer or terminal and add it as context by using the {#kb agent::AddSelectionToThread} keybinding, running the {#action agent::AddSelectionToThread} action, or choosing the "Selection" item in the `+` menu in the message editor.
+Additionally, you can also select text in a buffer or terminal and add it as context by using the {#kb agent::AddSelectionToThread} keybinding, running the {#action agent::AddSelectionToThread} action, or choosing **Selection** in the `@` menu.
 
 ### Images as Context
 
 It's also possible to attach images in your prompt for providers that support vision models.
 OpenAI GPT-4o and later, Anthropic Claude 3 and later, Google Gemini 1.5 and 2.0, and Bedrock vision models (Claude 3+, Amazon Nova Pro and Lite, Meta Llama 3.2 Vision, Mistral Pixtral) all support image inputs.
 
-To add an image, you can either search in your project's folder by @-mentioning it, or drag it from your file system directly into the Agent Panel message editor.
+To add an image, choose **Image** in the `@` menu to pick image files, @-mention it from your project's folder, or drag it from your file system directly into the Agent Panel message editor.
 Copying an image and pasting it is also supported.
 
 ## Token Usage and Compaction {#token-usage}
@@ -197,7 +194,7 @@ Zed surfaces how many tokens you are consuming for your currently active thread 
 
 Zed automatically compacts long Zed Agent threads as they approach the configured token threshold. Compaction summarizes earlier messages and replaces them in the model context with that summary, leaving more room for the next turn. The thread shows a **Context Compacted** entry that you can expand to inspect the summary. You can compact manually by typing `/compact` in the message editor.
 
-If the selected model's context window is too small for automatic compaction (less than 80000 tokens), a banner appears above the message editor as you approach the token limit. Use **Start New Thread** from that banner, or choose **New From Summary** from the New Thread menu (the `+` button on the top right), to continue in a new thread seeded with a summary. You can also @-mention a past thread in a new one.
+If the selected model's context window is too small for automatic compaction (less than 80000 tokens), a banner appears above the message editor as you approach the token limit. Use **Start New Thread** from that banner to continue in a new thread seeded with a summary. You can also @-mention a past thread in a new one.
 
 Configure automatic compaction with `agent.auto_compact`. See [Agent Settings](./agent-settings.md#automatic-compaction) for options.
 

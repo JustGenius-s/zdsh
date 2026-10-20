@@ -294,10 +294,6 @@ pub(crate) fn agent_sidebar_side(cx: &App) -> &'static str {
 actions!(
     agent,
     [
-        /// Toggles the menu to create new agent threads.
-        ToggleNewThreadMenu,
-        /// Toggles the options menu for agent settings and preferences.
-        ToggleOptionsMenu,
         /// Toggles the profile or mode selector for switching between agent profiles.
         ToggleProfileSelector,
         /// Cycles through available session modes.

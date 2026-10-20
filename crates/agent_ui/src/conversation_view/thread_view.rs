@@ -633,8 +633,7 @@ pub struct ThreadView {
     pub message_editor: Entity<MessageEditor>,
     empty_thread_placeholder: String,
     placeholder_shows_follow_up: Option<bool>,
-    add_menu: Option<Entity<picker::Picker<composer::AddMenuDelegate>>>,
-    add_menu_width: Option<Pixels>,
+    add_menu: Option<Entity<gpui_kit::component::list::ListState<composer::AddMenuDelegate>>>,
     _add_menu_subscriptions: Vec<Subscription>,
     composer_bounds: Rc<Cell<Option<gpui::Bounds<Pixels>>>>,
     context_usage_expanded: bool,
@@ -881,6 +880,10 @@ impl ThreadView {
                     editor.set_source_message(blocks, window, cx);
                 }
             }
+            // The composer draws the `@` and `/` menus itself, as a card beside it.
+            editor.editor().update(cx, |editor, _| {
+                editor.set_completions_menu_drawn_externally(true);
+            });
             editor
         });
 
@@ -1084,7 +1087,6 @@ impl ThreadView {
             current_submission,
             message_editor,
             add_menu: None,
-            add_menu_width: None,
             _add_menu_subscriptions: Vec::new(),
             composer_bounds: Rc::default(),
             context_usage_expanded: false,
@@ -5616,19 +5618,14 @@ impl ThreadView {
         let weak_self = cx.weak_entity();
         let model_name_for_menu = model_name.clone();
 
-        let trigger = ButtonLike::new("model-effort-trigger").child(
-            h_flex()
-                .gap_1()
-                .child(Label::new(model_name).color(Color::Muted))
-                .when_some(effort_label, |this, label| {
-                    this.child(Label::new(label).color(Color::Muted))
-                })
-                .child(
-                    Icon::new(IconName::ChevronDown)
-                        .size(IconSize::XSmall)
-                        .color(Color::Muted),
-                ),
-        );
+        let trigger_label = match effort_label {
+            Some(effort_label) => format!("{model_name} {effort_label}"),
+            None => model_name.to_string(),
+        };
+        let trigger = composer::ComposerButton::new("model-effort-trigger")
+            .size(gpui_kit::component::Size::Small)
+            .label(trigger_label)
+            .dropdown_caret(true);
 
         let menu = PopoverMenu::new("model-effort-selector")
             .trigger(trigger)
@@ -6089,11 +6086,10 @@ impl ThreadView {
             }
         };
 
-        IconButton::new("follow-agent", IconName::Crosshair)
-            .icon_size(IconSize::Small)
-            .icon_color(Color::Muted)
+        composer::ComposerButton::new("follow-agent")
+            .size(gpui_kit::component::Size::Small)
+            .icon(IconName::Crosshair)
             .toggle_state(following)
-            .selected_icon_color(Some(Color::Custom(cx.theme().players().agent().cursor)))
             .tooltip(move |_window, cx| {
                 if following {
                     Tooltip::for_action(tooltip_label.clone(), &Follow, cx)
@@ -12567,6 +12563,12 @@ impl Render for ThreadView {
 
         let has_messages = self.has_visible_conversation(cx);
         let list_state = self.list_state.clone();
+        let message_editor = self.render_message_editor(window, cx);
+        let (centered_message_editor, docked_message_editor) = if has_messages {
+            (None, Some(message_editor))
+        } else {
+            (Some(message_editor), None)
+        };
 
         let conversation = v_flex()
             .flex_1()
@@ -12590,7 +12592,14 @@ impl Render for ThreadView {
                         )
                         .into_any()
                 } else {
-                    this.into_any()
+                    this.child(
+                        v_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .justify_center()
+                            .children(centered_message_editor),
+                    )
+                    .into_any()
                 }
             });
 
@@ -12919,7 +12928,7 @@ impl Render for ThreadView {
             )
             .children(self.render_token_limit_callout(cx))
             .children(self.render_request_elicitations(cx))
-            .child(self.render_message_editor(window, cx))
+            .children(docked_message_editor)
     }
 }
 

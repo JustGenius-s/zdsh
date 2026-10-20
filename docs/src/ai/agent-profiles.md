@@ -15,7 +15,7 @@ Zed includes three built-in profiles:
 
 - `Write`: enables tools for reading, editing, and running commands.
 - `Ask`: focuses on read-only codebase questions.
-- `Minimal`: uses no project tools.
+- `Minimal`: uses no project tools. Zed switches to it in restricted workspaces, so it isn't offered as a mode in the Agent Panel.
 
 ## Configure Profiles {#configure-profiles}
 

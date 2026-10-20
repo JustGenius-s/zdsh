@@ -3936,7 +3936,10 @@ impl EditorElement {
                 edit_prediction_popover_visible = true;
             }
 
+            let completions_menu_drawn_externally =
+                editor.completions_menu_drawn_externally && editor.has_visible_completions_menu();
             if editor.context_menu_visible()
+                && !completions_menu_drawn_externally
                 && let Some(crate::ContextMenuOrigin::Cursor) = editor.context_menu_origin()
             {
                 let (min_height_in_lines, max_height_in_lines) = editor

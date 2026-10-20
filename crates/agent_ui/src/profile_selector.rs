@@ -109,20 +109,23 @@ impl ProfileSelector {
             return;
         }
 
-        let profiles = AgentProfile::available_profiles(cx);
+        let profiles = AgentProfile::available_profiles(cx)
+            .into_keys()
+            .filter(is_selectable_profile)
+            .collect::<Vec<_>>();
         if profiles.is_empty() {
             return;
         }
 
         let current_profile_id = self.provider.profile_id(cx);
         let current_index = profiles
-            .keys()
+            .iter()
             .position(|id| id == &current_profile_id)
             .unwrap_or(0);
 
         let next_index = (current_index + 1) % profiles.len();
 
-        if let Some((next_profile_id, _)) = profiles.get_index(next_index) {
+        if let Some(next_profile_id) = profiles.get(next_index) {
             self.provider.set_profile(next_profile_id.clone(), cx);
             telemetry::event!(
                 "Agent Profile Switched",
@@ -300,6 +303,11 @@ fn switch_profile(
     );
 }
 
+/// Minimal is what restricted workspaces fall back to, not a mode to pick.
+pub fn is_selectable_profile(profile_id: &AgentProfileId) -> bool {
+    profile_id.as_str() != builtin_profiles::MINIMAL
+}
+
 pub fn profile_description(profile_id: &AgentProfileId) -> Option<&'static str> {
     match profile_id.as_str() {
         builtin_profiles::WRITE => Some("Get help to write anything."),
@@ -413,6 +421,7 @@ impl ProfilePickerDelegate {
     fn candidates_from(profiles: AvailableProfiles) -> Vec<ProfileCandidate> {
         profiles
             .into_iter()
+            .filter(|(id, _)| is_selectable_profile(id))
             .map(|(id, name)| ProfileCandidate {
                 is_builtin: builtin_profiles::is_builtin(&id),
                 id,

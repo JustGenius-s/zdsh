@@ -142,24 +142,28 @@ pub(crate) enum PromptContextType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PromptContextAction {
     AddSelections,
+    AddImages,
 }
 
 impl PromptContextAction {
     pub fn keyword(&self) -> &'static str {
         match self {
             Self::AddSelections => "selection",
+            Self::AddImages => "image",
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
             Self::AddSelections => "Selection",
+            Self::AddImages => "Image",
         }
     }
 
     pub fn icon(&self) -> IconName {
         match self {
             Self::AddSelections => IconName::Reader,
+            Self::AddImages => IconName::Image,
         }
     }
 }
@@ -819,6 +823,28 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
                     )
                 }
             },
+            PromptContextAction::AddImages => {
+                let callback: ConfirmCallback = Arc::new(move |_, window, cx| {
+                    let editor = editor.clone();
+                    let mention_set = mention_set.clone();
+                    let workspace = workspace.clone();
+                    window.defer(cx, move |window, cx| {
+                        if let Some((editor, mention_set)) =
+                            editor.upgrade().zip(mention_set.upgrade())
+                        {
+                            crate::mention_set::add_images_from_picker(
+                                editor,
+                                mention_set,
+                                workspace,
+                                window,
+                                cx,
+                            );
+                        }
+                    });
+                    false
+                });
+                (String::new(), callback)
+            }
         };
 
         Some(Completion {
@@ -1353,6 +1379,10 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
             entries.push(PromptContextEntry::Action(
                 PromptContextAction::AddSelections,
             ));
+        }
+
+        if self.source.supports_images(cx) {
+            entries.push(PromptContextEntry::Action(PromptContextAction::AddImages));
         }
 
         if self.source.supports_context(PromptContextType::Skill, cx)
