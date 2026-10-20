@@ -1,7 +1,10 @@
 // This crate was essentially pulled out verbatim from main `zed` crate to avoid having to run RustEmbed macro whenever zed has to be rebuilt. It saves a second or two on an incremental build.
 
+use std::borrow::Cow;
+
 use anyhow::Context as _;
 use gpui::{App, AssetSource, Result, SharedString};
+use gpui_kit::assets::IconName as KitIconName;
 
 // Release builds embed the assets; dev builds read them from the checkout at
 // runtime so edits show up on the next launch without a rebuild and no
@@ -23,10 +26,25 @@ util::fs_embed! {
     exclude = ["themes/src/*", "*.DS_Store"],
 }
 
+/// Where GPUI Kit's own icons are found, even those with a namesake among ours.
+const KIT_ICONS_PREFIX: &str = "kit/";
+
+// GPUI Kit embeds only its components' icons, so the others Zed uses are embedded here.
+gpui_kit::assets::icon_assets!(ExtraKitIcons, [Columns2, Sparkles]);
+
+/// The path of GPUI Kit's `icon`, which loads GPUI Kit's drawing even where Zed has an icon of
+/// the same name.
+pub fn kit_icon_path(icon: KitIconName) -> SharedString {
+    format!("{KIT_ICONS_PREFIX}{}", icon.path()).into()
+}
+
 // GPUI Kit components load their icons from the application's asset source, so paths this
 // crate does not have fall through to GPUI Kit's own icons. Where both have a file, ours wins.
 impl AssetSource for Assets {
-    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if let Some(kit_path) = path.strip_prefix(KIT_ICONS_PREFIX) {
+            return load_kit_icon(kit_path);
+        }
         if let Some(file) = Self::get(path) {
             return Ok(Some(file.data));
         }
@@ -52,6 +70,15 @@ impl AssetSource for Assets {
         }
         Ok(paths)
     }
+}
+
+fn load_kit_icon(path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+    if let Some(svg) = ExtraKitIcons.load(path)? {
+        return Ok(Some(svg));
+    }
+    gpui_kit::assets::Assets
+        .load(path)
+        .with_context(|| format!("loading GPUI Kit icon at path {path:?}"))
 }
 
 impl Assets {

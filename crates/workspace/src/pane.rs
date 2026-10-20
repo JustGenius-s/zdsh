@@ -11,6 +11,7 @@ use crate::{
     },
     move_item,
     notifications::NotifyResultExt,
+    panel_header::KitIconButton,
     toolbar::Toolbar,
     workspace_settings::{AutosaveSetting, FocusFollowsMouse, TabBarSettings, WorkspaceSettings},
 };
@@ -27,9 +28,10 @@ use gpui::{
     WeakFocusHandle, Window, actions, anchored, deferred, prelude::*,
 };
 use gpui_kit::{
+    assets::IconName as KitIconName,
     base::{POPUP_PRIORITY, Selectable as _},
     component::{
-        Icon as KitIcon, IconName as KitIconName, Sizable as _,
+        Icon as KitIcon, Sizable as _,
         button::{Button, ButtonVariants as _},
         menu::{PopupMenu, PopupMenuItem},
         tab::{Tab, TabBar},
@@ -469,9 +471,9 @@ pub struct Pane {
     /// If a certain project item wants to get recreated with specific data, it can persist its data before the recreation here.
     pub project_item_restoration_data: HashMap<ProjectItemKind, Box<dyn Any + Send>>,
     welcome_page: Option<Entity<crate::welcome::WelcomePage>>,
-    /// Room kept at the start of the tab bar for the window's traffic lights, which overlap it
-    /// when nothing else heads the window above this pane.
-    tab_bar_leading_inset: Pixels,
+    /// Whether the window's title bar shows this pane's tab bar, while the pane is active, in place
+    /// of the pane.
+    tab_bar_in_title_bar: bool,
 
     pub in_center_group: bool,
 }
@@ -591,7 +593,6 @@ impl Pane {
 
         Self {
             alternate_file_items: (None, None),
-            tab_bar_leading_inset: Pixels::ZERO,
             focus_handle,
             items: Vec::new(),
             activation_history: Vec::new(),
@@ -647,6 +648,7 @@ impl Pane {
             diagnostic_summary_update: Task::ready(()),
             project_item_restoration_data: HashMap::default(),
             welcome_page: None,
+            tab_bar_in_title_bar: false,
             in_center_group: false,
         }
     }
@@ -857,6 +859,27 @@ impl Pane {
         self.should_display_tab_bar = Rc::new(should_display_tab_bar);
     }
 
+    pub(crate) fn set_tab_bar_in_title_bar(
+        &mut self,
+        tab_bar_in_title_bar: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tab_bar_in_title_bar != tab_bar_in_title_bar {
+            self.tab_bar_in_title_bar = tab_bar_in_title_bar;
+            cx.notify();
+        }
+    }
+
+    /// The tab bar the window's title bar shows for this pane while it is the active one.
+    pub fn render_title_bar_tab_bar(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let should_display_tab_bar = self.should_display_tab_bar.clone();
+        should_display_tab_bar(window, cx).then(|| (self.render_tab_bar.clone())(self, window, cx))
+    }
+
     pub fn set_should_display_welcome_page(&mut self, should_display_welcome_page: bool) {
         self.should_display_welcome_page = should_display_welcome_page;
     }
@@ -878,17 +901,6 @@ impl Pane {
     pub fn set_close_pane_if_empty(&mut self, close_pane_if_empty: bool, cx: &mut Context<Self>) {
         self.close_pane_if_empty = close_pane_if_empty;
         cx.notify();
-    }
-
-    pub(crate) fn tab_bar_leading_inset(&self) -> Pixels {
-        self.tab_bar_leading_inset
-    }
-
-    pub(crate) fn set_tab_bar_leading_inset(&mut self, inset: Pixels, cx: &mut Context<Self>) {
-        if self.tab_bar_leading_inset != inset {
-            self.tab_bar_leading_inset = inset;
-            cx.notify();
-        }
     }
 
     pub fn set_can_navigate(&mut self, can_navigate: bool, cx: &mut Context<Self>) {
@@ -3538,8 +3550,7 @@ impl Pane {
 
         let focus_handle = self.focus_handle.clone();
 
-        let navigate_backward = IconButton::new("navigate_backward", IconName::ArrowLeft)
-            .icon_size(IconSize::Small)
+        let navigate_backward = KitIconButton::new("navigate_backward", KitIconName::ArrowLeft)
             .on_click({
                 let entity = cx.entity();
                 move |_, window, cx| {
@@ -3561,8 +3572,7 @@ impl Pane {
                 }
             });
 
-        let navigate_forward = IconButton::new("navigate_forward", IconName::ArrowRight)
-            .icon_size(IconSize::Small)
+        let navigate_forward = KitIconButton::new("navigate_forward", KitIconName::ArrowRight)
             .on_click({
                 let entity = cx.entity();
                 move |_, window, cx| {
@@ -3605,7 +3615,9 @@ impl Pane {
         let pinned_tabs = tab_items;
 
         let tab_bar_settings = TabBarSettings::get_global(cx);
-        let use_separate_rows = tab_bar_settings.show_pinned_tabs_in_separate_row;
+        // The title bar has room for one row only.
+        let use_separate_rows =
+            tab_bar_settings.show_pinned_tabs_in_separate_row && !self.tab_bar_in_title_bar;
 
         let tab_bar = if use_separate_rows && !pinned_tabs.is_empty() && !unpinned_tabs.is_empty() {
             self.render_two_row_tab_bar(
@@ -3655,8 +3667,8 @@ impl Pane {
 
     fn render_tab_bar_edges(
         &mut self,
-        navigate_backward: IconButton,
-        navigate_forward: IconButton,
+        navigate_backward: KitIconButton,
+        navigate_forward: KitIconButton,
         window: &mut Window,
         cx: &mut Context<Pane>,
     ) -> (Vec<AnyElement>, Vec<AnyElement>) {
@@ -3676,12 +3688,11 @@ impl Pane {
     }
 
     /// The tabs sit in GPUI Kit's segmented bars, laid out in a row with the bar's buttons.
-    /// The row is as tall as the title bar, which shares it with the center's tab bar on macOS.
+    /// The row is as tall as the title bar, which shows the center's tab bar.
     fn render_tab_bar_row(
         start_children: Vec<AnyElement>,
         tab_bars: impl IntoIterator<Item = AnyElement>,
         end_children: Vec<AnyElement>,
-        leading_inset: Pixels,
         window: &Window,
         cx: &App,
     ) -> Div {
@@ -3689,7 +3700,6 @@ impl Pane {
             .w_full()
             .h(ui::utils::platform_title_bar_height(window))
             .px_1()
-            .when(leading_inset > Pixels::ZERO, |row| row.pl(leading_inset))
             .gap_1()
             .bg(cx.theme().colors().tab_bar_background)
             .when(!start_children.is_empty(), |row| {
@@ -3738,8 +3748,8 @@ impl Pane {
         pinned_tabs: Vec<Tab>,
         unpinned_tabs: Vec<Tab>,
         tab_count: usize,
-        navigate_backward: IconButton,
-        navigate_forward: IconButton,
+        navigate_backward: KitIconButton,
+        navigate_forward: KitIconButton,
         window: &mut Window,
         cx: &mut Context<Pane>,
     ) -> AnyElement {
@@ -3755,15 +3765,8 @@ impl Pane {
         let tab_bars = pinned_tab_bar.into_iter().chain([self
             .render_unpinned_tab_bar(unpinned_tabs, tab_count, cx)
             .into_any_element()]);
-        Self::render_tab_bar_row(
-            start_children,
-            tab_bars,
-            end_children,
-            self.tab_bar_leading_inset,
-            window,
-            cx,
-        )
-        .into_any_element()
+        Self::render_tab_bar_row(start_children, tab_bars, end_children, window, cx)
+            .into_any_element()
     }
 
     fn render_two_row_tab_bar(
@@ -3771,8 +3774,8 @@ impl Pane {
         pinned_tabs: Vec<Tab>,
         unpinned_tabs: Vec<Tab>,
         tab_count: usize,
-        navigate_backward: IconButton,
-        navigate_forward: IconButton,
+        navigate_backward: KitIconButton,
+        navigate_forward: KitIconButton,
         window: &mut Window,
         cx: &mut Context<Pane>,
     ) -> AnyElement {
@@ -3797,7 +3800,6 @@ impl Pane {
                         start_children,
                         [pinned_tab_bar.into_any_element()],
                         end_children,
-                        self.tab_bar_leading_inset,
                         window,
                         cx,
                     )),
@@ -3808,7 +3810,6 @@ impl Pane {
                     .render_unpinned_tab_bar(unpinned_tabs, tab_count, cx)
                     .into_any_element()],
                 Vec::new(),
-                Pixels::ZERO,
                 window,
                 cx,
             ))
@@ -4471,8 +4472,7 @@ fn default_render_tab_bar_buttons(
         .gap(DynamicSpacing::Base04.rems(cx))
         .when(AgentSettings::get_global(cx).enabled(cx), |toolbar| {
             toolbar.child(
-                IconButton::new("new-agent-tab", IconName::ZedAssistant)
-                    .icon_size(IconSize::Small)
+                KitIconButton::new("new-agent-tab", KitIconName::Sparkles)
                     .disabled(!has_project)
                     .tooltip(move |window, cx| {
                         if has_project {
@@ -4489,9 +4489,8 @@ fn default_render_tab_bar_buttons(
         })
         .child(
             PopoverMenu::new("pane-tab-bar-popover-menu")
-                .trigger_with_tooltip(
-                    IconButton::new("plus", IconName::Plus).icon_size(IconSize::Small),
-                    Tooltip::text("New…"),
+                .trigger(
+                    KitIconButton::new("plus", KitIconName::Plus).tooltip(Tooltip::text("New…")),
                 )
                 .anchor(Anchor::TopRight)
                 .with_handle(pane.new_item_context_menu_handle.clone())
@@ -4510,11 +4509,10 @@ fn default_render_tab_bar_buttons(
         )
         .child(
             PopoverMenu::new("pane-tab-bar-split")
-                .trigger_with_tooltip(
-                    IconButton::new("split", IconName::Split)
-                        .icon_size(IconSize::Small)
-                        .disabled(!can_clone && !can_split_move),
-                    Tooltip::text("Split Pane"),
+                .trigger(
+                    KitIconButton::new("split", KitIconName::Columns2)
+                        .disabled(!can_clone && !can_split_move)
+                        .tooltip(Tooltip::text("Split Pane")),
                 )
                 .anchor(Anchor::TopRight)
                 .with_handle(pane.split_item_context_menu_handle.clone())
@@ -4537,23 +4535,6 @@ fn default_render_tab_bar_buttons(
                     .into()
                 }),
         )
-        .child({
-            let zoomed = pane.is_zoomed();
-            IconButton::new("toggle_zoom", IconName::Maximize)
-                .icon_size(IconSize::Small)
-                .toggle_state(zoomed)
-                .selected_icon(IconName::Minimize)
-                .on_click(cx.listener(|pane, _, window, cx| {
-                    pane.toggle_zoom(&crate::ToggleZoom, window, cx);
-                }))
-                .tooltip(move |_window, cx| {
-                    Tooltip::for_action(
-                        if zoomed { "Zoom Out" } else { "Zoom In" },
-                        &ToggleZoom,
-                        cx,
-                    )
-                })
-        })
         .into_any_element()
         .into();
     (None, right_children)
@@ -4750,7 +4731,7 @@ impl Render for Pane {
                     cx.propagate();
                 }
             }))
-            .when(display_tab_bar, |pane| {
+            .when(display_tab_bar && !self.tab_bar_in_title_bar, |pane| {
                 pane.child((self.render_tab_bar.clone())(self, window, cx))
             })
             .child({

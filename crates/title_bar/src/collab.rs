@@ -153,9 +153,9 @@ impl TitleBar {
         let project_id = self.project.read(cx).remote_id();
         let workspace = self.workspace.upgrade();
 
+        // Sized to the collaborators, so the tab bar gets the rest of the title bar.
         h_flex()
             .id("collaborator-list")
-            .w_full()
             .gap_1()
             .overflow_x_scroll()
             .when_some(

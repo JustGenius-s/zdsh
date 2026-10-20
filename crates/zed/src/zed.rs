@@ -393,8 +393,8 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
         titlebar: Some(TitlebarOptions {
             title: None,
             appears_transparent: true,
-            // Centered in the 40px title bar.
-            traffic_light_position: Some(point(px(9.0), px(12.0))),
+            // Centered in the 44px title bar.
+            traffic_light_position: Some(point(px(9.0), px(14.0))),
         }),
         window_bounds: None,
         focus: false,

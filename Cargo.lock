@@ -23650,6 +23650,7 @@ dependencies = [
  "agent_settings",
  "any_vec",
  "anyhow",
+ "assets",
  "async-recursion",
  "chrono",
  "client",

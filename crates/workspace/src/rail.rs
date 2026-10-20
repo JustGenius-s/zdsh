@@ -3,30 +3,31 @@ use std::sync::Arc;
 use agent_settings::{AgentSettings, WindowLayout};
 use fs::Fs;
 use gpui::{
-    Action, Anchor, App, Context, Focusable as _, IntoElement, ParentElement, Pixels, Styled,
-    Window, prelude::FluentBuilder as _, px,
+    Action, Anchor, App, Context, Div, ElementId, Focusable as _, InteractiveElement,
+    Interactivity, IntoElement, ParentElement, RenderOnce, SharedString, Stateful,
+    StatefulInteractiveElement, StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _,
+    rems,
 };
-use gpui_kit::component::{
-    Icon as KitIcon, IconName as KitIconName,
-    button::{Button, ButtonVariants as _},
-    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
-    sidebar::{Sidebar as KitSidebar, SidebarMenu, SidebarMenuItem},
+use gpui_kit::{
+    assets::IconName as KitIconName,
+    base::Selectable,
+    component::{
+        Icon as KitIcon, Theme as KitTheme,
+        menu::{DropdownMenu, PopupMenu, PopupMenuItem},
+    },
 };
 use project::DisableAiSettings;
 use settings::{Settings as _, update_settings_file};
 use theme::{ActiveTheme as _, Appearance, SystemAppearance, ThemeRegistry};
 use theme_settings::{ThemeAppearanceMode, ThemeSelection, ThemeSettings};
-use ui::{IconName, v_flex};
+use ui::{IconName, Tooltip, v_flex};
 use util::ResultExt as _;
 
 use crate::{UseAgenticLayout, UseClassicLayout, Workspace};
 
-/// The width of GPUI Kit's collapsed sidebar, which the rail is.
-pub(crate) const RAIL_WIDTH: Pixels = px(48.);
-
 impl Workspace {
-    /// The rail beside the left dock. It stays when the dock collapses, and switches the dock
-    /// between its panels.
+    /// The rail at the window's left edge, beside the content block. It stays when the left dock
+    /// collapses, and switches the dock between its panels.
     pub(crate) fn render_rail(
         &self,
         window: &mut Window,
@@ -35,7 +36,7 @@ impl Workspace {
         let dock = self.left_dock.read(cx);
         let is_open = dock.is_open();
         let active_index = dock.active_panel_index();
-        let panel_items = dock
+        let panel_buttons = dock
             .panels()
             .enumerate()
             .filter_map(|(index, panel)| {
@@ -44,63 +45,59 @@ impl Workspace {
                 }
                 let icon = panel.icon(window, cx)?;
                 let tooltip = panel.icon_tooltip(window, cx)?;
+                let action = panel.toggle_action(window, cx);
                 let workspace = self.weak_handle();
                 Some(
-                    SidebarMenuItem::new(tooltip)
-                        .icon(rail_icon(icon))
-                        .active(is_open && active_index == Some(index))
-                        .on_click(move |_, window, cx| {
-                            workspace
-                                .update(cx, |workspace, cx| {
-                                    workspace.toggle_rail_panel(index, window, cx)
-                                })
-                                .log_err();
-                        }),
+                    RailButton::new(
+                        SharedString::from(format!("rail-panel-{index}")),
+                        icon.path(),
+                    )
+                    .selected(is_open && active_index == Some(index))
+                    .on_click(move |_, window, cx| {
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.toggle_rail_panel(index, window, cx)
+                            })
+                            .log_err();
+                    })
+                    .tooltip(move |_, cx| Tooltip::for_action(tooltip, &*action, cx)),
                 )
             })
             .collect::<Vec<_>>();
         let fs = self.app_state().fs.clone();
 
-        KitSidebar::new("rail")
-            .collapsed(true)
-            // The rail and the panel beside it read as one surface, whatever the theme gives
-            // GPUI Kit's sidebar.
-            .bg(cx.theme().colors().panel_background)
-            .border_r_0()
-            .child(SidebarMenu::new().children(panel_items))
+        v_flex()
+            .id("rail")
+            .flex_none()
+            .w(rems(3.5))
+            .items_center()
+            .py_3()
+            .gap_2()
+            .overflow_hidden()
+            // The rail is window chrome, continuing the title bar above it.
+            .bg(cx.theme().colors().title_bar_background)
+            .children(panel_buttons)
             .child(
-                SidebarMenu::new().child(
-                    SidebarMenuItem::new("Extensions")
-                        .icon(rail_icon(IconName::Blocks))
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(
-                                zed_actions::Extensions::default().boxed_clone(),
-                                cx,
-                            )
-                        }),
-                ),
+                RailButton::new("rail-extensions", IconName::Blocks.path())
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(zed_actions::Extensions::default().boxed_clone(), cx)
+                    })
+                    .tooltip(|_, cx| {
+                        Tooltip::for_action("Extensions", &zed_actions::Extensions::default(), cx)
+                    }),
             )
-            .footer(
-                v_flex()
-                    .w_full()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        Button::new("rail-theme")
-                            .ghost()
-                            .icon(KitIconName::Palette)
-                            .tooltip("Theme")
-                            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _, cx| {
-                                theme_menu(menu, fs.clone(), cx)
-                            }),
-                    )
-                    .child(
-                        Button::new("rail-settings")
-                            .ghost()
-                            .icon(KitIconName::Settings)
-                            .tooltip("Settings")
-                            .dropdown_menu_with_anchor(Anchor::BottomLeft, settings_menu),
-                    ),
+            .child(div().flex_1())
+            .child(
+                RailButton::new("rail-theme", KitIconName::Palette.path())
+                    .tooltip(Tooltip::text("Theme"))
+                    .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _, cx| {
+                        theme_menu(menu, fs.clone(), cx)
+                    }),
+            )
+            .child(
+                RailButton::new("rail-settings", KitIconName::Settings.path())
+                    .tooltip(Tooltip::text("Settings"))
+                    .dropdown_menu_with_anchor(Anchor::BottomLeft, settings_menu),
             )
     }
 
@@ -139,10 +136,80 @@ impl Workspace {
     }
 }
 
-/// GPUI Kit sizes a sidebar item's icon to its small text, which is a size smaller than the
-/// footer buttons' icons, so the rail sets the buttons' size on its items too.
-fn rail_icon(icon: IconName) -> KitIcon {
-    KitIcon::empty().path(icon.path()).size_4()
+/// An item on the rail, drawn like GPUI Kit's sidebar items: a dimmed icon that lights up while
+/// hovered, pressed or selected. It takes Zed's tooltips, since GPUI Kit's own tooltips need its
+/// window root, which Zed's windows don't have. GPUI Kit's collapsed sidebar is fixed at a width
+/// too narrow for these items, so the rail lays them out itself.
+#[derive(IntoElement)]
+struct RailButton {
+    base: Stateful<Div>,
+    icon_path: SharedString,
+    selected: bool,
+}
+
+impl RailButton {
+    fn new(id: impl Into<ElementId>, icon_path: impl Into<SharedString>) -> Self {
+        Self {
+            base: div().id(id),
+            icon_path: icon_path.into(),
+            selected: false,
+        }
+    }
+}
+
+impl Selectable for RailButton {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl Styled for RailButton {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.base.style()
+    }
+}
+
+impl InteractiveElement for RailButton {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.base.interactivity()
+    }
+}
+
+impl StatefulInteractiveElement for RailButton {}
+
+impl DropdownMenu for RailButton {}
+
+impl RenderOnce for RailButton {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = KitTheme::global(cx);
+        let radius = theme.radius;
+        let muted_foreground = theme.muted_foreground;
+        let hover_background = theme.sidebar_accent.opacity(0.8);
+        let selected_background = theme.tokens.sidebar_accent;
+        let accent_foreground = theme.sidebar_accent_foreground;
+        self.base
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .p_2()
+            .rounded(radius)
+            .map(|this| {
+                if self.selected {
+                    this.bg(selected_background).text_color(accent_foreground)
+                } else {
+                    this.text_color(muted_foreground)
+                        .hover(|style| style.bg(hover_background).text_color(accent_foreground))
+                        .active(|style| style.bg(selected_background).text_color(accent_foreground))
+                }
+            })
+            .child(KitIcon::empty().path(self.icon_path).size_5())
+    }
 }
 
 fn theme_menu(menu: PopupMenu, fs: Arc<dyn Fs>, cx: &mut Context<PopupMenu>) -> PopupMenu {

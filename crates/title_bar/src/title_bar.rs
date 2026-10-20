@@ -236,6 +236,8 @@ impl Render for TitleBar {
                 .into_any_element(),
         );
 
+        children.extend(self.render_tab_bar(window, cx));
+
         children.push(self.render_collaborator_list(window, cx).into_any_element());
 
         if title_bar_settings.show_onboarding_banner {
@@ -332,6 +334,22 @@ impl Render for TitleBar {
 }
 
 impl TitleBar {
+    /// The window's one tab bar, showing the tabs of whichever center pane is active.
+    fn render_tab_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let pane = self.workspace.upgrade()?.read(cx).active_pane().clone();
+        let tab_bar = pane.update(cx, |pane, cx| pane.render_title_bar_tab_bar(window, cx))?;
+        Some(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                // Tabs are dragged and double-clicked as tabs, not as the title bar.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(tab_bar)
+                .into_any_element(),
+        )
+    }
+
     pub fn new(
         id: impl Into<ElementId>,
         workspace: &Workspace,

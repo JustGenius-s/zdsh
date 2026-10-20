@@ -188,7 +188,8 @@ impl Render for PlatformTitleBar {
         let title_bar = TitleBar::new()
             .w_full()
             .h(height)
-            // Flat and without a divider, so it reads as one row with the tab bar beside it.
+            // Flat and without a divider, as one surface with the rail; the content block below
+            // has its own edge.
             .bg(titlebar_color)
             .border_b_0()
             .on_close_window(|_, window, cx| {
