@@ -26,7 +26,7 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseExitEvent, ParentElement, PathPromptOptions, Pixels, Point,
     PromptLevel, Render, ScrollStrategy, Stateful, Styled, Subscription, Task,
     UniformListScrollHandle, WeakEntity, Window, actions, anchored, deferred, div, hsla,
-    linear_color_stop, linear_gradient, point, px, size, transparent_white, uniform_list,
+    linear_color_stop, linear_gradient, point, px, size, uniform_list,
 };
 use itertools::Itertools;
 use language::DiagnosticSeverity;
@@ -642,31 +642,13 @@ struct DraggedProjectEntryView {
     selections: Arc<[SelectedEntry]>,
 }
 
-struct ItemColors {
-    default: Hsla,
-    hover: Hsla,
-    drag_over: Hsla,
-    marked: Hsla,
-    focused: Hsla,
-}
-
-fn get_item_color(is_sticky: bool, cx: &App) -> ItemColors {
+/// The opaque surface behind a row: sticky rows cover the entries scrolling beneath them.
+fn row_surface_color(is_sticky: bool, cx: &App) -> Hsla {
     let colors = cx.theme().colors();
-
-    ItemColors {
-        default: if is_sticky {
-            colors.panel_overlay_background
-        } else {
-            colors.panel_background
-        },
-        hover: if is_sticky {
-            colors.panel_overlay_hover
-        } else {
-            colors.element_hover
-        },
-        marked: colors.element_selected,
-        focused: colors.panel_focused_border,
-        drag_over: colors.drop_target_background,
+    if is_sticky {
+        colors.panel_overlay_background
+    } else {
+        colors.panel_background
     }
 }
 
@@ -6096,7 +6078,7 @@ impl ProjectPanel {
         let diagnostic_mark = details.diagnostic_mark;
         let reserves_chevron_slot = details.reserves_chevron_slot;
         let diagnostic_count = details.diagnostic_count;
-        let item_colors = get_item_color(is_sticky, cx);
+        let row_surface = row_surface_color(is_sticky, cx);
 
         let canonical_path = details.canonical_path.clone();
         let path_style = self.project.read(cx).path_style(cx);
@@ -6105,17 +6087,24 @@ impl ProjectPanel {
         let depth = details.depth;
         let worktree_id = details.worktree_id;
 
-        let bg_color = if is_marked {
-            item_colors.marked
-        } else {
-            item_colors.default
-        };
+        let panel_focused = self.contains_focus(window, cx);
+        let is_keyboard_cursor = !self.mouse_down && is_active && panel_focused;
+        let is_selected = is_marked || is_keyboard_cursor;
 
-        let bg_hover_color = if is_marked {
-            item_colors.marked
+        // Icon decorations knock out a ring in the row's color, so they need the washes
+        // flattened onto the opaque surface.
+        let theme_colors = cx.theme().colors();
+        let bg_color = if is_selected {
+            row_surface.blend(theme_colors.ghost_element_selected)
         } else {
-            item_colors.hover
+            row_surface
         };
+        let bg_hover_color = if is_selected {
+            bg_color
+        } else {
+            row_surface.blend(theme_colors.ghost_element_hover)
+        };
+        let drop_target_background = theme_colors.drop_target_background;
 
         let validation_color_and_message = if show_editor {
             match self
@@ -6132,25 +6121,9 @@ impl ProjectPanel {
             None
         };
 
-        let show_focused_border = !self.mouse_down && is_active && self.contains_focus(window, cx);
-
-        let border_color = if show_focused_border {
-            match validation_color_and_message {
-                Some((color, _)) => color,
-                None => item_colors.focused,
-            }
-        } else {
-            bg_color
-        };
-
-        let border_hover_color = if show_focused_border {
-            match validation_color_and_message {
-                Some((color, _)) => color,
-                None => item_colors.focused,
-            }
-        } else {
-            bg_hover_color
-        };
+        let validation_outline = validation_color_and_message
+            .as_ref()
+            .map(|(color, _)| *color);
 
         let folded_directory_drag_target = self.folded_directory_drag_target;
         let is_highlighted = {
@@ -6224,22 +6197,11 @@ impl ProjectPanel {
                 },
             )
             .cursor_pointer()
-            .rounded_none()
-            .bg(bg_color)
-            .border_1()
-            .border_r_2()
-            .border_color(border_color)
-            .hover(|style| style.bg(bg_hover_color).border_color(border_hover_color))
-            .when(is_sticky, |this| this.block_mouse_except_scroll())
+            .when(is_sticky, |this| {
+                this.bg(row_surface).block_mouse_except_scroll()
+            })
             .when(!is_sticky, |this| {
-                this.when(
-                    is_highlighted && folded_directory_drag_target.is_none(),
-                    |this| {
-                        this.border_color(transparent_white())
-                            .bg(item_colors.drag_over)
-                    },
-                )
-                .when(settings.drag_and_drop, |this| {
+                this.when(settings.drag_and_drop, |this| {
                     let path_for_external_paths = path.clone();
                     let path_for_dragged_selection = path.clone();
                     let dragged_selection = DraggedSelection {
@@ -6587,7 +6549,12 @@ impl ProjectPanel {
                         ProjectPanelEntrySpacing::Comfortable => ListItemSpacing::Dense,
                         ProjectPanelEntrySpacing::Standard => ListItemSpacing::ExtraDense,
                     })
-                    .selectable(false)
+                    .toggle_state(is_selected)
+                    .inactive_selection(!panel_focused)
+                    .drop_target(
+                        !is_sticky && is_highlighted && folded_directory_drag_target.is_none(),
+                    )
+                    .outline_color(validation_outline)
                     .when(
                         canonical_path.is_some()
                             || diagnostic_count.is_some()
@@ -6753,7 +6720,7 @@ impl ProjectPanel {
                                         is_active || is_marked,
                                         settings.drag_and_drop,
                                         settings.bold_folder_labels,
-                                        item_colors.drag_over,
+                                        drop_target_background,
                                         folded_directory_drag_target,
                                         filename_text_color,
                                         cx,

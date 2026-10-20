@@ -1215,7 +1215,6 @@ impl CollabPanel {
             .start_slot(Avatar::new(user.avatar_uri.clone()))
             .child(render_participant_name_and_handle(user))
             .focused(is_selected)
-            .dock(self.dock_side(cx))
             .end_slot(end_slot)
             .tooltip(Tooltip::text("Click to Follow"))
             .when_some(peer_id, |el, peer_id| {
@@ -1264,7 +1263,6 @@ impl CollabPanel {
         ListItem::new(project_id as usize)
             .height(panel_row_height())
             .focused(is_selected)
-            .dock(self.dock_side(cx))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.workspace
                     .update(cx, |workspace, cx| {
@@ -1306,7 +1304,6 @@ impl CollabPanel {
         ListItem::new(("screen", id))
             .height(panel_row_height())
             .focused(is_selected)
-            .dock(self.dock_side(cx))
             .start_slot(
                 h_flex()
                     .gap_1p5()
@@ -1354,7 +1351,6 @@ impl CollabPanel {
         ListItem::new("channel-notes")
             .height(panel_row_height())
             .focused(is_selected)
-            .dock(self.dock_side(cx))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.open_channel_notes(channel_id, window, cx);
             }))
@@ -3144,7 +3140,6 @@ impl CollabPanel {
             .indent_step_size(px(20.))
             .toggle_state(context_menu_open_via_row)
             .focused(is_selected)
-            .dock(self.dock_side(cx))
             .child(
                 h_flex()
                     .w_full()
@@ -3283,7 +3278,6 @@ impl CollabPanel {
             .indent_level(1)
             .indent_step_size(px(20.))
             .focused(is_selected)
-            .dock(self.dock_side(cx))
             .child(
                 h_flex()
                     .w_full()
@@ -3328,7 +3322,6 @@ impl CollabPanel {
 
         ListItem::new(("channel-invite", channel.id.0 as usize))
             .focused(is_selected)
-            .dock(self.dock_side(cx))
             .child(
                 h_flex()
                     .w_full()
@@ -3348,7 +3341,6 @@ impl CollabPanel {
             .child(Icon::new(IconName::Plus))
             .child(Label::new("Add a Contact"))
             .focused(is_selected)
-            .dock(self.dock_side(cx))
             .on_click(cx.listener(|this, _, window, cx| this.toggle_contact_finder(window, cx)))
     }
 
@@ -3532,7 +3524,6 @@ impl CollabPanel {
                     .indent_step_size(px(20.))
                     .toggle_state(is_active)
                     .focused(is_selected)
-                    .dock(self.dock_side(cx))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if is_active {
                             this.open_channel_notes(channel_id, window, cx)

@@ -378,7 +378,6 @@ impl Render for ThreadSwitcher {
                         let diff_stats = entry.diff_stats();
 
                         ThreadItem::new(entry.element_id(), entry.title())
-                            .rounded(true)
                             .icon(entry.icon())
                             .when(entry.is_draft(), |this| {
                                 this.icon_color(Color::Custom(

@@ -3028,6 +3028,7 @@ impl OutlinePanel {
         cx: &mut Context<OutlinePanel>,
     ) -> Stateful<Div> {
         let settings = OutlinePanelSettings::get_global(cx);
+        let panel_focused = self.focus_handle.contains_focused(window, cx);
         let is_deleted = match &rendered_entry {
             PanelEntry::Fs(FsEntry::File(file)) => file.is_deleted,
             _ => false,
@@ -3059,6 +3060,7 @@ impl OutlinePanel {
                     .indent_level(depth)
                     .indent_step_size(px(settings.indent_size))
                     .toggle_state(is_active)
+                    .inactive_selection(!panel_focused)
                     .child(
                         h_flex()
                             .child(h_flex().min_w(px(16.)).justify_center().child(icon_element))
@@ -3083,21 +3085,6 @@ impl OutlinePanel {
                             )
                         },
                     )),
-            )
-            .border_1()
-            .border_r_2()
-            .rounded_none()
-            .hover(|style| {
-                if is_active {
-                    style
-                } else {
-                    let hover_color = cx.theme().colors().ghost_element_hover;
-                    style.bg(hover_color).border_color(hover_color)
-                }
-            })
-            .when(
-                is_active && self.focus_handle.contains_focused(window, cx),
-                |div| div.border_color(cx.theme().colors().panel_focused_border),
             )
     }
 

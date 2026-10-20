@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use component::{Component, ComponentScope, example_group_with_title, single_example};
-use gpui::{AnyElement, AnyView, ClickEvent, MouseButton, MouseDownEvent, Pixels, Role, px};
+use gpui::{AnyElement, AnyView, ClickEvent, Hsla, MouseButton, MouseDownEvent, Pixels, Role, px};
 use smallvec::SmallVec;
 
 use crate::{Disclosure, prelude::*};
@@ -54,10 +54,11 @@ pub struct ListItem {
     selectable: bool,
     always_show_disclosure_icon: bool,
     outlined: bool,
-    rounded: bool,
     overflow_x: bool,
     focused: Option<bool>,
-    dock: Option<DockSide>,
+    inactive_selection: bool,
+    drop_target: bool,
+    outline_color: Option<Hsla>,
     height: Option<DefiniteLength>,
     aria_role: Option<Role>,
     aria_label: Option<SharedString>,
@@ -90,10 +91,11 @@ impl ListItem {
             selectable: true,
             always_show_disclosure_icon: false,
             outlined: false,
-            rounded: false,
             overflow_x: false,
             focused: None,
-            dock: None,
+            inactive_selection: false,
+            drop_target: false,
+            outline_color: None,
             height: None,
             aria_role: None,
             aria_label: None,
@@ -249,23 +251,32 @@ impl ListItem {
         self
     }
 
-    pub fn rounded(mut self) -> Self {
-        self.rounded = true;
-        self
-    }
-
     pub fn overflow_x(mut self) -> Self {
         self.overflow_x = true;
         self
     }
 
+    /// Marks the row the keyboard cursor is on; it is drawn like a selected row.
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = Some(focused);
         self
     }
 
-    pub fn dock(mut self, dock: impl Into<Option<DockSide>>) -> Self {
-        self.dock = dock.into();
+    /// Draws the selection lighter, for a list that does not currently have focus.
+    pub fn inactive_selection(mut self, inactive: bool) -> Self {
+        self.inactive_selection = inactive;
+        self
+    }
+
+    /// Highlights the row as the target of an ongoing drag.
+    pub fn drop_target(mut self, is_drop_target: bool) -> Self {
+        self.drop_target = is_drop_target;
+        self
+    }
+
+    /// Outlines the row, for states such as validation that need more than a wash.
+    pub fn outline_color(mut self, color: impl Into<Option<Hsla>>) -> Self {
+        self.outline_color = color.into();
         self
     }
 
@@ -295,40 +306,35 @@ impl ParentElement for ListItem {
     }
 }
 
+/// An unfocused list's selection keeps this share of the selected wash (14% becomes 10%).
+pub const INACTIVE_SELECTION_OPACITY: f32 = 0.72;
+
 impl RenderOnce for ListItem {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let colors = cx.theme().colors();
+        let is_selected = self.selected || self.focused == Some(true);
+        let selected_background = if self.inactive_selection {
+            colors
+                .ghost_element_selected
+                .opacity(INACTIVE_SELECTION_OPACITY)
+        } else {
+            colors.ghost_element_selected
+        };
+        let indent = self.indent_level as f32 * self.indent_step_size;
+        let content_padding = DynamicSpacing::Base06.rems(cx).to_pixels(window.rem_size());
+
+        // Every row is an inset, rounded wash: the outer element keeps the inset from the
+        // list's edges and the inner element carries the hover and selection state.
         h_flex()
             .id(self.id)
             .when_some(self.group_name, |this, group| this.group(group))
             .w_full()
             .when_some(self.height, |this, height| this.h(height))
             .relative()
-            // When an item is inset draw the indent spacing outside of the item
-            .when(self.inset, |this| {
-                this.ml(self.indent_level as f32 * self.indent_step_size)
-                    .px(DynamicSpacing::Base04.rems(cx))
-            })
-            .when(!self.inset, |this| {
-                this.when_some(self.focused, |this, focused| {
-                    this.border_1()
-                        .when_some(self.dock, |this, dock| match dock {
-                            DockSide::Left => this.border_l_2(),
-                            DockSide::Right => this.border_r_2(),
-                        })
-                        .when(focused && !self.disabled, |this| {
-                            this.border_color(cx.theme().colors().border_focused)
-                        })
-                })
-                .when(self.selectable && !self.disabled, |this| {
-                    this.hover(|style| style.bg(cx.theme().colors().ghost_element_hover))
-                        .active(|style| style.bg(cx.theme().colors().ghost_element_active))
-                        .when(self.outlined, |this| this.rounded_sm())
-                        .when(self.selected, |this| {
-                            this.bg(cx.theme().colors().ghost_element_selected)
-                        })
-                })
-            })
-            .when(self.rounded, |this| this.rounded_sm())
+            .px(DynamicSpacing::Base06.rems(cx))
+            // An inset item draws its indent outside the wash; otherwise the wash spans the
+            // indent so nested rows line up.
+            .when(self.inset, |this| this.ml(indent))
             .when_some(self.on_hover, |this, on_hover| this.on_hover(on_hover))
             .child(
                 h_flex()
@@ -361,28 +367,29 @@ impl RenderOnce for ListItem {
                     .w_full()
                     .relative()
                     .gap_1()
-                    .px(DynamicSpacing::Base06.rems(cx))
+                    .rounded_md()
+                    .map(|this| {
+                        if self.inset {
+                            this.px(content_padding)
+                        } else {
+                            this.pl(indent + content_padding).pr(content_padding)
+                        }
+                    })
                     .map(|this| match self.spacing {
                         ListItemSpacing::Dense => this,
                         ListItemSpacing::ExtraDense => this.py_neg_px(),
                         ListItemSpacing::Sparse => this.py_1(),
                     })
-                    .when(self.inset, |this| {
-                        this.when_some(self.focused, |this, focused| {
-                            if focused && !self.disabled {
-                                this.border_1()
-                                    .border_color(cx.theme().colors().border_focused)
-                            } else {
-                                this.border_1()
-                            }
-                        })
-                        .when(self.selectable && !self.disabled, |this| {
-                            this.hover(|style| style.bg(cx.theme().colors().ghost_element_hover))
-                                .active(|style| style.bg(cx.theme().colors().ghost_element_active))
-                                .when(self.selected, |this| {
-                                    this.bg(cx.theme().colors().ghost_element_selected)
-                                })
-                        })
+                    .when(self.selectable && !self.disabled, |this| {
+                        this.hover(|style| style.bg(colors.ghost_element_hover))
+                            .active(|style| style.bg(colors.ghost_element_active))
+                            .when(is_selected, |this| this.bg(selected_background))
+                    })
+                    .when(self.drop_target, |this| {
+                        this.bg(colors.drop_target_background)
+                    })
+                    .when_some(self.outline_color, |this, color| {
+                        this.border_1().border_color(color)
                     })
                     .when_some(
                         self.on_click.filter(|_| !self.disabled),
@@ -390,8 +397,7 @@ impl RenderOnce for ListItem {
                     )
                     .when(self.outlined, |this| {
                         this.border_1()
-                            .border_color(cx.theme().colors().border)
-                            .rounded_sm()
+                            .border_color(colors.border)
                             .overflow_hidden()
                     })
                     .when_some(self.on_secondary_mouse_down, |this, on_mouse_down| {
@@ -400,19 +406,18 @@ impl RenderOnce for ListItem {
                         })
                     })
                     .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip))
-                    .map(|this| {
-                        if self.inset {
-                            this.rounded_sm()
-                        } else {
-                            // When an item is not inset draw the indent spacing inside of the item
-                            this.ml(self.indent_level as f32 * self.indent_step_size)
-                        }
-                    })
                     .children(self.toggle.map(|is_open| {
                         div()
                             .flex()
                             .absolute()
-                            .left(rems(-1.))
+                            .map(|this| {
+                                let disclosure_offset = rems(1.).to_pixels(window.rem_size());
+                                if self.inset {
+                                    this.left(-disclosure_offset)
+                                } else {
+                                    this.left(indent - disclosure_offset)
+                                }
+                            })
                             .when(is_open && !self.always_show_disclosure_icon, |this| {
                                 this.visible_on_hover("")
                             })

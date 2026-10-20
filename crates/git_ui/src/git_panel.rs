@@ -7647,23 +7647,18 @@ impl GitPanel {
                                         .id(("commit-history-item", index))
                                         .cursor_pointer()
                                         .w_full()
+                                        .relative()
+                                        .group(ENTRY_ROW_GROUP)
                                         .py_1()
-                                        .px_2()
+                                        .px_3()
                                         .gap_0p5()
-                                        .border_1()
-                                        .border_color(gpui::transparent_black())
-                                        .when(
-                                            is_focused && is_panel_focused && show_focus_border,
-                                            |this| {
-                                                this.border_color(
-                                                    cx.theme().colors().panel_focused_border,
-                                                )
-                                            },
-                                        )
-                                        .hover(|s| s.bg(cx.theme().colors().element_hover))
-                                        .when(is_context_menu_target, |this| {
-                                            this.bg(cx.theme().colors().element_hover)
-                                        })
+                                        .child(render_row_wash(
+                                            ENTRY_ROW_GROUP,
+                                            (is_focused && show_focus_border)
+                                                || is_context_menu_target,
+                                            is_panel_focused,
+                                            cx,
+                                        ))
                                         .child(
                                             h_flex()
                                                 .gap_1()
@@ -8225,17 +8220,16 @@ impl GitPanel {
 
         h_flex()
             .id(id)
-            .group(group_name)
+            .group(group_name.clone())
             .h(self.list_item_height())
             .w_full()
-            .pl_2p5()
-            .pr_1()
+            .relative()
+            .pl_3()
+            .pr_2p5()
             .gap_2()
             .justify_between()
             .cursor_pointer()
-            .hover(|style| style.bg(cx.theme().colors().ghost_element_hover))
-            .border_1()
-            .border_r_2()
+            .child(render_row_wash(group_name.clone(), false, true, cx))
             .child(
                 h_flex()
                     .flex_1()
@@ -8643,31 +8637,7 @@ impl GitPanel {
         });
 
         let handle = cx.weak_entity();
-
-        let selected_bg_alpha = 0.08;
-        let marked_bg_alpha = 0.12;
-        let state_opacity_step = 0.04;
-
-        let info_color = cx.theme().status().info;
-
-        let base_bg = match (selected, marked) {
-            (true, true) => info_color.alpha(selected_bg_alpha + marked_bg_alpha),
-            (true, false) => info_color.alpha(selected_bg_alpha),
-            (false, true) => info_color.alpha(marked_bg_alpha),
-            _ => cx.theme().colors().ghost_element_background,
-        };
-
-        let (hover_bg, active_bg) = if selected {
-            (
-                info_color.alpha(selected_bg_alpha + state_opacity_step),
-                info_color.alpha(selected_bg_alpha + state_opacity_step * 2.0),
-            )
-        } else {
-            (
-                cx.theme().colors().ghost_element_hover,
-                cx.theme().colors().ghost_element_active,
-            )
-        };
+        let panel_focused = self.focus_handle.contains_focused(window, cx);
 
         let folder_indicator = settings.folder_indicator;
         let name_row = h_flex()
@@ -8728,17 +8698,17 @@ impl GitPanel {
             .id(id)
             .h(self.list_item_height())
             .w_full()
-            .pl_2p5()
-            .pr_1()
+            .relative()
+            .group(ENTRY_ROW_GROUP)
+            .pl_3()
+            .pr_2p5()
             .gap_1p5()
-            .border_1()
-            .border_r_2()
-            .when(selected && self.focus_handle.is_focused(window), |el| {
-                el.border_color(cx.theme().colors().panel_focused_border)
-            })
-            .bg(base_bg)
-            .hover(|s| s.bg(hover_bg))
-            .active(|s| s.bg(active_bg))
+            .child(render_row_wash(
+                ENTRY_ROW_GROUP,
+                selected || marked,
+                panel_focused,
+                cx,
+            ))
             .child(name_row)
             .when(GitPanelSettings::get_global(cx).diff_stats, |el| {
                 el.when_some(entry.diff_stat, move |this, stat| {
@@ -8859,28 +8829,7 @@ impl GitPanel {
         let checkbox_wrapper_id: ElementId =
             ElementId::Name(format!("dir_checkbox_wrapper_{}_{}", entry.name, ix).into());
 
-        let selected_bg_alpha = 0.08;
-        let marked_bg_alpha = 0.12;
-        let state_opacity_step = 0.04;
-
-        let info_color = cx.theme().status().info;
-        let colors = cx.theme().colors();
-
-        let base_bg = match (selected, marked) {
-            (true, true) => info_color.alpha(selected_bg_alpha + marked_bg_alpha),
-            (true, false) => info_color.alpha(selected_bg_alpha),
-            (false, true) => info_color.alpha(marked_bg_alpha),
-            _ => colors.ghost_element_background,
-        };
-
-        let (hover_bg, active_bg) = if selected {
-            (
-                info_color.alpha(selected_bg_alpha + state_opacity_step),
-                info_color.alpha(selected_bg_alpha + state_opacity_step * 2.0),
-            )
-        } else {
-            (colors.ghost_element_hover, colors.ghost_element_active)
-        };
+        let panel_focused = self.focus_handle.contains_focused(window, cx);
 
         let settings = GitPanelSettings::get_global(cx);
         let folder_indicator = settings.folder_indicator;
@@ -8952,18 +8901,18 @@ impl GitPanel {
             .h(self.list_item_height())
             .min_w_0()
             .w_full()
-            .pl_2p5()
-            .pr_1()
+            .relative()
+            .group(ENTRY_ROW_GROUP)
+            .pl_3()
+            .pr_2p5()
             .gap_1p5()
             .justify_between()
-            .border_1()
-            .border_r_2()
-            .when(selected && self.focus_handle.is_focused(window), |el| {
-                el.border_color(cx.theme().colors().panel_focused_border)
-            })
-            .bg(base_bg)
-            .hover(|s| s.bg(hover_bg))
-            .active(|s| s.bg(active_bg))
+            .child(render_row_wash(
+                ENTRY_ROW_GROUP,
+                selected || marked,
+                panel_focused,
+                cx,
+            ))
             .child(name_row)
             .child(
                 div()
@@ -10081,6 +10030,42 @@ impl Component for PanelRepoFooter {
 
 pub(crate) fn commit_title_exceeds_limit(title: &str, max_length: usize) -> bool {
     max_length > 0 && title.chars().count() > max_length
+}
+
+const ENTRY_ROW_GROUP: &str = "git_panel_entry";
+
+/// The inset, rounded wash behind an entry row, matching `ListItem` rows. Rows stay full
+/// width so the whole line remains clickable.
+fn render_row_wash(
+    group: impl Into<SharedString>,
+    highlighted: bool,
+    panel_focused: bool,
+    cx: &App,
+) -> Div {
+    let colors = cx.theme().colors();
+    let selected = if panel_focused {
+        colors.ghost_element_selected
+    } else {
+        colors
+            .ghost_element_selected
+            .opacity(ui::INACTIVE_SELECTION_OPACITY)
+    };
+    let hover = colors.ghost_element_hover;
+    let inset = DynamicSpacing::Base06.rems(cx);
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(inset)
+        .right(inset)
+        .rounded_md()
+        .map(|this| {
+            if highlighted {
+                this.bg(selected)
+            } else {
+                this.group_hover(group, |style| style.bg(hover))
+            }
+        })
 }
 
 #[cfg(test)]

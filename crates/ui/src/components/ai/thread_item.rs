@@ -51,7 +51,6 @@ pub struct ThreadItem {
     selected: bool,
     focused: bool,
     hovered: bool,
-    rounded: bool,
     is_truncated: bool,
     added: Option<usize>,
     removed: Option<usize>,
@@ -86,7 +85,6 @@ impl ThreadItem {
             selected: false,
             focused: false,
             hovered: false,
-            rounded: false,
             is_truncated: true,
             added: None,
             removed: None,
@@ -214,11 +212,6 @@ impl ThreadItem {
         self
     }
 
-    pub fn rounded(mut self, rounded: bool) -> Self {
-        self.rounded = rounded;
-        self
-    }
-
     pub fn is_truncated(mut self, is_truncated: bool) -> Self {
         self.is_truncated = is_truncated;
         self
@@ -260,7 +253,8 @@ impl RenderOnce for ThreadItem {
             && raw_bg.a >= 1.0;
         let apparent_bg = color.background.blend(raw_bg);
 
-        let base_bg = if self.selected {
+        let is_highlighted = self.selected || self.focused;
+        let base_bg = if is_highlighted {
             apparent_bg.blend(color.ghost_element_selected)
         } else {
             apparent_bg
@@ -420,7 +414,7 @@ impl RenderOnce for ThreadItem {
             || has_diff_stats
             || has_timestamp;
 
-        v_flex()
+        let row = v_flex()
             .id(self.id.clone())
             .cursor_pointer()
             .group("thread-item")
@@ -430,12 +424,8 @@ impl RenderOnce for ThreadItem {
             .w_full()
             .py_1()
             .px_1p5()
-            .when(self.selected, |s| s.bg(color.ghost_element_selected))
-            .border_1()
-            .border_r_2()
-            .border_color(gpui::transparent_black())
-            .when(self.focused, |s| s.border_color(color.panel_focused_border))
-            .when(self.rounded, |s| s.rounded_sm())
+            .rounded_md()
+            .when(is_highlighted, |s| s.bg(color.ghost_element_selected))
             .hover(|s| s.bg(color.ghost_element_hover))
             .active(|s| s.bg(color.ghost_element_active))
             .on_hover(self.on_hover)
@@ -631,7 +621,14 @@ impl RenderOnce for ThreadItem {
                     _ => gpui::Empty.into_any_element(),
                 }))
             })
-            .when_some(self.on_click, |this, on_click| this.on_click(on_click))
+            .when_some(self.on_click, |this, on_click| this.on_click(on_click));
+
+        // The row is inset from the list's edges like `ListItem` rows.
+        div()
+            .w_full()
+            .flex_shrink_0()
+            .px(DynamicSpacing::Base06.rems(cx))
+            .child(row)
     }
 }
 
