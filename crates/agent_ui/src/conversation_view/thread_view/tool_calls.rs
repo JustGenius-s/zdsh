@@ -71,6 +71,16 @@ impl ThreadView {
                         cx,
                     )
                 }))
+            } else if Self::is_edit_row_tool_call(tool_call) {
+                this.child(self.render_edit_tool_call(
+                    active_session_id,
+                    entry_ix,
+                    tool_call,
+                    focus_handle,
+                    layout,
+                    window,
+                    cx,
+                ))
             } else if Self::is_activity_tool_call(tool_call) {
                 this.child(self.render_activity_tool_call(
                     active_session_id,
@@ -98,15 +108,179 @@ impl ThreadView {
     /// Whether the tool call shows as one line in the transcript rather than as a card, which
     /// edits, commands, and anything awaiting confirmation get.
     fn is_activity_tool_call(tool_call: &ToolCall) -> bool {
-        let is_edit = matches!(tool_call.kind(), acp_v2::ToolKind::Edit)
+        !Self::is_edit_tool_call(tool_call)
+            && !matches!(tool_call.kind(), acp_v2::ToolKind::Execute)
+            && !matches!(tool_call.status(), ToolCallStatus::WaitingForConfirmation)
+    }
+
+    fn is_edit_tool_call(tool_call: &ToolCall) -> bool {
+        matches!(tool_call.kind(), acp_v2::ToolKind::Edit)
             || tool_call.diffs().next().is_some()
             || tool_call
                 .content()
                 .iter()
-                .any(|content| matches!(content, ToolCallContent::DiffPatch { .. }));
-        !is_edit
-            && !matches!(tool_call.kind(), acp_v2::ToolKind::Execute)
-            && !matches!(tool_call.status(), ToolCallStatus::WaitingForConfirmation)
+                .any(|content| matches!(content, ToolCallContent::DiffPatch { .. }))
+    }
+
+    /// Whether an edit shows as one line with its diff behind a disclosure. An edit waiting for
+    /// permission keeps its card for the buttons, and a canceled one for discarding what it wrote.
+    fn is_edit_row_tool_call(tool_call: &ToolCall) -> bool {
+        Self::is_edit_tool_call(tool_call)
+            && !matches!(
+                tool_call.status(),
+                ToolCallStatus::WaitingForConfirmation | ToolCallStatus::Canceled
+            )
+    }
+
+    fn render_edit_tool_call(
+        &self,
+        active_session_id: &acp_v2::SessionId,
+        entry_ix: usize,
+        tool_call: &ToolCall,
+        focus_handle: &FocusHandle,
+        layout: ToolCallLayout,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Div {
+        let running = matches!(
+            tool_call.status(),
+            ToolCallStatus::Pending | ToolCallStatus::InProgress
+        );
+        let failed = matches!(
+            tool_call.status(),
+            ToolCallStatus::Rejected | ToolCallStatus::Failed
+        );
+        let is_delete = matches!(tool_call.kind(), acp_v2::ToolKind::Delete);
+        let action = match (is_delete, running) {
+            (true, true) => "Deleting",
+            (true, false) => "Deleted",
+            (false, true) => "Editing",
+            (false, false) => "Edited",
+        };
+
+        let mut paths = tool_call
+            .locations
+            .iter()
+            .map(|location| location.path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            paths.extend(
+                tool_call
+                    .diffs()
+                    .filter_map(|diff| diff.read(cx).file_path(cx)),
+            );
+        }
+        let has_location = tool_call.locations.len() == 1;
+        let shows_loading =
+            running && tool_call.content().is_empty() && self.as_native_connection(cx).is_some();
+        let has_content = !tool_call.content().is_empty() || shows_loading;
+        let is_open = has_content
+            && self
+                .entry_view_state
+                .read(cx)
+                .is_tool_call_content_visible(tool_call);
+
+        let row_id = ("tool-call-edit", entry_ix);
+        let row = match paths.as_slice() {
+            [] => match native_tool_row_label(tool_call, running) {
+                Some((action, details)) => {
+                    ActivityRow::new(row_id, action).details(details.unwrap_or_default())
+                }
+                None => ActivityRow::from_label(row_id, &markdown_line(tool_call.label.read(cx)).0),
+            },
+            [path] => {
+                let file_name = Path::new(path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.clone());
+                let path = path.clone();
+                ActivityRow::new(row_id, action)
+                    .details(file_name)
+                    .tooltip(Tooltip::text(path))
+            }
+            paths => ActivityRow::new(row_id, action).details(count(paths.len(), "file", "files")),
+        };
+        let diff_stats = tool_call_diff_stats(tool_call, cx);
+        let row = row
+            .when(
+                diff_stats.lines_added > 0 || diff_stats.lines_removed > 0,
+                |row| row.diff_stats(diff_stats),
+            )
+            .running(running)
+            .failed(failed)
+            .map(|row| {
+                if has_content {
+                    row.expanded(is_open).on_click(cx.listener({
+                        let id = tool_call.id.clone();
+                        move |this, _, window, cx| {
+                            this.entry_view_state.update(cx, |state, _cx| {
+                                state.toggle_tool_call_expansion(&id);
+                            });
+                            this.refresh_thread_search(window, cx);
+                            cx.notify();
+                        }
+                    }))
+                } else if has_location {
+                    row.on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_tool_call_location(entry_ix, 0, window, cx);
+                    }))
+                } else {
+                    row
+                }
+            })
+            .when(has_location && has_content, |row| {
+                row.end_slot(
+                    PillButton::new(("open-tool-call-location", entry_ix))
+                        .size(KitSize::XSmall)
+                        .icon(IconName::ArrowUpRight)
+                        .tooltip(Tooltip::text("Go to File"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_tool_call_location(entry_ix, 0, window, cx);
+                        })),
+                )
+            });
+
+        let diff = is_open.then(|| {
+            let content = if shows_loading {
+                self.render_diff_loading(cx)
+            } else {
+                v_flex()
+                    .w_full()
+                    .children(tool_call.content().iter().enumerate().map(
+                        |(content_ix, content)| {
+                            let output_id = SharedString::from(format!(
+                                "tool-call-output-{entry_ix}-{content_ix}"
+                            ));
+                            div()
+                                .id(output_id.clone())
+                                .debug_selector(move || output_id.to_string())
+                                .child(self.render_tool_call_content(
+                                    active_session_id,
+                                    entry_ix,
+                                    content,
+                                    content_ix,
+                                    tool_call,
+                                    true,
+                                    focus_handle,
+                                    window,
+                                    cx,
+                                ))
+                        },
+                    ))
+                    .into_any_element()
+            };
+            div().pt_1().child(
+                transcript_card(cx)
+                    .when(failed, |this| this.border_dashed())
+                    .child(content),
+            )
+        });
+
+        v_flex()
+            .w_full()
+            .when_some(layout.row_gap(), |this, gap| this.px(TEXT_INSET).pt(gap))
+            .child(row)
+            .children(diff)
     }
 
     fn render_activity_tool_call(
@@ -150,9 +324,17 @@ impl ThreadView {
             .and_then(|location| location.path.file_name())
             .map(|file_name| file_name.to_string_lossy().into_owned());
         let row_id = ("tool-call-activity", entry_ix);
-        let row = match read_file_name {
-            Some(file_name) => ActivityRow::new(row_id, "Read").details(file_name),
-            None => ActivityRow::from_label(row_id, &markdown_line(tool_call.label.read(cx)).0),
+        let row = match (native_tool_row_label(tool_call, running), read_file_name) {
+            (Some((action, details)), _) => {
+                ActivityRow::new(row_id, action).details(details.unwrap_or_default())
+            }
+            (None, Some(file_name)) => {
+                ActivityRow::new(row_id, if running { "Reading" } else { "Read" })
+                    .details(file_name)
+            }
+            (None, None) => {
+                ActivityRow::from_label(row_id, &markdown_line(tool_call.label.read(cx)).0)
+            }
         }
         .running(running)
         .failed(failed_or_canceled)
@@ -575,6 +757,82 @@ fn tool_call_diff_stats(tool_call: &ToolCall, cx: &App) -> DiffStats {
         })
 }
 
+/// The start of a Zed Agent tool call's row, as what it's doing or did, and the part of its input
+/// that says what it acted on. The tools' titles are imperative ("Search files for regex …"), which
+/// reads wrong once the work is done, so the row doesn't use them. Tools not listed here, and the
+/// tools of other agents, fall back to their titles.
+fn native_tool_row_label(
+    tool_call: &ToolCall,
+    running: bool,
+) -> Option<(&'static str, Option<String>)> {
+    let input = tool_call.raw_input.as_ref();
+    let field = |key: &str| {
+        input
+            .and_then(|input| input.get(key))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let symbol_name = || {
+        input
+            .and_then(|input| input.get("symbol"))
+            .and_then(|symbol| symbol.get("symbol_name"))
+            .and_then(|name| name.as_str())
+            .map(str::to_string)
+    };
+    let symbol = |preposition: &str| symbol_name().map(|name| format!("{preposition} {name}"));
+    let source_to_destination = || {
+        Some(format!(
+            "{} to {}",
+            field("source_path")?,
+            field("destination_path")?
+        ))
+    };
+
+    let ((running_action, done_action), details) = match tool_call.tool_name.as_deref()? {
+        "read_file" => (
+            ("Reading", "Read"),
+            field("path").map(|path| {
+                Path::new(&path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or(path)
+            }),
+        ),
+        "list_directory" => (("Listing", "Listed"), field("path")),
+        "grep" => (("Grepping", "Grepped"), field("regex")),
+        "find_path" => (("Searching", "Searched"), field("glob")),
+        "fetch" => (("Fetching", "Fetched"), field("url")),
+        "search_web" => (("Searching the web", "Searched the web"), field("query")),
+        "diagnostics" => (
+            ("Checking diagnostics", "Checked diagnostics"),
+            field("path").map(|path| format!("for {path}")),
+        ),
+        "go_to_definition" => (("Finding definition", "Found definition"), symbol("of")),
+        "find_references" => (("Finding references", "Found references"), symbol("to")),
+        "get_code_actions" => (("Getting code actions", "Got code actions"), symbol("for")),
+        "rename_symbol" => (
+            ("Renaming", "Renamed"),
+            symbol_name()
+                .zip(field("new_name"))
+                .map(|(name, new_name)| format!("{name} to {new_name}")),
+        ),
+        "copy_path" => (("Copying", "Copied"), source_to_destination()),
+        "move_path" => (("Moving", "Moved"), source_to_destination()),
+        "delete_path" => (("Deleting", "Deleted"), field("path")),
+        "create_directory" => (("Creating directory", "Created directory"), field("path")),
+        "skill" => (("Using skill", "Used skill"), field("name")),
+        "list_agents_and_models" => (
+            ("Listing agents and models", "Listed agents and models"),
+            None,
+        ),
+        "create_thread" => (("Creating thread", "Created thread"), field("title")),
+        _ => return None,
+    };
+    Some((if running { running_action } else { done_action }, details))
+}
+
 /// Markdown as one line of text, with the ranges it quotes as code. In a tool call's label,
 /// those are usually the paths and patterns the tool acted on.
 pub(super) fn markdown_line(label: &Markdown) -> (SharedString, Vec<Range<usize>>) {
@@ -656,12 +914,7 @@ impl ThreadView {
         let needs_confirmation =
             matches!(tool_call.status(), ToolCallStatus::WaitingForConfirmation);
         let is_terminal_tool = matches!(tool_call.kind(), acp_v2::ToolKind::Execute);
-        let is_edit = matches!(tool_call.kind(), acp_v2::ToolKind::Edit)
-            || tool_call.diffs().next().is_some()
-            || tool_call
-                .content()
-                .iter()
-                .any(|content| matches!(content, ToolCallContent::DiffPatch { .. }));
+        let is_edit = Self::is_edit_tool_call(tool_call);
         let is_cancelled_edit = is_edit && matches!(tool_call.status(), ToolCallStatus::Canceled);
         let (has_revealed_diff, tool_call_output_focus, tool_call_output_focus_handle) = tool_call
             .diffs()
@@ -926,8 +1179,18 @@ impl ThreadView {
             );
 
         let title = if is_terminal_tool {
-            let command = command_text(tool_call.label.read(cx));
-            command_title(&command, cx).into_any_element()
+            match command_description(tool_call) {
+                Some(description) => {
+                    let needs_confirmation =
+                        matches!(tool_call.status(), ToolCallStatus::WaitingForConfirmation);
+                    description_title(command_verb(needs_confirmation, running), &description, cx)
+                        .into_any_element()
+                }
+                None => {
+                    let command = command_text(tool_call.label.read(cx));
+                    command_title(&command, cx).into_any_element()
+                }
+            }
         } else {
             let (label, highlights) = markdown_line(tool_call.label.read(cx));
             if running {
@@ -1142,14 +1405,7 @@ impl ThreadView {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "current directory".to_string());
         let command = command_text(tool_call.label.read(cx));
-        let description = tool_call
-            .raw_input
-            .as_ref()
-            .and_then(|input| input.get("description"))
-            .and_then(|description| description.as_str())
-            .map(str::trim)
-            .filter(|description| !description.is_empty())
-            .map(str::to_string);
+        let description = command_description(tool_call);
 
         let is_expanded = self
             .entry_view_state
@@ -1196,16 +1452,11 @@ impl ThreadView {
                 .id(SharedString::from(child_id("command")))
                 .tooltip(Tooltip::text(format!("Working directory: {working_dir}")))
                 .map(|this| match &description {
-                    Some(description) => {
-                        let verb = if needs_confirmation {
-                            "Run"
-                        } else if running {
-                            "Running"
-                        } else {
-                            "Ran"
-                        };
-                        this.child(description_title(verb, description, cx))
-                    }
+                    Some(description) => this.child(description_title(
+                        command_verb(needs_confirmation, running),
+                        description,
+                        cx,
+                    )),
                     None => this.child(command_title(&command, cx)),
                 }),
         )
@@ -2384,6 +2635,29 @@ fn command_title(command: &str, cx: &App) -> impl IntoElement {
         .text_xs()
         .text_color(KitTheme::global(cx).foreground)
         .child(command.lines().next().unwrap_or_default().to_string())
+}
+
+/// What a command does, in the agent's words, when it said: the Zed Agent's terminal tool and some
+/// other agents' (e.g. Claude Code's Bash) take a description beside the command.
+fn command_description(tool_call: &ToolCall) -> Option<String> {
+    tool_call
+        .raw_input
+        .as_ref()
+        .and_then(|input| input.get("description"))
+        .and_then(|description| description.as_str())
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .map(str::to_string)
+}
+
+fn command_verb(needs_confirmation: bool, running: bool) -> &'static str {
+    if needs_confirmation {
+        "Run"
+    } else if running {
+        "Running"
+    } else {
+        "Ran"
+    }
 }
 
 fn description_title(verb: &'static str, description: &str, cx: &App) -> impl IntoElement {
