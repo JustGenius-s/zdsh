@@ -10,6 +10,7 @@ mod edit_file_tool;
 mod edit_session;
 #[cfg(all(test, feature = "unit-eval"))]
 mod evals;
+mod extension_tool;
 mod fetch_tool;
 mod find_path_tool;
 mod find_references_tool;
@@ -79,6 +80,7 @@ pub use create_thread_tool::*;
 pub use delete_path_tool::*;
 pub use diagnostics_tool::*;
 pub use edit_file_tool::*;
+pub use extension_tool::*;
 pub use fetch_tool::*;
 pub use find_path_tool::*;
 pub use find_references_tool::*;

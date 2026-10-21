@@ -41,6 +41,12 @@ impl ExtensionHostProxy {
         GlobalExtensionHostProxy::global(cx).0.clone()
     }
 
+    /// Returns the global [`ExtensionHostProxy`], if one has been set.
+    pub fn try_global(cx: &App) -> Option<Arc<Self>> {
+        cx.try_global::<GlobalExtensionHostProxy>()
+            .map(|proxy| proxy.0.clone())
+    }
+
     /// Returns the global [`ExtensionHostProxy`].
     ///
     /// Inserts a default [`ExtensionHostProxy`] if one does not yet exist.

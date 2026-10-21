@@ -7542,10 +7542,7 @@ mod internal_tests {
                 .find(|skill| skill.name == "my-skill")
                 .expect("symlinked skill should be included in the model-facing catalog");
             assert_eq!(catalog_skill.description, "First symlinked version");
-            assert_eq!(
-                catalog_skill.location,
-                skill_link_path.to_string_lossy().as_ref()
-            );
+            assert_eq!(catalog_skill.location, &*skill_link_path.to_string_lossy());
 
             (*user[0]).clone()
         });
@@ -7577,10 +7574,7 @@ mod internal_tests {
                 .find(|skill| skill.name == "my-skill")
                 .expect("reloaded symlinked skill should be included in the model-facing catalog");
             assert_eq!(catalog_skill.description, "Second symlinked version");
-            assert_eq!(
-                catalog_skill.location,
-                skill_link_path.to_string_lossy().as_ref()
-            );
+            assert_eq!(catalog_skill.location, &*skill_link_path.to_string_lossy());
 
             (*user[0]).clone()
         });

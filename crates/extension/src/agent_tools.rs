@@ -53,6 +53,7 @@ impl AgentToolExecutor for WasmToolExecutor {
 }
 
 pub struct ExtensionAgentTool {
+    pub extension_id: Arc<str>,
     pub name: String,
     pub local_name: String,
     pub definition: AgentToolDefinition,
@@ -133,6 +134,7 @@ impl ExtensionAgentTools {
                 .build(&definition.input_schema)
                 .context("invalid Agent tool input schema")?;
             tools.push(Arc::new(ExtensionAgentTool {
+                extension_id: id.clone(),
                 name,
                 local_name: local_name.clone(),
                 definition: definition.clone(),
@@ -187,6 +189,46 @@ impl ExtensionAgentTools {
                 )
             })
             .collect()
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ExtensionAgentTools {
+    /// Registers tools for extension `id` whose calls run `execute` instead of a Wasm instance.
+    pub fn register_fake(
+        &self,
+        id: Arc<str>,
+        definitions: &BTreeMap<String, AgentToolDefinition>,
+        execute: impl Fn(
+            String,
+            Value,
+            AgentToolCancellation,
+        ) -> futures::future::BoxFuture<'static, Result<Value>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<()> {
+        struct FakeToolExecutor<F>(F);
+        impl<F> AgentToolExecutor for FakeToolExecutor<F>
+        where
+            F: Fn(
+                    String,
+                    Value,
+                    AgentToolCancellation,
+                ) -> futures::future::BoxFuture<'static, Result<Value>>
+                + Send
+                + Sync,
+        {
+            fn execute(
+                &self,
+                name: String,
+                arguments: Value,
+                cancellation: AgentToolCancellation,
+            ) -> futures::future::BoxFuture<'_, Result<Value>> {
+                (self.0)(name, arguments, cancellation)
+            }
+        }
+        self.register_tools(id, definitions, Arc::new(FakeToolExecutor(execute)))
     }
 }
 

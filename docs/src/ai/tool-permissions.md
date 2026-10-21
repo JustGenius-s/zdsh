@@ -59,6 +59,8 @@ The `tool_permissions` setting lets you customize tool permissions by specifying
 For [MCP tools](./mcp.md), use the format `mcp:<server>:<tool_name>`.
 For example, a tool called `create_issue` on a server called `github` would be `mcp:github:create_issue`.
 
+For [extension Agent tools](../extensions/agent-tools.md), use the format `extension:<extension-id>:<tool-name>`, where `<tool-name>` is the key in the extension's manifest.
+
 For model-invoked [Skills](./skills.md), use the `skill` tool. A user-invoked `/skill-name` slash command does not prompt again because you explicitly invoked the skill.
 
 ## Configuration
@@ -187,7 +189,7 @@ When the agent requests permission, you'll see in the thread view a tool card wi
 
 Selecting "Always for <tool>" sets `tools.<tool>.default` to allow or deny.
 When a pattern can be safely extracted, selecting "Always for <pattern>" adds an `always_allow` or `always_deny` rule for that input.
-MCP tools only support the tool-level option.
+MCP and extension tools only support the tool-level option.
 
 ## Examples
 

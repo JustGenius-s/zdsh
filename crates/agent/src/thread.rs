@@ -4472,6 +4472,30 @@ impl Thread {
             .filter(|(tool_name, _)| crate::tools::tool_feature_flag_enabled(tool_name, cx))
             .collect::<BTreeMap<_, _>>();
 
+        if !is_restricted {
+            for (tool_name, tool) in crate::tools::extension_tools(cx) {
+                // Without an explicit profile entry, extension tools follow the
+                // same switch as context-server tools.
+                let enabled = profile
+                    .tools
+                    .get(tool_name.as_ref())
+                    .copied()
+                    .unwrap_or(profile.enable_all_context_servers);
+                if !enabled {
+                    continue;
+                }
+                let tool_name: SharedString =
+                    provider_compatible_tool_name(tool_name.as_ref()).into();
+                if tools.contains_key(&tool_name) {
+                    log::warn!(
+                        "Skipping extension tool `{tool_name}` because a built-in tool has the same name"
+                    );
+                    continue;
+                }
+                tools.insert(tool_name, tool);
+            }
+        }
+
         let mut context_server_tools = Vec::new();
         let mut seen_tools = tools.keys().cloned().collect::<HashSet<_>>();
         let mut duplicate_tool_names = HashSet::default();
@@ -6021,19 +6045,21 @@ impl ToolCallEventStream {
             .ok();
     }
 
-    /// Authorize a third-party tool (e.g., MCP tool from a context server).
+    /// Authorize a third-party tool (e.g., MCP tool from a context server, or
+    /// an extension tool).
     ///
     /// Unlike built-in tools, third-party tools don't support pattern-based permissions.
     /// They only support `default` (allow/deny/confirm) per tool.
     ///
     /// Uses the dropdown authorization flow with two granularities:
-    /// - "Always for <display_name> MCP tool" → sets `tools.<tool_id>.default = "allow"` or "deny"
+    /// - "Always for <display_name> <source> tool" → sets `tools.<tool_id>.default = "allow"` or "deny"
     /// - "Only this time" → allow/deny once
     pub fn authorize_third_party_tool(
         &self,
         title: impl Into<String>,
         tool_id: String,
         display_name: String,
+        source: &str,
         cx: &mut App,
     ) -> Task<Result<()>> {
         let title = title.into();
@@ -6041,12 +6067,12 @@ impl ToolCallEventStream {
             acp_thread::PermissionOptionChoice {
                 allow: acp_v2::PermissionOption::new(
                     acp_v2::PermissionOptionId::new(format!("always_allow_mcp:{tool_id}")),
-                    format!("Always for {display_name} MCP tool"),
+                    format!("Always for {display_name} {source} tool"),
                     acp_v2::PermissionOptionKind::AllowAlways,
                 ),
                 deny: acp_v2::PermissionOption::new(
                     acp_v2::PermissionOptionId::new(format!("always_deny_mcp:{tool_id}")),
-                    format!("Always for {display_name} MCP tool"),
+                    format!("Always for {display_name} {source} tool"),
                     acp_v2::PermissionOptionKind::RejectAlways,
                 ),
                 sub_patterns: vec![],

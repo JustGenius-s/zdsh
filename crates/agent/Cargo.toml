@@ -33,6 +33,7 @@ cloud_llm_client.workspace = true
 collections.workspace = true
 context_server.workspace = true
 db.workspace = true
+extension.workspace = true
 feature_flags.workspace = true
 fs.workspace = true
 futures.workspace = true
@@ -91,6 +92,7 @@ agent_servers = { workspace = true, "features" = ["test-support"] }
 client = { workspace = true, "features" = ["test-support"] }
 clock = { workspace = true, "features" = ["test-support"] }
 context_server = { workspace = true, "features" = ["test-support"] }
+extension = { workspace = true, "features" = ["test-support"] }
 ctor.workspace = true
 db = { workspace = true, "features" = ["test-support"] }
 editor = { workspace = true, "features" = ["test-support"] }

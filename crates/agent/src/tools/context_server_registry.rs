@@ -346,8 +346,13 @@ impl AnyAgentTool for ContextServerTool {
         let tool_id = mcp_tool_id(&self.server_id.0, &self.tool.name);
         let display_name = self.tool.name.clone();
         let initial_title = self.initial_title(serde_json::Value::Null, cx);
-        let authorize =
-            event_stream.authorize_third_party_tool(initial_title, tool_id, display_name, cx);
+        let authorize = event_stream.authorize_third_party_tool(
+            initial_title,
+            tool_id,
+            display_name,
+            "MCP",
+            cx,
+        );
 
         cx.spawn(async move |cx| {
             let input = input

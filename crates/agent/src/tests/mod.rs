@@ -1977,6 +1977,156 @@ async fn test_mcp_tools(cx: &mut TestAppContext) {
     events.collect::<Vec<_>>().await;
 }
 
+fn register_fake_extension_tools(extension_id: &str, tool_names: &[&str], cx: &mut TestAppContext) {
+    let definitions = tool_names
+        .iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                extension::AgentToolDefinition {
+                    description: format!("The {name} tool."),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": { "text": { "type": "string" } },
+                        "required": ["text"],
+                    }),
+                },
+            )
+        })
+        .collect();
+    cx.update(|cx| {
+        extension::ExtensionHostProxy::default_global(cx)
+            .agent_tools
+            .register_fake(
+                extension_id.into(),
+                &definitions,
+                |name, arguments, _cancellation| {
+                    let text = arguments
+                        .get("text")
+                        .and_then(|text| text.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    async move { Ok(json!(format!("{name} {text}"))) }.boxed()
+                },
+            )
+    })
+    .unwrap();
+}
+
+#[gpui::test]
+async fn test_extension_tools(cx: &mut TestAppContext) {
+    let ThreadTest {
+        model,
+        fake,
+        thread,
+        fs,
+        ..
+    } = setup(cx, TestModel::Fake).await;
+
+    fs.insert_file(
+        paths::settings_file(),
+        json!({
+            "agent": {
+                "tool_permissions": { "default": "allow" },
+                "profiles": {
+                    "test": {
+                        "name": "Test Profile",
+                        "enable_all_context_servers": true,
+                        "tools": {}
+                    },
+                }
+            }
+        })
+        .to_string()
+        .into_bytes(),
+    )
+    .await;
+    cx.run_until_parked();
+    thread.update(cx, |thread, cx| {
+        thread.set_profile(AgentProfileId("test".into()), cx)
+    });
+    register_fake_extension_tools("demo", &["echo"], cx);
+
+    let events = thread.update(cx, |thread, cx| {
+        thread
+            .send(ClientUserMessageId::new(), ["Hey"], cx)
+            .unwrap()
+    });
+    cx.run_until_parked();
+
+    let completion = fake.pending_completions().pop().unwrap();
+    assert_eq!(tool_names_for_completion(&completion), vec!["demo_echo"]);
+    fake.send_last_event(
+        &model,
+        LanguageModelCompletionEvent::ToolUse(LanguageModelToolUse {
+            id: "tool_1".into(),
+            name: "demo_echo".into(),
+            raw_input: json!({"text": "hi"}).to_string(),
+            input: language_model::LanguageModelToolUseInput::Json(json!({"text": "hi"})),
+            is_input_complete: true,
+            thought_signature: None,
+        }),
+    );
+    fake.end_last(&model);
+    cx.run_until_parked();
+
+    // The extension receives its manifest-local tool name, not the model-facing one.
+    let completion = fake.pending_completions().pop().unwrap();
+    assert_eq!(
+        completion.messages.last().unwrap().content,
+        vec![MessageContent::ToolResult(LanguageModelToolResult {
+            tool_use_id: "tool_1".into(),
+            tool_name: "demo_echo".into(),
+            is_error: false,
+            content: vec!["echo hi".into()],
+            output: Some("echo hi".into()),
+        })]
+    );
+    fake.send_last_text(&model, "Done!");
+    fake.end_last(&model);
+    events.collect::<Vec<_>>().await;
+}
+
+#[gpui::test]
+async fn test_extension_tools_follow_profile(cx: &mut TestAppContext) {
+    let ThreadTest {
+        fake, thread, fs, ..
+    } = setup(cx, TestModel::Fake).await;
+
+    fs.insert_file(
+        paths::settings_file(),
+        json!({
+            "agent": {
+                "profiles": {
+                    "test": {
+                        "name": "Test Profile",
+                        "enable_all_context_servers": false,
+                        "tools": { "demo_shout": true }
+                    },
+                }
+            }
+        })
+        .to_string()
+        .into_bytes(),
+    )
+    .await;
+    cx.run_until_parked();
+    thread.update(cx, |thread, cx| {
+        thread.set_profile(AgentProfileId("test".into()), cx)
+    });
+    register_fake_extension_tools("demo", &["echo", "shout"], cx);
+
+    let _events = thread.update(cx, |thread, cx| {
+        thread
+            .send(ClientUserMessageId::new(), ["Hey"], cx)
+            .unwrap()
+    });
+    cx.run_until_parked();
+
+    let completion = fake.pending_completions().pop().unwrap();
+    assert_eq!(tool_names_for_completion(&completion), vec!["demo_shout"]);
+}
+
 #[gpui::test]
 async fn test_mcp_tool_names_are_sanitized_for_providers(cx: &mut TestAppContext) {
     let ThreadTest {

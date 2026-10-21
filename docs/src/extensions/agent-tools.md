@@ -28,7 +28,12 @@ Build with `wasm32-wasip2` and install using **zed: install dev extension**.
 
 ## Invocation and lifecycle
 
-Choose DSH, the Write mode (or a custom profile enabling the extension tool), and a tool-capable model. A chat captures installed tool definitions when its first message starts. Start a new chat after installing or updating tools. Each invocation requests explicit approval through the existing Agent panel. The tool receives validated JSON arguments; its result or error is recorded in the DSH session and displayed in the tool card.
+Extension tools are available to the Zed Agent and to DSH. Use a tool-capable model and the Write mode, or a profile that enables the tool. A profile's `tools` entry for the model-facing name (for example `"my-extension_echo": true`) enables or disables a tool explicitly; without an entry, `enable_all_context_servers` decides, as it does for MCP tools. Extension tools are not offered in restricted workspaces. A tool whose name matches a built-in Zed Agent tool is skipped.
+
+The tool receives validated JSON arguments. Its result, or its error, is returned to the model and shown in the tool card.
+
+- **Zed Agent**: the tool list is read again for each model request, so newly installed or updated tools appear without starting a new chat. Approval follows [tool permissions](../ai/tool-permissions.md) under the ID `extension:<extension-id>:<tool-name>`, where `<tool-name>` is the manifest key. Choosing "Always for … extension tool" in the prompt saves that ID's `default`.
+- **DSH**: a chat captures installed tool definitions when its first message starts, so start a new chat after installing or updating tools. Every invocation asks for approval once.
 
 Call `zed_extension_api::agent_tools::is_cancelled()` during long operations. Cancellation is cooperative: release resources before returning. Unloading revokes new calls, requests cancellation and waits for admitted calls before completing the reload. Old chat references never start using replacement code. A tool that ignores cancellation can block unloading or normal application shutdown.
 
