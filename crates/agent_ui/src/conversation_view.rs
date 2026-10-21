@@ -1930,6 +1930,8 @@ impl ConversationView {
                         );
                     });
                     active.update(cx, |active, cx| {
+                        active.remeasure_turn(index, cx);
+                        active.sync_thought_timing(cx);
                         active.sync_elicitation_state_for_entry(index, window, cx);
                         active.sync_editor_mode(cx);
                         active.sync_placeholder(window, cx);
@@ -1940,12 +1942,12 @@ impl ConversationView {
             AcpThreadEvent::EntryUpdated(index) => {
                 if let Some(active) = self.thread_view(&session_id) {
                     let entry_view_state = active.read(cx).entry_view_state.clone();
-                    let list_state = active.read(cx).list_state.clone();
                     entry_view_state.update(cx, |view_state, cx| {
                         view_state.sync_entry(*index, thread, window, cx);
                     });
-                    list_state.remeasure_items(*index..*index + 1);
                     active.update(cx, |active, cx| {
+                        active.remeasure_turn(*index, cx);
+                        active.sync_thought_timing(cx);
                         if active.editing_message == Some(*index)
                             && !active.can_edit_user_message(*index, cx)
                         {
@@ -2009,7 +2011,11 @@ impl ConversationView {
                     let is_generating =
                         matches!(thread.read(cx).status(), ThreadStatus::Generating);
                     active.update(cx, |active, cx| {
+                        active.sync_thought_timing(cx);
                         if !is_generating {
+                            // The last turn folds once it's done.
+                            let entry_count = thread.read(cx).entries().len();
+                            active.remeasure_turn(entry_count.saturating_sub(1), cx);
                             if thread.read(cx).uses_reported_activity() {
                                 active.sync_follow_agent_state(cx);
                             }
@@ -2158,6 +2164,7 @@ impl ConversationView {
                     let is_generating =
                         matches!(thread.read(cx).status(), ThreadStatus::Generating);
                     active.update(cx, |active, cx| {
+                        active.sync_thought_timing(cx);
                         if !is_generating {
                             active.thread_retry_status.take();
                             if active.list_state.is_following_tail() {

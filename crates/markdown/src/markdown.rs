@@ -135,6 +135,11 @@ pub struct MarkdownStyle {
     /// paragraphs as far apart as the paragraphs around the list. `None` uses
     /// `paragraph_spacing`.
     pub list_paragraph_spacing: Option<Pixels>,
+    /// Bottom margin of tables
+    pub table_spacing: DefiniteLength,
+    /// Top margin of horizontal rules, which comes on top of the bottom margin of the block
+    /// before them. `None` uses `paragraph_spacing`.
+    pub rule_spacing_above: Option<Pixels>,
     /// Horizontal (`x`) and vertical (`y`) padding of table cells
     pub table_cell_padding: Point<Pixels>,
     pub height_is_multiple_of_line_height: bool,
@@ -168,6 +173,8 @@ impl Default for MarkdownStyle {
             list_item_spacing: rems(0.25).into(),
             list_indent: rems(0.625).into(),
             list_paragraph_spacing: None,
+            table_spacing: rems(0.5).into(),
+            rule_spacing_above: None,
             table_cell_padding: point(px(4.), px(2.)),
             height_is_multiple_of_line_height: false,
             prevent_mouse_interaction: false,
@@ -3062,7 +3069,7 @@ impl Element for MarkdownElement {
                                     .when(!self.style.table_columns_min_size, |this| {
                                         this.grid_cols_max_content(column_count as u16)
                                     })
-                                    .mb_2()
+                                    .mb(self.style.table_spacing)
                                     .border(px(1.5))
                                     .border_color(cx.theme().colors().border)
                                     .rounded_sm()
@@ -3355,7 +3362,11 @@ impl Element for MarkdownElement {
                     builder.push_div(
                         div()
                             .border_b_1()
-                            .my(self.style.paragraph_spacing)
+                            .mt(self
+                                .style
+                                .rule_spacing_above
+                                .unwrap_or(self.style.paragraph_spacing))
+                            .mb(self.style.paragraph_spacing)
                             .border_color(self.style.rule_color),
                         range,
                         markdown_end,

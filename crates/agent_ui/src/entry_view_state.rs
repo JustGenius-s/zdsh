@@ -1,7 +1,12 @@
-use std::{ops::Range, sync::Arc};
+use std::{
+    ops::Range,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use acp_thread::{
-    AcpThread, AgentThreadEntry, AssistantMessageChunk, ToolCall, ToolCallContent, ToolCallStatus,
+    AcpThread, AgentThreadEntry, AssistantMessage, AssistantMessageChunk, ThreadStatus, ToolCall,
+    ToolCallContent, ToolCallStatus,
 };
 use agent::ThreadStore;
 use agent_client_protocol::schema::v2 as acp_v2;
@@ -43,58 +48,63 @@ fn reindex_after_removal(index: usize, removed: &Range<usize>) -> Option<usize> 
     }
 }
 
-/// Consecutive reads and searches, which the transcript folds into one "Explored" line.
-pub(crate) struct ExploreGroup {
-    /// The thread entries from the group's first tool call through its last.
+/// Consecutive tool calls, with the thinking between them, which the transcript folds into one
+/// line that sums them up, such as "Edited 2 files, explored 3 files".
+pub(crate) struct ActivityGroup {
+    /// The thread entries from the group's first member through its last.
     pub(crate) entries: Range<usize>,
+    /// The entries of the group's tool calls.
+    pub(crate) tool_call_entries: Vec<usize>,
     pub(crate) first_tool_call_id: acp_v2::ToolCallId,
-    pub(crate) files: usize,
-    pub(crate) searches: usize,
     pub(crate) running: bool,
+    /// Whether nothing shows after the group.
+    pub(crate) ends_thread: bool,
 }
 
-impl ExploreGroup {
-    /// The group the entry at `entry_ix` belongs to, when it's a read or search with at least one
-    /// more beside it. Entries that show nothing, such as an empty assistant message, don't
-    /// split a group.
-    pub(crate) fn containing(
-        entries: &[AgentThreadEntry],
-        entry_ix: usize,
-        cx: &App,
-    ) -> Option<Self> {
-        explore_tool_call(entries.get(entry_ix)?, cx)?;
+impl ActivityGroup {
+    /// The group the entry at `entry_ix` belongs to, when it's a tool call or thinking with at
+    /// least one more beside it, and the group has a tool call. Entries that show nothing, such
+    /// as an empty assistant message, don't split a group.
+    pub(crate) fn containing(thread: &AcpThread, entry_ix: usize, cx: &App) -> Option<Self> {
+        let entries = thread.entries();
+        activity_member(thread, entries.get(entry_ix)?, cx)?;
 
         let mut start = entry_ix;
         for (ix, entry) in entries.iter().enumerate().take(entry_ix).rev() {
-            if explore_tool_call(entry, cx).is_some() {
+            if activity_member(thread, entry, cx).is_some() {
                 start = ix;
             } else if !shows_nothing(entry, cx) {
                 break;
             }
         }
         let mut end = entry_ix + 1;
+        let mut ends_thread = true;
         for (ix, entry) in entries.iter().enumerate().skip(entry_ix + 1) {
-            if explore_tool_call(entry, cx).is_some() {
+            if activity_member(thread, entry, cx).is_some() {
                 end = ix + 1;
             } else if !shows_nothing(entry, cx) {
+                ends_thread = false;
                 break;
             }
         }
 
-        let members = entries
-            .get(start..end)?
-            .iter()
-            .filter_map(|entry| explore_tool_call(entry, cx))
-            .collect::<Vec<_>>();
-        if members.len() < 2 {
+        let mut member_count = 0;
+        let mut tool_calls = Vec::new();
+        for (ix, entry) in entries.iter().enumerate().take(end).skip(start) {
+            match activity_member(thread, entry, cx) {
+                Some(ActivityMember::ToolCall(tool_call)) => {
+                    member_count += 1;
+                    tool_calls.push((ix, tool_call));
+                }
+                Some(ActivityMember::Thought) => member_count += 1,
+                None => {}
+            }
+        }
+        if member_count < 2 {
             return None;
         }
-        let first_tool_call_id = members.first()?.id.clone();
-        let files = members
-            .iter()
-            .filter(|tool_call| tool_call.kind() == &acp_v2::ToolKind::Read)
-            .count();
-        let running = members.iter().any(|tool_call| {
+        let first_tool_call_id = tool_calls.first()?.1.id.clone();
+        let running = tool_calls.iter().any(|(_, tool_call)| {
             matches!(
                 tool_call.status(),
                 ToolCallStatus::Pending | ToolCallStatus::InProgress
@@ -102,41 +112,171 @@ impl ExploreGroup {
         });
         Some(Self {
             entries: start..end,
+            tool_call_entries: tool_calls.into_iter().map(|(ix, _)| ix).collect(),
             first_tool_call_id,
-            files,
-            searches: members.len() - files,
             running,
+            ends_thread,
         })
     }
 }
 
-fn explore_tool_call<'a>(entry: &'a AgentThreadEntry, cx: &App) -> Option<&'a ToolCall> {
-    let AgentThreadEntry::ToolCall(tool_call) = entry else {
-        return None;
-    };
-    let is_exploration = matches!(
-        tool_call.kind(),
-        acp_v2::ToolKind::Read | acp_v2::ToolKind::Search
-    );
-    let draws_a_card = tool_call.is_subagent()
-        || tool_call.content().iter().any(|content| {
+enum ActivityMember<'a> {
+    ToolCall(&'a ToolCall),
+    Thought,
+}
+
+fn activity_member<'a>(
+    thread: &AcpThread,
+    entry: &'a AgentThreadEntry,
+    cx: &App,
+) -> Option<ActivityMember<'a>> {
+    match entry {
+        AgentThreadEntry::ToolCall(tool_call) => {
+            let has_settled_on_showing = match tool_call.status() {
+                ToolCallStatus::Pending
+                | ToolCallStatus::InProgress
+                | ToolCallStatus::Completed
+                | ToolCallStatus::Failed
+                | ToolCallStatus::Rejected => true,
+                ToolCallStatus::Canceled => !is_hidden_canceled_tool_call(tool_call, cx),
+                ToolCallStatus::WaitingForConfirmation => false,
+            };
+            // A subagent shows its own work in its card, and a question the user answered
+            // belongs with the user's messages.
+            let stands_alone =
+                tool_call.is_subagent() || thread.is_user_authored_scroll_target(entry);
+            (has_settled_on_showing && !stands_alone).then_some(ActivityMember::ToolCall(tool_call))
+        }
+        AgentThreadEntry::AssistantMessage(message) if is_thought_only(message, cx) => {
+            Some(ActivityMember::Thought)
+        }
+        _ => None,
+    }
+}
+
+/// An assistant message with thinking and nothing else to show.
+fn is_thought_only(message: &AssistantMessage, cx: &App) -> bool {
+    let mut has_thought = false;
+    for chunk in &message.chunks {
+        match chunk {
+            AssistantMessageChunk::Message { block, .. } => {
+                if block.visible_content(cx) {
+                    return false;
+                }
+            }
+            AssistantMessageChunk::Thought { block, .. } => {
+                has_thought |= block.visible_content(cx);
+            }
+        }
+    }
+    has_thought && !message.indented && !message.is_subagent_output
+}
+
+/// The work of a finished turn, from its prompt through the agent's last tool call or thinking,
+/// which the transcript folds into one "Worked for 2m 15s" line above the agent's last reply.
+pub(crate) struct TurnFold {
+    /// The entry of the user message that started the turn.
+    pub(crate) prompt_entry_ix: usize,
+    /// The folded entries.
+    pub(crate) entries: Range<usize>,
+    pub(crate) is_last_turn: bool,
+}
+
+impl TurnFold {
+    pub(crate) fn containing(thread: &AcpThread, entry_ix: usize, cx: &App) -> Option<Self> {
+        // A subagent's thread is opened to look at its work.
+        if thread.parent_session_id().is_some() {
+            return None;
+        }
+        let entries = thread.entries();
+        let prompt_entry_ix = entries.get(..entry_ix)?.iter().rposition(is_turn_prompt)?;
+        let turn_end = entries
+            .iter()
+            .enumerate()
+            .skip(prompt_entry_ix + 1)
+            .find_map(|(ix, entry)| is_turn_prompt(entry).then_some(ix))
+            .unwrap_or(entries.len());
+        let is_last_turn = turn_end == entries.len();
+        if is_last_turn && thread.status() == ThreadStatus::Generating {
+            return None;
+        }
+
+        let turn = prompt_entry_ix + 1..turn_end;
+        let reply_ix = turn.clone().rev().find(|&ix| {
             matches!(
-                content,
-                ToolCallContent::Diff(_)
-                    | ToolCallContent::LegacyDiff { .. }
-                    | ToolCallContent::Terminal { .. }
-                    | ToolCallContent::DiffPatch { .. }
+                entries.get(ix),
+                Some(AgentThreadEntry::AssistantMessage(message)) if has_reply(message, cx)
             )
-        });
-    let has_settled_on_showing = match tool_call.status() {
-        ToolCallStatus::Pending
-        | ToolCallStatus::InProgress
-        | ToolCallStatus::Completed
-        | ToolCallStatus::Failed => true,
-        ToolCallStatus::Canceled => !is_hidden_canceled_tool_call(tool_call, cx),
-        ToolCallStatus::WaitingForConfirmation | ToolCallStatus::Rejected => false,
-    };
-    (is_exploration && !draws_a_card && has_settled_on_showing).then_some(tool_call)
+        })?;
+        let last_work_ix = (turn.start..reply_ix).rev().find(|&ix| {
+            entries
+                .get(ix)
+                .is_some_and(|entry| is_work(entry, cx) && is_foldable(thread, entry))
+        })?;
+        // Elicitations, compactions and answered questions stay in view, so only the work after
+        // the last of them folds.
+        let start = (turn.start..last_work_ix)
+            .rev()
+            .find(|&ix| {
+                entries
+                    .get(ix)
+                    .is_some_and(|entry| !is_foldable(thread, entry))
+            })
+            .map_or(turn.start, |ix| ix + 1);
+        let folded = start..last_work_ix + 1;
+        folded.contains(&entry_ix).then_some(Self {
+            prompt_entry_ix,
+            entries: folded,
+            is_last_turn,
+        })
+    }
+
+    /// Whether the fold holds all of the turn's work before its reply, so the turn's duration
+    /// describes it.
+    pub(crate) fn starts_at_prompt(&self) -> bool {
+        self.entries.start == self.prompt_entry_ix + 1
+    }
+}
+
+fn is_turn_prompt(entry: &AgentThreadEntry) -> bool {
+    matches!(entry, AgentThreadEntry::UserMessage(message) if !message.indented)
+}
+
+fn has_reply(message: &AssistantMessage, cx: &App) -> bool {
+    !message.indented
+        && message.chunks.iter().any(|chunk| {
+            matches!(chunk, AssistantMessageChunk::Message { block, .. } if block.visible_content(cx))
+        })
+}
+
+fn is_work(entry: &AgentThreadEntry, cx: &App) -> bool {
+    match entry {
+        AgentThreadEntry::ToolCall(tool_call) => !is_hidden_canceled_tool_call(tool_call, cx),
+        AgentThreadEntry::AssistantMessage(message) => is_thought_only(message, cx),
+        _ => false,
+    }
+}
+
+fn is_foldable(thread: &AcpThread, entry: &AgentThreadEntry) -> bool {
+    match entry {
+        AgentThreadEntry::AssistantMessage(message) => !message.indented,
+        AgentThreadEntry::ToolCall(_) => !thread.is_user_authored_scroll_target(entry),
+        AgentThreadEntry::UserMessage(_)
+        | AgentThreadEntry::Elicitation(_)
+        | AgentThreadEntry::ContextCompaction(_) => false,
+    }
+}
+
+/// The thought chunk at the end of the thread, which is the one streaming while the agent works.
+fn streaming_thought_key(thread: &AcpThread) -> Option<(usize, usize)> {
+    let last_ix = thread.entries().len().checked_sub(1)?;
+    match thread.entries().get(last_ix)? {
+        AgentThreadEntry::AssistantMessage(message) => match message.chunks.last()? {
+            AssistantMessageChunk::Thought { .. } => Some((last_ix, message.chunks.len() - 1)),
+            AssistantMessageChunk::Message { .. } => None,
+        },
+        _ => None,
+    }
 }
 
 fn shows_nothing(entry: &AgentThreadEntry, cx: &App) -> bool {
@@ -184,7 +324,16 @@ pub struct EntryViewState {
     user_toggled_thinking_blocks: HashSet<(usize, usize)>,
     expanded_compactions: HashSet<usize>,
     expanded_tool_calls: HashSet<acp_v2::ToolCallId>,
-    expanded_explore_groups: HashSet<acp_v2::ToolCallId>,
+    expanded_activity_groups: HashSet<acp_v2::ToolCallId>,
+    /// Turn folds the user opened or closed, by their prompt's entry index.
+    toggled_turn_folds: HashMap<usize, bool>,
+    /// How long the turns that ran in this view took, by their prompt's entry index.
+    turn_durations: HashMap<usize, Duration>,
+    saw_live_turn: bool,
+    /// The thinking streaming in now, by its entry and chunk index, and when it started.
+    streaming_thought: Option<((usize, usize), Instant)>,
+    /// How long the thinking that streamed in this view took, by its entry and chunk index.
+    thought_durations: HashMap<(usize, usize), Duration>,
 }
 
 impl EntryViewState {
@@ -207,7 +356,12 @@ impl EntryViewState {
             user_toggled_thinking_blocks: HashSet::default(),
             expanded_compactions: HashSet::default(),
             expanded_tool_calls: HashSet::default(),
-            expanded_explore_groups: HashSet::default(),
+            expanded_activity_groups: HashSet::default(),
+            toggled_turn_folds: HashMap::default(),
+            turn_durations: HashMap::default(),
+            saw_live_turn: false,
+            streaming_thought: None,
+            thought_durations: HashMap::default(),
         }
     }
 
@@ -227,30 +381,72 @@ impl EntryViewState {
         self.expanded_tool_calls.remove(tool_call_id);
     }
 
-    pub(crate) fn is_explore_group_expanded(&self, group: &ExploreGroup) -> bool {
-        self.expanded_explore_groups
+    pub(crate) fn is_activity_group_expanded(&self, group: &ActivityGroup) -> bool {
+        self.expanded_activity_groups
             .contains(&group.first_tool_call_id)
     }
 
-    pub(crate) fn toggle_explore_group_expansion(&mut self, group: &ExploreGroup) {
+    pub(crate) fn toggle_activity_group_expansion(&mut self, group: &ActivityGroup) {
         if !self
-            .expanded_explore_groups
+            .expanded_activity_groups
             .remove(&group.first_tool_call_id)
         {
-            self.expanded_explore_groups
+            self.expanded_activity_groups
                 .insert(group.first_tool_call_id.clone());
         }
     }
 
-    /// Whether the entry at `entry_ix` is folded into the line of a collapsed explore group.
-    pub(crate) fn is_collapsed_into_explore_group(
-        &self,
-        entries: &[AgentThreadEntry],
-        entry_ix: usize,
-        cx: &App,
-    ) -> bool {
-        ExploreGroup::containing(entries, entry_ix, cx)
-            .is_some_and(|group| !self.is_explore_group_expanded(&group))
+    /// Turns start folded, except the last one when this view watched the agent work.
+    pub(crate) fn is_turn_fold_expanded(&self, fold: &TurnFold) -> bool {
+        self.toggled_turn_folds
+            .get(&fold.prompt_entry_ix)
+            .copied()
+            .unwrap_or(fold.is_last_turn && self.saw_live_turn)
+    }
+
+    pub(crate) fn toggle_turn_fold_expansion(&mut self, fold: &TurnFold) {
+        let expanded = self.is_turn_fold_expanded(fold);
+        self.toggled_turn_folds
+            .insert(fold.prompt_entry_ix, !expanded);
+    }
+
+    pub(crate) fn note_live_turn(&mut self) {
+        self.saw_live_turn = true;
+    }
+
+    pub(crate) fn turn_duration(&self, prompt_entry_ix: usize) -> Option<Duration> {
+        self.turn_durations.get(&prompt_entry_ix).copied()
+    }
+
+    pub(crate) fn record_turn_duration(&mut self, prompt_entry_ix: usize, duration: Duration) {
+        self.turn_durations.insert(prompt_entry_ix, duration);
+    }
+
+    /// Times thinking as it streams in, since agents don't report how long it took. Thinking
+    /// ends when anything else arrives after it, or when the turn ends.
+    pub(crate) fn sync_thought_timing(&mut self, thread: &AcpThread) {
+        let streaming = (thread.status() == ThreadStatus::Generating)
+            .then(|| streaming_thought_key(thread))
+            .flatten();
+        if self.streaming_thought.map(|(key, _)| key) == streaming {
+            return;
+        }
+        if let Some((key, started_at)) = self.streaming_thought.take() {
+            self.thought_durations.insert(key, started_at.elapsed());
+        }
+        self.streaming_thought = streaming.map(|key| (key, Instant::now()));
+    }
+
+    pub(crate) fn thought_duration(&self, key: (usize, usize)) -> Option<Duration> {
+        self.thought_durations.get(&key).copied()
+    }
+
+    /// Whether the entry at `entry_ix` is folded away, into a collapsed turn or activity group.
+    pub(crate) fn is_entry_folded(&self, thread: &AcpThread, entry_ix: usize, cx: &App) -> bool {
+        TurnFold::containing(thread, entry_ix, cx)
+            .is_some_and(|fold| !self.is_turn_fold_expanded(&fold))
+            || ActivityGroup::containing(thread, entry_ix, cx)
+                .is_some_and(|group| !self.is_activity_group_expanded(&group))
     }
 
     pub(crate) fn toggle_tool_call_expansion(&mut self, tool_call_id: &acp_v2::ToolCallId) {
@@ -291,18 +487,7 @@ impl EntryViewState {
             return false;
         }
 
-        let last_ix = thread.entries().len().saturating_sub(1);
-        let key = match thread.entries().get(last_ix) {
-            Some(AgentThreadEntry::AssistantMessage(message)) => match message.chunks.last() {
-                Some(AssistantMessageChunk::Thought { .. }) => {
-                    Some((last_ix, message.chunks.len() - 1))
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-
-        if let Some(key) = key {
+        if let Some(key) = streaming_thought_key(thread) {
             if self.auto_expanded_thinking_block != Some(key) {
                 self.auto_expanded_thinking_block = Some(key);
                 self.expanded_thinking_blocks.insert(key);
@@ -663,6 +848,34 @@ impl EntryViewState {
             .iter()
             .filter_map(|&entry_ix| reindex_after_removal(entry_ix, &range))
             .collect();
+        self.toggled_turn_folds = self
+            .toggled_turn_folds
+            .iter()
+            .filter_map(|(&entry_ix, &expanded)| {
+                reindex_after_removal(entry_ix, &range).map(|entry_ix| (entry_ix, expanded))
+            })
+            .collect();
+        self.turn_durations = self
+            .turn_durations
+            .iter()
+            .filter_map(|(&entry_ix, &duration)| {
+                reindex_after_removal(entry_ix, &range).map(|entry_ix| (entry_ix, duration))
+            })
+            .collect();
+        self.thought_durations = self
+            .thought_durations
+            .iter()
+            .filter_map(|(&(entry_ix, chunk_ix), &duration)| {
+                reindex_after_removal(entry_ix, &range)
+                    .map(|entry_ix| ((entry_ix, chunk_ix), duration))
+            })
+            .collect();
+        self.streaming_thought =
+            self.streaming_thought
+                .and_then(|((entry_ix, chunk_ix), started_at)| {
+                    reindex_after_removal(entry_ix, &range)
+                        .map(|entry_ix| ((entry_ix, chunk_ix), started_at))
+                });
         self.expanded_thinking_blocks = self
             .expanded_thinking_blocks
             .iter()

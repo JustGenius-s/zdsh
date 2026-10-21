@@ -654,15 +654,18 @@ pub struct TurnFields {
 
 /// How a tool call is rendered relative to its surroundings.
 ///
-/// `Standalone` draws its own border/margin/location header. `Embedded` is
-/// hosted by a container that provides its own framing (e.g. the subagent
-/// card). `Floating` is like `Embedded`, but used for the floating
-/// awaiting-permission row above the message editor: the tool call's content
-/// is height-capped and scrollable so the row can never grow to consume the
-/// entire panel and squeeze the conversation list out of view.
+/// `Standalone` draws its own border/margin/location header. `Grouped` is like
+/// `Standalone`, for a tool call shown in an expanded activity group, closer
+/// to the rest of the group. `Embedded` is hosted by a container that provides
+/// its own framing (e.g. the subagent card). `Floating` is like `Embedded`, but
+/// used for the floating awaiting-permission row above the message editor: the
+/// tool call's content is height-capped and scrollable so the row can never
+/// grow to consume the entire panel and squeeze the conversation list out of
+/// view.
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum ToolCallLayout {
     Standalone,
+    Grouped,
     Embedded,
     Floating,
 }
@@ -673,9 +676,21 @@ impl ToolCallLayout {
     /// list *and* in the floating awaiting-permission row).
     fn id_str(self) -> &'static str {
         match self {
-            ToolCallLayout::Standalone => "standalone",
+            // A tool call is in one or the other, and keeping its ids as it joins a group keeps
+            // the state of what it shows, such as a terminal's scroll position.
+            ToolCallLayout::Standalone | ToolCallLayout::Grouped => "standalone",
             ToolCallLayout::Embedded => "embedded",
             ToolCallLayout::Floating => "floating",
+        }
+    }
+
+    /// The gap above a tool call that is a row of the transcript, rather than part of a
+    /// container.
+    fn row_gap(self) -> Option<Pixels> {
+        match self {
+            ToolCallLayout::Standalone => Some(transcript::ROW_GAP),
+            ToolCallLayout::Grouped => Some(transcript::STEP_GAP),
+            ToolCallLayout::Embedded | ToolCallLayout::Floating => None,
         }
     }
 }
@@ -1447,6 +1462,8 @@ impl ThreadView {
         self.turn_fields.last_turn_duration = None;
         self.turn_fields.last_turn_tokens = None;
         self.turn_fields.turn_tokens = Some(0);
+        self.entry_view_state
+            .update(cx, |state, _cx| state.note_live_turn());
         self.turn_fields._turn_timer_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -1458,7 +1475,7 @@ impl ThreadView {
         generation
     }
 
-    pub fn stop_turn(&mut self, generation: usize, _cx: &mut Context<Self>) {
+    pub fn stop_turn(&mut self, generation: usize, cx: &mut Context<Self>) {
         if self.turn_fields.turn_generation != generation {
             return;
         }
@@ -1469,6 +1486,38 @@ impl ThreadView {
             .map(|started| started.elapsed());
         self.turn_fields.last_turn_tokens = self.turn_fields.turn_tokens.take();
         self.turn_fields._turn_timer_task = None;
+        self.record_last_turn_duration(cx);
+    }
+
+    /// Keeps the last turn's duration for its "Worked for" line.
+    fn record_last_turn_duration(&mut self, cx: &mut Context<Self>) {
+        let Some(duration) = self.turn_fields.last_turn_duration else {
+            return;
+        };
+        let prompt_entry_ix = self.thread.read(cx).entries().iter().rposition(
+            |entry| matches!(entry, AgentThreadEntry::UserMessage(message) if !message.indented),
+        );
+        if let Some(prompt_entry_ix) = prompt_entry_ix {
+            self.entry_view_state.update(cx, |state, _cx| {
+                state.record_turn_duration(prompt_entry_ix, duration);
+            });
+        }
+    }
+
+    /// Re-measures the turn holding the entry at `entry_ix`, and the turn before it. How an
+    /// entry shows depends on the entries around it, since activity groups and folded turns
+    /// form from them, so a change to one entry can change the height of others.
+    pub(crate) fn remeasure_turn(&self, entry_ix: usize, cx: &App) {
+        let entries = self.thread.read(cx).entries();
+        let start = entries
+            .get(..entry_ix)
+            .and_then(|entries| {
+                entries.iter().rposition(|entry| {
+                    matches!(entry, AgentThreadEntry::UserMessage(message) if !message.indented)
+                })
+            })
+            .unwrap_or(0);
+        self.list_state.remeasure_items(start..entries.len());
     }
 
     pub(crate) fn sync_reported_activity(&mut self, cx: &mut Context<Self>) {
@@ -1496,6 +1545,7 @@ impl ThreadView {
             }
             self.turn_fields.reported_activity_generation = Some(activity_generation);
             self.turn_fields.last_turn_duration = duration;
+            self.record_last_turn_duration(cx);
         }
         cx.notify();
     }
@@ -3848,6 +3898,7 @@ impl ThreadView {
                             )
                             .child(
                                 div()
+                                    .id("scroll-to-subagent")
                                     .flex_none()
                                     .visible_on_hover(&group)
                                     .child("Scroll to Subagent"),
@@ -5651,6 +5702,13 @@ impl ThreadView {
         if changed {
             cx.notify();
         }
+    }
+
+    pub(crate) fn sync_thought_timing(&mut self, cx: &mut Context<Self>) {
+        let thread = self.thread.clone();
+        self.entry_view_state.update(cx, |state, cx| {
+            state.sync_thought_timing(thread.read(cx));
+        });
     }
 
     pub(crate) fn clear_auto_expand_tracking(&mut self, cx: &mut Context<Self>) {

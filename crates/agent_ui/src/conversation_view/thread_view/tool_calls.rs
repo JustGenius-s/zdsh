@@ -3,7 +3,7 @@ use super::transcript::{
     ActivityRow, AlertCard, COLUMN_INSET, ROW_GAP, STEP_GAP, TEXT_INSET, kit_icon, transcript_card,
 };
 use super::*;
-use crate::entry_view_state::ExploreGroup;
+use crate::entry_view_state::ActivityGroup;
 use gpui::{AnyView, HighlightStyle, StyledText};
 use gpui_kit::component::{
     Disableable as _, Icon as KitIcon, Size as KitSize, Theme as KitTheme,
@@ -119,7 +119,9 @@ impl ThreadView {
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
-        let has_location = tool_call.locations.len() == 1;
+        let is_read = matches!(tool_call.kind(), acp_v2::ToolKind::Read);
+        let has_location =
+            tool_call.locations.len() == 1 || (is_read && !tool_call.locations.is_empty());
         let failed_or_canceled = matches!(
             tool_call.status(),
             ToolCallStatus::Rejected | ToolCallStatus::Canceled | ToolCallStatus::Failed
@@ -130,48 +132,61 @@ impl ThreadView {
         );
         let has_image_content = tool_call.content().iter().any(|c| c.image().is_some());
         let should_show_raw_input = !has_image_content;
-        let has_content = !tool_call.content().is_empty()
-            || (should_show_raw_input && tool_call.raw_input.is_some());
-        let is_open = self
-            .entry_view_state
-            .read(cx)
-            .is_tool_call_content_visible(tool_call);
+        // A read opens its file instead of showing what it read, unless it failed, to show why.
+        let shows_content = !is_read || failed_or_canceled;
+        let has_content = shows_content
+            && (!tool_call.content().is_empty()
+                || (should_show_raw_input && tool_call.raw_input.is_some()));
+        let is_open = has_content
+            && self
+                .entry_view_state
+                .read(cx)
+                .is_tool_call_content_visible(tool_call);
 
-        let (label, _) = markdown_line(tool_call.label.read(cx));
-        let row = ActivityRow::from_label(("tool-call-activity", entry_ix), &label)
-            .running(running)
-            .failed(failed_or_canceled)
-            .map(|row| {
-                if has_content {
-                    row.expanded(is_open).on_click(cx.listener({
-                        let id = tool_call.id.clone();
-                        move |this, _, window, cx| {
-                            this.entry_view_state.update(cx, |state, _cx| {
-                                state.toggle_tool_call_expansion(&id);
-                            });
-                            this.refresh_thread_search(window, cx);
-                            cx.notify();
-                        }
-                    }))
-                } else if has_location {
-                    row.on_click(cx.listener(move |this, _, window, cx| {
+        let read_file_name = tool_call
+            .locations
+            .first()
+            .filter(|_| is_read)
+            .and_then(|location| location.path.file_name())
+            .map(|file_name| file_name.to_string_lossy().into_owned());
+        let row_id = ("tool-call-activity", entry_ix);
+        let row = match read_file_name {
+            Some(file_name) => ActivityRow::new(row_id, "Read").details(file_name),
+            None => ActivityRow::from_label(row_id, &markdown_line(tool_call.label.read(cx)).0),
+        }
+        .running(running)
+        .failed(failed_or_canceled)
+        .map(|row| {
+            if has_content {
+                row.expanded(is_open).on_click(cx.listener({
+                    let id = tool_call.id.clone();
+                    move |this, _, window, cx| {
+                        this.entry_view_state.update(cx, |state, _cx| {
+                            state.toggle_tool_call_expansion(&id);
+                        });
+                        this.refresh_thread_search(window, cx);
+                        cx.notify();
+                    }
+                }))
+            } else if has_location {
+                row.on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_tool_call_location(entry_ix, 0, window, cx);
+                }))
+            } else {
+                row
+            }
+        })
+        .when(has_location && has_content, |row| {
+            row.end_slot(
+                PillButton::new(("open-tool-call-location", entry_ix))
+                    .size(KitSize::XSmall)
+                    .icon(IconName::ArrowUpRight)
+                    .tooltip(Tooltip::text("Go to File"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_tool_call_location(entry_ix, 0, window, cx);
-                    }))
-                } else {
-                    row
-                }
-            })
-            .when(has_location && has_content, |row| {
-                row.end_slot(
-                    PillButton::new(("open-tool-call-location", entry_ix))
-                        .size(KitSize::XSmall)
-                        .icon(IconName::ArrowUpRight)
-                        .tooltip(Tooltip::text("Go to File"))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_tool_call_location(entry_ix, 0, window, cx);
-                        })),
-                )
-            });
+                    })),
+            )
+        });
 
         let input_output_header = |label: SharedString| {
             Label::new(label)
@@ -246,9 +261,7 @@ impl ThreadView {
 
         v_flex()
             .w_full()
-            .when(layout == ToolCallLayout::Standalone, |this| {
-                this.px(TEXT_INSET).pt(ROW_GAP)
-            })
+            .when_some(layout.row_gap(), |this, gap| this.px(TEXT_INSET).pt(gap))
             .child(row)
             .children(output)
     }
@@ -268,72 +281,115 @@ impl ThreadView {
         }
     }
 
-    /// Renders a tool call that's part of an explore group. The group's first tool call carries
-    /// the group's line, and the rest show only while the group is expanded.
-    pub(super) fn render_explore_group_member(
+    /// Renders an entry that's part of an activity group. The group's first member carries the
+    /// group's line, and the rest show only while the group is expanded.
+    pub(super) fn render_activity_group_member(
         &self,
-        active_session_id: &acp_v2::SessionId,
         entry_ix: usize,
-        tool_call: &ToolCall,
-        group: ExploreGroup,
-        focus_handle: &FocusHandle,
+        total_entries: usize,
+        entry: &AgentThreadEntry,
+        group: &ActivityGroup,
         window: &Window,
         cx: &Context<Self>,
-    ) -> Option<Stateful<Div>> {
+    ) -> Option<AnyElement> {
         let expanded = self
             .entry_view_state
             .read(cx)
-            .is_explore_group_expanded(&group);
+            .is_activity_group_expanded(group);
         let is_first = entry_ix == group.entries.start;
         if !is_first && !expanded {
             return None;
         }
 
-        let member = expanded.then(|| {
-            div().pt(STEP_GAP).child(self.render_activity_tool_call(
-                active_session_id,
-                entry_ix,
-                tool_call,
-                focus_handle,
-                ToolCallLayout::Embedded,
-                window,
-                cx,
-            ))
-        });
-        let header = is_first.then(|| {
-            let (action, details) = explore_group_label(&group);
-            ActivityRow::new(("explore-group", entry_ix), action)
-                .details(details)
-                .running(group.running)
-                .expanded(expanded)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.toggle_explore_group(&group, window, cx);
-                }))
-        });
+        let member = expanded
+            .then(|| match entry {
+                AgentThreadEntry::ToolCall(tool_call) => {
+                    let session_id = self.thread.read(cx).session_id();
+                    let focus_handle = self.focus_handle(cx);
+                    Some(
+                        self.render_any_tool_call(
+                            session_id,
+                            entry_ix,
+                            tool_call,
+                            &focus_handle,
+                            ToolCallLayout::Grouped,
+                            window,
+                            cx,
+                        )
+                        .into_any_element(),
+                    )
+                }
+                AgentThreadEntry::AssistantMessage(message) => self.render_assistant_message(
+                    entry_ix,
+                    total_entries,
+                    message,
+                    STEP_GAP,
+                    window,
+                    cx,
+                ),
+                _ => None,
+            })
+            .flatten();
+        let header = is_first.then(|| self.render_activity_group_header(group, expanded, cx));
 
         Some(
-            div()
-                .id(ElementId::Name(SharedString::from(format!(
-                    "tool-call-{}-{}",
-                    tool_call.id.0,
-                    ToolCallLayout::Standalone.id_str()
-                ))))
+            v_flex()
                 .w_full()
-                .px(TEXT_INSET)
-                .when(is_first, |this| this.pt(ROW_GAP))
                 .children(header)
-                .children(member),
+                .children(member)
+                .into_any_element(),
         )
     }
 
-    fn toggle_explore_group(
+    fn render_activity_group_header(
+        &self,
+        group: &ActivityGroup,
+        expanded: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let thread = self.thread.read(cx);
+        let entries = thread.entries();
+        let tool_calls = group
+            .tool_call_entries
+            .iter()
+            .filter_map(|&entry_ix| match entries.get(entry_ix) {
+                Some(AgentThreadEntry::ToolCall(tool_call)) => Some(tool_call),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        // Until something else shows, the agent is still at work on what the group describes.
+        let running =
+            group.running || (group.ends_thread && thread.status() == ThreadStatus::Generating);
+        let summary = ActivitySummary::new(&tool_calls, cx);
+        let (action, details) = summary.label(running);
+        let group_start = group.entries.start;
+
+        div().px(TEXT_INSET).pt(ROW_GAP).child(
+            ActivityRow::new(("activity-group", group_start), action)
+                .details(details)
+                .when(
+                    summary.diff_stats.lines_added > 0 || summary.diff_stats.lines_removed > 0,
+                    |row| row.diff_stats(summary.diff_stats),
+                )
+                .running(running)
+                .expanded(expanded)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let group = ActivityGroup::containing(this.thread.read(cx), group_start, cx);
+                    if let Some(group) = group {
+                        this.toggle_activity_group(&group, window, cx);
+                    }
+                })),
+        )
+    }
+
+    fn toggle_activity_group(
         &mut self,
-        group: &ExploreGroup,
+        group: &ActivityGroup,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.entry_view_state.update(cx, |state, _cx| {
-            state.toggle_explore_group_expansion(group);
+            state.toggle_activity_group_expansion(group);
         });
         // Members other than the first change height without being rendered, so their cached
         // heights would otherwise go stale.
@@ -343,26 +399,180 @@ impl ThreadView {
     }
 }
 
-fn explore_group_label(group: &ExploreGroup) -> (&'static str, String) {
-    let mut counts = Vec::new();
-    if group.files > 0 {
-        let noun = if group.files == 1 { "file" } else { "files" };
-        counts.push(format!("{} {noun}", group.files));
+/// What the tool calls of an activity group did, counted for the group's line.
+#[derive(Default)]
+struct ActivitySummary {
+    tool_calls: usize,
+    files_read: usize,
+    searches: usize,
+    fetches: usize,
+    commands: usize,
+    other_tools: usize,
+    has_edits: bool,
+    changed_files: Vec<String>,
+    /// Edits and deletions whose file isn't known, counted as one file each.
+    unknown_changed_files: usize,
+    first_command: Option<String>,
+    diff_stats: DiffStats,
+}
+
+impl ActivitySummary {
+    fn new(tool_calls: &[&ToolCall], cx: &App) -> Self {
+        let mut summary = Self::default();
+        for tool_call in tool_calls {
+            summary.tool_calls += 1;
+            let is_command = tool_call.terminals().next().is_some()
+                || matches!(tool_call.kind(), acp_v2::ToolKind::Execute);
+            let has_diffs = tool_call.diffs().next().is_some()
+                || tool_call
+                    .content()
+                    .iter()
+                    .any(|content| matches!(content, ToolCallContent::DiffPatch { .. }));
+            if is_command {
+                summary.commands += 1;
+                if summary.first_command.is_none() {
+                    summary.first_command = Some(command_line(tool_call, cx));
+                }
+                continue;
+            }
+            match tool_call.kind() {
+                acp_v2::ToolKind::Read => summary.files_read += 1,
+                acp_v2::ToolKind::Search => summary.searches += 1,
+                acp_v2::ToolKind::Fetch => summary.fetches += 1,
+                acp_v2::ToolKind::Delete => summary.add_changed_files(tool_call, cx),
+                acp_v2::ToolKind::Edit | acp_v2::ToolKind::Move => {
+                    summary.has_edits = true;
+                    summary.add_changed_files(tool_call, cx);
+                }
+                _ if has_diffs => {
+                    summary.has_edits = true;
+                    summary.add_changed_files(tool_call, cx);
+                }
+                _ => summary.other_tools += 1,
+            }
+            let stats = tool_call_diff_stats(tool_call, cx);
+            summary.diff_stats.lines_added += stats.lines_added;
+            summary.diff_stats.lines_removed += stats.lines_removed;
+        }
+        summary
     }
-    if group.searches > 0 {
-        let noun = if group.searches == 1 {
-            "search"
+
+    fn add_changed_files(&mut self, tool_call: &ToolCall, cx: &App) {
+        let mut paths = tool_call
+            .locations
+            .iter()
+            .map(|location| location.path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            paths.extend(
+                tool_call
+                    .diffs()
+                    .filter_map(|diff| diff.read(cx).file_path(cx)),
+            );
+        }
+        if paths.is_empty() {
+            self.unknown_changed_files += 1;
+        }
+        for path in paths {
+            if !self.changed_files.contains(&path) {
+                self.changed_files.push(path);
+            }
+        }
+    }
+
+    /// The group's line, as what the agent did and the details: the files it changed, then what
+    /// it explored, then the commands it ran.
+    fn label(&self, running: bool) -> (&'static str, String) {
+        if self.commands > 0 && self.commands == self.tool_calls {
+            let details = match (self.commands, &self.first_command) {
+                (1, Some(command)) => command.clone(),
+                (commands, _) => count(commands, "command", "commands"),
+            };
+            return (if running { "Running" } else { "Ran" }, details);
+        }
+
+        let mut explored = [
+            (self.files_read, "file", "files"),
+            (self.searches, "search", "searches"),
+            (self.fetches, "fetch", "fetches"),
+            (self.other_tools, "tool", "tools"),
+        ]
+        .into_iter()
+        .filter(|(amount, _, _)| *amount > 0)
+        .map(|(amount, singular, plural)| count(amount, singular, plural))
+        .collect::<Vec<_>>();
+
+        let mut parts = Vec::new();
+        let changed_files = self.changed_files.len() + self.unknown_changed_files;
+        let action = if changed_files > 0 {
+            let single_file_name = (changed_files == 1)
+                .then(|| self.changed_files.first())
+                .flatten()
+                .and_then(|path| Path::new(path).file_name())
+                .map(|name| name.to_string_lossy().into_owned());
+            parts.push(single_file_name.unwrap_or_else(|| count(changed_files, "file", "files")));
+            if let Some(first) = explored.first_mut() {
+                *first = format!("explored {first}");
+            }
+            match (self.has_edits, running) {
+                (true, true) => "Editing",
+                (true, false) => "Edited",
+                (false, true) => "Deleting",
+                (false, false) => "Deleted",
+            }
+        } else if self.files_read + self.searches + self.fetches + self.commands == 0 {
+            if running { "Running" } else { "Ran" }
+        } else if running {
+            "Exploring"
         } else {
-            "searches"
+            "Explored"
         };
-        counts.push(format!("{} {noun}", group.searches));
+        parts.extend(explored);
+        if self.commands > 0 {
+            parts.push(format!(
+                "ran {}",
+                count(self.commands, "command", "commands")
+            ));
+        }
+        (action, parts.join(", "))
     }
-    let verb = if group.running {
-        "Exploring"
+}
+
+fn count(amount: usize, singular: &str, plural: &str) -> String {
+    format!("{amount} {}", if amount == 1 { singular } else { plural })
+}
+
+/// The first line of the command a tool call runs.
+fn command_line(tool_call: &ToolCall, cx: &App) -> String {
+    let label = tool_call.label.read(cx);
+    let command = if label.source().starts_with("```") {
+        command_text(label)
     } else {
-        "Explored"
+        markdown_line(label).0.to_string()
     };
-    (verb, counts.join(", "))
+    command
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+/// The lines added and removed by a tool call's edits.
+fn tool_call_diff_stats(tool_call: &ToolCall, cx: &App) -> DiffStats {
+    tool_call
+        .diffs()
+        .filter_map(|diff| {
+            let diff = diff.read(cx);
+            let buffer_id = diff.buffer().read(cx).remote_id();
+            diff.multibuffer().read(cx).diff_for(buffer_id)
+        })
+        .fold(DiffStats::default(), |mut total, buffer_diff| {
+            let stats = DiffStats::single_file(buffer_diff.read(cx));
+            total.lines_added += stats.lines_added;
+            total.lines_removed += stats.lines_removed;
+            total
+        })
 }
 
 /// Markdown as one line of text, with the ranges it quotes as code. In a tool call's label,
@@ -647,9 +857,7 @@ impl ThreadView {
 
         v_flex()
             .w_full()
-            .when(layout == ToolCallLayout::Standalone, |this| {
-                this.px(COLUMN_INSET).pt(ROW_GAP)
-            })
+            .when_some(layout.row_gap(), |this, gap| this.px(COLUMN_INSET).pt(gap))
             .map(|this| {
                 if layout == ToolCallLayout::Floating {
                     // The buttons stay in view while a long request scrolls.
@@ -729,21 +937,7 @@ impl ThreadView {
             }
         };
 
-        let diff_stats = is_edit.then(|| {
-            tool_call
-                .diffs()
-                .filter_map(|diff| {
-                    let diff = diff.read(cx);
-                    let buffer_id = diff.buffer().read(cx).remote_id();
-                    diff.multibuffer().read(cx).diff_for(buffer_id)
-                })
-                .fold(DiffStats::default(), |mut total, buffer_diff| {
-                    let stats = DiffStats::single_file(buffer_diff.read(cx));
-                    total.lines_added += stats.lines_added;
-                    total.lines_removed += stats.lines_removed;
-                    total
-                })
-        });
+        let diff_stats = is_edit.then(|| tool_call_diff_stats(tool_call, cx));
 
         let diff_for_discard = if has_revealed_diff && is_cancelled_edit {
             tool_call.diffs().next().cloned()
@@ -1144,15 +1338,13 @@ impl ThreadView {
 
         v_flex()
             .w_full()
-            .when(layout == ToolCallLayout::Standalone, |this| {
-                this.px(COLUMN_INSET).pt(ROW_GAP)
-            })
+            .when_some(layout.row_gap(), |this, gap| this.px(COLUMN_INSET).pt(gap))
             .child(
                 ToolCard::new(SharedString::from(child_id("card")), header)
                     .sections(sections)
                     .when_some(permission_buttons, |card, buttons| card.footer(buttons))
                     .dashed(tool_failed || command_failed)
-                    .bare(layout != ToolCallLayout::Standalone),
+                    .bare(layout.row_gap().is_none()),
             )
             .into_any()
     }
@@ -2062,10 +2254,18 @@ impl ThreadView {
         } else {
             0..total_entries
         };
+        let first_entry_ix = entry_range.start;
         entry_range.start = entry_range
             .end
             .saturating_sub(MAX_PREVIEW_ENTRIES)
-            .max(entry_range.start);
+            .max(first_entry_ix);
+        // A collapsed activity group shows its line at its first entry, so the preview starts
+        // there rather than among the entries the line stands for.
+        if let Some(group) =
+            ActivityGroup::containing(subagent_view.thread.read(cx), entry_range.start, cx)
+        {
+            entry_range.start = group.entries.start.max(first_entry_ix);
+        }
         let start_ix = entry_range.start;
 
         let scroll_handle = self
@@ -2297,6 +2497,7 @@ impl RenderOnce for ToolCardHeader {
             .when(!self.hover_actions.is_empty(), |this| {
                 this.child(
                     h_flex()
+                        .id("hover-actions")
                         .flex_none()
                         .gap_0p5()
                         .visible_on_hover(group.clone())
@@ -2314,6 +2515,7 @@ impl RenderOnce for ToolCardHeader {
                 };
                 this.child(
                     div()
+                        .id("chevron")
                         .flex_none()
                         .when(!expanded, |this| this.visible_on_hover(group))
                         .child(kit_icon(chevron).with_size(KitSize::XSmall)),

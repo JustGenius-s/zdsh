@@ -1,7 +1,7 @@
 use super::composer::{PillButton, composer_surface};
 use super::tool_calls::markdown_line;
 use super::*;
-use crate::entry_view_state::{ExploreGroup, is_hidden_canceled_tool_call};
+use crate::entry_view_state::{ActivityGroup, TurnFold, is_hidden_canceled_tool_call};
 use gpui::{AnyView, FontWeight, TextStyleRefinement, transparent_white};
 use gpui_kit::component::{
     Colorize as _, Icon as KitIcon, Size as KitSize, Theme as KitTheme, alert::AlertVariant,
@@ -101,6 +101,99 @@ impl ThreadView {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
+        let rendered = match TurnFold::containing(self.thread.read(cx), entry_ix, cx) {
+            Some(fold) => {
+                let expanded = self.entry_view_state.read(cx).is_turn_fold_expanded(&fold);
+                let header = (entry_ix == fold.entries.start)
+                    .then(|| self.render_turn_fold_header(&fold, expanded, cx));
+                let content = expanded.then(|| {
+                    self.render_unfolded_entry(entry_ix, total_entries, entry, window, cx)
+                });
+                if header.is_none() && content.is_none() {
+                    return Empty.into_any();
+                }
+                v_flex()
+                    .w_full()
+                    .children(header)
+                    .children(content)
+                    .into_any_element()
+            }
+            None => self.render_unfolded_entry(entry_ix, total_entries, entry, window, cx),
+        };
+
+        if let Some(editing_index) = self.editing_message
+            && editing_index < entry_ix
+        {
+            let is_subagent = self.is_subagent();
+
+            let backdrop = div()
+                .id(("backdrop", entry_ix))
+                .size_full()
+                .absolute()
+                .inset_0()
+                .bg(cx.theme().colors().panel_background)
+                .opacity(0.8)
+                .block_mouse_except_scroll()
+                .on_click(cx.listener(Self::cancel_editing));
+
+            div()
+                .relative()
+                .child(rendered)
+                .when(!is_subagent, |this| this.child(backdrop))
+                .into_any_element()
+        } else {
+            rendered
+        }
+    }
+
+    fn render_turn_fold_header(
+        &self,
+        fold: &TurnFold,
+        expanded: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let duration = fold
+            .starts_at_prompt()
+            .then(|| {
+                self.entry_view_state
+                    .read(cx)
+                    .turn_duration(fold.prompt_entry_ix)
+            })
+            .flatten();
+        let fold_start = fold.entries.start;
+
+        div().px(TEXT_INSET).pt(ROW_GAP).child(
+            ActivityRow::new(("turn-fold", fold.prompt_entry_ix), "Worked")
+                .when_some(duration, |row, duration| {
+                    row.details(format!("for {}", work_duration_label(duration)))
+                })
+                .expanded(expanded)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let fold = TurnFold::containing(this.thread.read(cx), fold_start, cx);
+                    if let Some(fold) = fold {
+                        this.toggle_turn_fold(&fold, window, cx);
+                    }
+                })),
+        )
+    }
+
+    fn toggle_turn_fold(&mut self, fold: &TurnFold, window: &mut Window, cx: &mut Context<Self>) {
+        self.entry_view_state.update(cx, |state, _cx| {
+            state.toggle_turn_fold_expansion(fold);
+        });
+        self.list_state.remeasure_items(fold.entries.clone());
+        self.refresh_thread_search(window, cx);
+        cx.notify();
+    }
+
+    fn render_unfolded_entry(
+        &self,
+        entry_ix: usize,
+        total_entries: usize,
+        entry: &AgentThreadEntry,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let is_indented = entry.is_indented();
         let is_first_indented = is_indented
             && self
@@ -127,12 +220,33 @@ impl ThreadView {
                 prompt
             }
             AgentThreadEntry::AssistantMessage(message) => {
-                match self.render_assistant_message(entry_ix, total_entries, message, window, cx) {
-                    Some(response) => response,
-                    None => {
-                        assistant_message_is_blank = true;
-                        Empty.into_any()
-                    }
+                match ActivityGroup::containing(self.thread.read(cx), entry_ix, cx) {
+                    // The message keeps its place, and its turn's controls, while its group is
+                    // collapsed.
+                    Some(group) => self
+                        .render_activity_group_member(
+                            entry_ix,
+                            total_entries,
+                            entry,
+                            &group,
+                            window,
+                            cx,
+                        )
+                        .unwrap_or_else(|| Empty.into_any()),
+                    None => match self.render_assistant_message(
+                        entry_ix,
+                        total_entries,
+                        message,
+                        ROW_GAP,
+                        window,
+                        cx,
+                    ) {
+                        Some(response) => response,
+                        None => {
+                            assistant_message_is_blank = true;
+                            Empty.into_any()
+                        }
+                    },
                 }
             }
             AgentThreadEntry::ToolCall(tool_call) => {
@@ -140,20 +254,32 @@ impl ThreadView {
                     return Empty.into_any();
                 }
 
-                let session_id = self.thread.read(cx).session_id();
-                let focus_handle = self.focus_handle(cx);
-                let tool_call =
-                    match ExploreGroup::containing(self.thread.read(cx).entries(), entry_ix, cx) {
-                        Some(group) => self.render_explore_group_member(
-                            session_id,
-                            entry_ix,
-                            tool_call,
-                            group,
-                            &focus_handle,
-                            window,
-                            cx,
-                        ),
-                        None => Some(self.render_any_tool_call(
+                let entry_focus_handle = self
+                    .entry_view_state
+                    .read(cx)
+                    .entry(entry_ix)
+                    .and_then(|entry| entry.focus_handle(cx));
+                match ActivityGroup::containing(self.thread.read(cx), entry_ix, cx) {
+                    Some(group) => match self.render_activity_group_member(
+                        entry_ix,
+                        total_entries,
+                        entry,
+                        &group,
+                        window,
+                        cx,
+                    ) {
+                        Some(member) => match entry_focus_handle {
+                            Some(handle) => {
+                                div().w_full().track_focus(&handle).child(member).into_any()
+                            }
+                            None => member,
+                        },
+                        None => Empty.into_any(),
+                    },
+                    None => {
+                        let session_id = self.thread.read(cx).session_id();
+                        let focus_handle = self.focus_handle(cx);
+                        let tool_call = self.render_any_tool_call(
                             session_id,
                             entry_ix,
                             tool_call,
@@ -161,18 +287,12 @@ impl ThreadView {
                             ToolCallLayout::Standalone,
                             window,
                             cx,
-                        )),
-                    };
-                let entry_focus_handle = self
-                    .entry_view_state
-                    .read(cx)
-                    .entry(entry_ix)
-                    .and_then(|entry| entry.focus_handle(cx));
-
-                match (tool_call, entry_focus_handle) {
-                    (Some(tool_call), Some(handle)) => tool_call.track_focus(&handle).into_any(),
-                    (Some(tool_call), None) => tool_call.into_any(),
-                    (None, _) => Empty.into_any(),
+                        );
+                        match entry_focus_handle {
+                            Some(handle) => tool_call.track_focus(&handle).into_any(),
+                            None => tool_call.into_any(),
+                        }
+                    }
                 }
             }
             AgentThreadEntry::Elicitation(elicitation_id) => {
@@ -284,7 +404,7 @@ impl ThreadView {
 
         let comments_editor = self.thread_feedback.comments_editor.clone();
 
-        let primary = if entry_ix + 1 == total_entries {
+        if entry_ix + 1 == total_entries {
             let last_assistant_index = thread
                 .read(cx)
                 .entries()
@@ -307,30 +427,6 @@ impl ThreadView {
                 .when_some(comments_editor, |this, editor| {
                     this.child(Self::render_feedback_feedback_editor(editor, cx))
                 })
-                .into_any_element()
-        } else {
-            primary
-        };
-
-        if let Some(editing_index) = self.editing_message
-            && editing_index < entry_ix
-        {
-            let is_subagent = self.is_subagent();
-
-            let backdrop = div()
-                .id(("backdrop", entry_ix))
-                .size_full()
-                .absolute()
-                .inset_0()
-                .bg(cx.theme().colors().panel_background)
-                .opacity(0.8)
-                .block_mouse_except_scroll()
-                .on_click(cx.listener(Self::cancel_editing));
-
-            div()
-                .relative()
-                .child(primary)
-                .when(!is_subagent, |this| this.child(backdrop))
                 .into_any_element()
         } else {
             primary
@@ -487,11 +583,13 @@ impl ThreadView {
         )
     }
 
-    fn render_assistant_message(
+    /// Renders an assistant message with `top_gap` between it and the row above.
+    pub(super) fn render_assistant_message(
         &self,
         entry_ix: usize,
         total_entries: usize,
         message: &AssistantMessage,
+        top_gap: Pixels,
         window: &Window,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
@@ -537,7 +635,7 @@ impl ThreadView {
         Some(
             v_flex()
                 .px(TEXT_INSET)
-                .pt(ROW_GAP)
+                .pt(top_gap)
                 .when(is_last, |this| this.pb_4())
                 .w_full()
                 .gap(ROW_GAP)
@@ -701,12 +799,15 @@ impl ThreadView {
             })
             .flatten();
 
-        TurnFooter::new(last_turn_tokens.into_iter().chain(last_turn_clock))
-            .children(feedback_buttons)
-            .children(copy_response_button)
-            .child(scroll_to_recent_user_prompt)
-            .children(scroll_to_top)
-            .into_any_element()
+        TurnFooter::new(
+            ("turn-footer", entry_ix),
+            last_turn_tokens.into_iter().chain(last_turn_clock),
+        )
+        .children(feedback_buttons)
+        .children(copy_response_button)
+        .child(scroll_to_recent_user_prompt)
+        .children(scroll_to_top)
+        .into_any_element()
     }
 
     pub(super) fn render_generating(&self, confirmation: bool, cx: &App) -> impl IntoElement {
@@ -844,8 +945,15 @@ impl ThreadView {
             }
         }
 
+        let duration = (!is_streaming)
+            .then(|| entry_view_state.thought_duration(key))
+            .flatten();
+
         let panel_bg = cx.theme().colors().panel_background;
         let header = ActivityRow::new(header_id, if is_streaming { "Thinking" } else { "Thought" })
+            .when_some(duration, |row, duration| {
+                row.details(thought_duration_label(duration))
+            })
             .running(is_streaming)
             .expanded(is_open)
             .on_click(cx.listener(move |this, _event: &ClickEvent, window, cx| {
@@ -1025,8 +1133,18 @@ pub(super) fn transcript_markdown_style(window: &Window, cx: &App) -> MarkdownSt
 
     style.base_text_style.color = shades.primary;
     style.base_text_style.line_height = relative(LINE_HEIGHT);
+    // Rendered text takes its size from the elements around it rather than from the base
+    // style, and the transcript's rows are sized in rems, which the panel scales.
+    style.container_style.text.font_size = Some(font_size.into());
     style.paragraph_line_height = relative(LINE_HEIGHT);
-    style.paragraph_spacing = px(16.);
+    // Margins add up rather than collapse, so every kind of block gets the same space below it
+    // and none above, to keep blocks evenly apart.
+    let block_spacing = px(16.);
+    style.paragraph_spacing = block_spacing;
+    style.table_spacing = block_spacing.into();
+    style.rule_spacing_above = Some(px(0.));
+    style.code_block.margin.top = Some(px(0.).into());
+    style.code_block.margin.bottom = Some(block_spacing.into());
     // The last item's own spacing comes on top, for 18px below a list.
     style.list_spacing = px(10.);
     style.list_item_spacing = px(8.).into();
@@ -1149,6 +1267,7 @@ impl RenderOnce for PromptCard {
             .w_full()
             .child(
                 div()
+                    .id("surface")
                     .w_full()
                     .px_3()
                     .map(|this| {
@@ -1183,6 +1302,7 @@ impl RenderOnce for PromptCard {
             .when_some(self.actions, |this, actions| {
                 this.child(
                     h_flex()
+                        .id("actions")
                         .absolute()
                         .top_neg_3p5()
                         .right_2()
@@ -1198,6 +1318,34 @@ impl RenderOnce for PromptCard {
     }
 }
 
+/// How long the agent thought, to the nearest second, as in "16s".
+fn thought_duration_label(duration: Duration) -> String {
+    let milliseconds = duration.as_millis();
+    if milliseconds < 500 {
+        "briefly".to_string()
+    } else {
+        format!("{}s", (milliseconds + 500) / 1000)
+    }
+}
+
+/// How long a turn took, rounded up to the second, as in "2m 15s".
+fn work_duration_label(duration: Duration) -> String {
+    let seconds = (duration.as_secs() + u64::from(duration.subsec_nanos() > 0)).max(1);
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        match seconds % 60 {
+            0 => format!("{}m", seconds / 60),
+            remainder => format!("{}m {remainder}s", seconds / 60),
+        }
+    } else {
+        match seconds % 3600 / 60 {
+            0 => format!("{}h", seconds / 3600),
+            minutes => format!("{}h {minutes}m", seconds / 3600),
+        }
+    }
+}
+
 /// A line in the transcript for something the agent did: what it did, such as "Read", and the
 /// details, such as which file.
 #[derive(IntoElement)]
@@ -1205,6 +1353,7 @@ pub(super) struct ActivityRow {
     id: ElementId,
     action: SharedString,
     details: Option<SharedString>,
+    diff_stats: Option<DiffStats>,
     running: bool,
     failed: bool,
     expanded: Option<bool>,
@@ -1219,6 +1368,7 @@ impl ActivityRow {
             id: id.into(),
             action: action.into(),
             details: None,
+            diff_stats: None,
             running: false,
             failed: false,
             expanded: None,
@@ -1242,6 +1392,12 @@ impl ActivityRow {
     pub(super) fn details(mut self, details: impl Into<SharedString>) -> Self {
         let details = details.into();
         self.details = (!details.is_empty()).then_some(details);
+        self
+    }
+
+    /// Adds the lines added and removed after the details.
+    pub(super) fn diff_stats(mut self, diff_stats: DiffStats) -> Self {
+        self.diff_stats = Some(diff_stats);
         self
     }
 
@@ -1287,7 +1443,9 @@ impl ActivityRow {
 impl RenderOnce for ActivityRow {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let shades = text_shades(cx);
-        let danger = KitTheme::global(cx).danger;
+        let theme = KitTheme::global(cx);
+        let danger = theme.danger;
+        let success = theme.success;
         let font_size = ThemeSettings::get_global(cx).agent_ui_font_size(cx);
         let group = SharedString::from(format!("activity-row-{}", self.id));
         let clickable = self.on_click.is_some();
@@ -1307,6 +1465,7 @@ impl RenderOnce for ActivityRow {
             .when(clickable, |this| this.cursor_pointer())
             .child(
                 div()
+                    .id("action")
                     .flex_none()
                     .text_color(shades.secondary)
                     .when(clickable, |this| {
@@ -1317,6 +1476,7 @@ impl RenderOnce for ActivityRow {
             .when_some(self.details, |this, details| {
                 this.child(
                     div()
+                        .id("details")
                         .min_w_0()
                         .truncate()
                         .text_color(shades.tertiary)
@@ -1328,6 +1488,23 @@ impl RenderOnce for ActivityRow {
                         .child(details),
                 )
             })
+            .when_some(self.diff_stats, |this, stats| {
+                this.child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_color(success)
+                                .child(format!("+{}", stats.lines_added)),
+                        )
+                        .child(
+                            div()
+                                .text_color(danger)
+                                .child(format!("−{}", stats.lines_removed)),
+                        ),
+                )
+            })
             .when_some(self.expanded, |this, expanded| {
                 let chevron = if expanded {
                     IconName::ChevronDown
@@ -1336,6 +1513,7 @@ impl RenderOnce for ActivityRow {
                 };
                 this.child(
                     div()
+                        .id("chevron")
                         .flex_none()
                         .ml(px(3.))
                         .text_color(shades.tertiary)
@@ -1352,7 +1530,13 @@ impl RenderOnce for ActivityRow {
                 )
             })
             .when_some(self.end_slot, |this, end_slot| {
-                this.child(div().flex_none().visible_on_hover(group).child(end_slot))
+                this.child(
+                    div()
+                        .id("end-slot")
+                        .flex_none()
+                        .visible_on_hover(group)
+                        .child(end_slot),
+                )
             })
             .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip))
             .when_some(self.on_click, |this, on_click| {
@@ -1391,13 +1575,15 @@ impl RenderOnce for TranscriptDivider {
 /// The quiet row under a finished turn, with its stats and actions such as copying the response.
 #[derive(IntoElement)]
 pub(super) struct TurnFooter {
+    id: ElementId,
     stats: Vec<String>,
     children: Vec<AnyElement>,
 }
 
 impl TurnFooter {
-    pub(super) fn new(stats: impl IntoIterator<Item = String>) -> Self {
+    pub(super) fn new(id: impl Into<ElementId>, stats: impl IntoIterator<Item = String>) -> Self {
         Self {
+            id: id.into(),
             stats: stats.into_iter().collect(),
             children: Vec::new(),
         }
@@ -1413,6 +1599,7 @@ impl ParentElement for TurnFooter {
 impl RenderOnce for TurnFooter {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         h_flex()
+            .id(self.id)
             .w_full()
             .pt_2()
             // Lines the icons, rather than the buttons around them, up with the text.

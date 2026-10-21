@@ -344,6 +344,10 @@ impl ThreadSearchBar {
         let thread = self.thread.read(cx);
         let entry_view_state = self.entry_view_state.read(cx);
         for (entry_ix, entry) in thread.entries().iter().enumerate() {
+            // A collapsed turn or activity group shows a summary in place of its entries.
+            if entry_view_state.is_entry_folded(thread, entry_ix, cx) {
+                continue;
+            }
             match entry {
                 // Past user messages render through `MessageEditor`, not markdown.
                 AgentThreadEntry::UserMessage(_) => {
@@ -361,13 +365,6 @@ impl ThreadSearchBar {
                         snapshot,
                     });
                 }
-                // A collapsed explore group shows a count in place of its tool calls.
-                AgentThreadEntry::ToolCall(_)
-                    if entry_view_state.is_collapsed_into_explore_group(
-                        thread.entries(),
-                        entry_ix,
-                        cx,
-                    ) => {}
                 _ => {
                     for markdown in collect_markdowns(entry_ix, entry, &entry_view_state, cx) {
                         let source = markdown.read(cx).source().clone();

@@ -474,6 +474,7 @@ impl ThreadView {
                                 )
                                 .child(
                                     h_flex()
+                                        .id("file-actions")
                                         .visible_on_hover("edited-code")
                                         .absolute()
                                         .top_0()
@@ -680,6 +681,7 @@ impl ThreadView {
                     )
                     .child(if editor_focused {
                         h_flex()
+                            .id(("queue-entry-actions", index))
                             .gap_0p5()
                             .ml_auto()
                             .justify_end()
@@ -725,6 +727,7 @@ impl ThreadView {
                             )
                     } else {
                         h_flex()
+                            .id(("queue-entry-actions", index))
                             .when(!is_next, |this| this.visible_on_hover("queue_entry"))
                             .gap_0p5()
                             .ml_auto()
