@@ -62,6 +62,27 @@ Profiles are stored under `agent.profiles` in your settings.
 
 The exact model IDs and provider IDs depend on your configured [LLM Providers](./llm-providers.md).
 
+### Profile Prompts {#profile-prompts}
+
+A profile can add its own text to the Zed Agent's system prompt. `prompt_prefix` is placed right after the agent's opening description, which suits a persona or a role for the profile. `prompt_suffix` is placed at the end of the prompt, after your `AGENTS.md` and project rules.
+
+```json [settings]
+{
+  "agent": {
+    "profiles": {
+      "reviewer": {
+        "name": "Reviewer",
+        "tools": { "read_file": true, "grep": true },
+        "prompt_prefix": "You are reviewing changes, not making them. Report problems with file and line references.",
+        "prompt_suffix": "End every answer with a one-line verdict."
+      }
+    }
+  }
+}
+```
+
+A profile you create from another one copies its prompts.
+
 ## Profiles vs. Tool Permissions {#profiles-vs-tool-permissions}
 
 | Setting          | Controls                                                              | Example                                   |

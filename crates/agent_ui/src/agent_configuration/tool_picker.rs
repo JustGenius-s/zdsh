@@ -312,6 +312,14 @@ impl PickerDelegate for ToolPickerDelegate {
                             })
                             .collect(),
                         default_model: default_profile.default_model.clone(),
+                        prompt_prefix: default_profile
+                            .prompt_prefix
+                            .as_ref()
+                            .map(ToString::to_string),
+                        prompt_suffix: default_profile
+                            .prompt_suffix
+                            .as_ref()
+                            .map(ToString::to_string),
                     });
 
                 if let Some(server_id) = server_id {

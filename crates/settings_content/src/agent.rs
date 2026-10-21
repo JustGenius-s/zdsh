@@ -622,6 +622,12 @@ pub struct AgentProfileContent {
     pub context_servers: IndexMap<Arc<str>, ContextServerPresetContent>,
     /// The default language model selected when using this profile.
     pub default_model: Option<LanguageModelSelection>,
+    /// Text added to the Zed Agent's system prompt right after its opening
+    /// description, for example to give the agent a persona for this profile.
+    pub prompt_prefix: Option<String>,
+    /// Text added to the end of the Zed Agent's system prompt when this
+    /// profile is active.
+    pub prompt_suffix: Option<String>,
 }
 
 #[with_fallible_options]

@@ -70,6 +70,12 @@ impl AgentProfile {
         let default_model = base_profile
             .as_ref()
             .and_then(|profile| profile.default_model.clone());
+        let prompt_prefix = base_profile
+            .as_ref()
+            .and_then(|profile| profile.prompt_prefix.clone());
+        let prompt_suffix = base_profile
+            .as_ref()
+            .and_then(|profile| profile.prompt_suffix.clone());
 
         let profile_settings = AgentProfileSettings {
             name: name.into(),
@@ -77,6 +83,8 @@ impl AgentProfile {
             enable_all_context_servers,
             context_servers,
             default_model,
+            prompt_prefix,
+            prompt_suffix,
         };
 
         update_settings_file(fs, cx, {
@@ -109,6 +117,10 @@ pub struct AgentProfileSettings {
     pub context_servers: IndexMap<Arc<str>, ContextServerPreset>,
     /// Default language model to apply when this profile becomes active.
     pub default_model: Option<LanguageModelSelection>,
+    /// Text added to the system prompt right after the agent's opening description.
+    pub prompt_prefix: Option<SharedString>,
+    /// Text added to the end of the system prompt.
+    pub prompt_suffix: Option<SharedString>,
 }
 
 impl AgentProfileSettings {
@@ -183,6 +195,8 @@ impl AgentProfileSettings {
                     })
                     .collect(),
                 default_model: self.default_model.clone(),
+                prompt_prefix: self.prompt_prefix.as_ref().map(ToString::to_string),
+                prompt_suffix: self.prompt_suffix.as_ref().map(ToString::to_string),
             },
         );
 
@@ -198,6 +212,8 @@ impl From<AgentProfileContent> for AgentProfileSettings {
             enable_all_context_servers,
             context_servers,
             default_model,
+            prompt_prefix,
+            prompt_suffix,
         } = content;
 
         Self {
@@ -209,6 +225,8 @@ impl From<AgentProfileContent> for AgentProfileSettings {
                 .map(|(server_id, preset)| (server_id, preset.into()))
                 .collect(),
             default_model,
+            prompt_prefix: prompt_prefix.map(Into::into),
+            prompt_suffix: prompt_suffix.map(Into::into),
         }
     }
 }
@@ -240,6 +258,8 @@ mod tests {
             enable_all_context_servers,
             context_servers,
             default_model: None,
+            prompt_prefix: None,
+            prompt_suffix: None,
         }
     }
 

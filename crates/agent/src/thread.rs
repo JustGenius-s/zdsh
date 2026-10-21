@@ -4696,12 +4696,15 @@ impl Thread {
         log::trace!("Building request messages from {} thread messages", end_ix);
 
         let user_agents_md = UserAgentsMd::global(cx).and_then(|s| s.content().cloned());
+        let profile = AgentSettings::get_global(cx).profiles.get(&self.profile_id);
         let system_prompt = SystemPromptTemplate {
             project: self.project_context.read(cx),
             available_tools,
             model_name: self.model().map(|m| m.name().0.to_string()),
             date: Local::now().format("%Y-%m-%d").to_string(),
             user_agents_md,
+            prompt_prefix: profile.and_then(|profile| profile.prompt_prefix.clone()),
+            prompt_suffix: profile.and_then(|profile| profile.prompt_suffix.clone()),
             sandboxing: crate::sandboxing::sandboxing_enabled_for_project(
                 self.project.read(cx),
                 cx,

@@ -46,6 +46,11 @@ pub struct SystemPromptTemplate<'a> {
     /// Contents of the user-global `~/.config/zed/AGENTS.md` file (or the
     /// platform equivalent), if present and non-empty.
     pub user_agents_md: Option<SharedString>,
+    /// The active profile's `prompt_prefix`, rendered right after the agent's
+    /// opening description.
+    pub prompt_prefix: Option<SharedString>,
+    /// The active profile's `prompt_suffix`, rendered at the end of the prompt.
+    pub prompt_suffix: Option<SharedString>,
     /// Whether agent-run terminal commands are wrapped in an OS-level
     /// sandbox for this thread. When `true` — and the `terminal` tool is
     /// in `available_tools` — the rendered prompt describes the sandbox's
@@ -105,6 +110,8 @@ mod tests {
             model_name: Some("test-model".to_string()),
             date: "2026-01-01".to_string(),
             user_agents_md: None,
+            prompt_prefix: None,
+            prompt_suffix: None,
             sandboxing: false,
             is_linux: false,
             is_windows: false,
@@ -115,6 +122,45 @@ mod tests {
         assert!(rendered.contains("Today's Date: 2026-01-01"));
         assert!(rendered.contains("## Fixing Diagnostics"));
         assert!(rendered.contains("test-model"));
+    }
+
+    #[test]
+    fn test_system_prompt_renders_profile_prompts_and_web_guidance() {
+        let project = prompt_store::ProjectContext::default();
+        let render = |available_tools: Vec<SharedString>,
+                      prompt_prefix: Option<SharedString>,
+                      prompt_suffix: Option<SharedString>| {
+            SystemPromptTemplate {
+                project: &project,
+                available_tools,
+                model_name: None,
+                date: "2026-01-01".to_string(),
+                user_agents_md: None,
+                prompt_prefix,
+                prompt_suffix,
+                sandboxing: false,
+                is_linux: false,
+                is_windows: false,
+            }
+            .render(&Templates::new())
+            .unwrap()
+        };
+
+        let rendered = render(
+            vec!["fetch".into()],
+            Some("You review <code> & docs.".into()),
+            Some("Answer in French.".into()),
+        );
+        let identity = rendered.find("You are the Zed coding agent").unwrap();
+        let prefix = rendered.find("You review <code> & docs.").unwrap();
+        let communication = rendered.find("## Communication").unwrap();
+        assert!(identity < prefix && prefix < communication);
+        assert!(rendered.trim_end().ends_with("Answer in French."));
+        assert!(rendered.contains("## Web Content"));
+
+        let rendered = render(vec!["grep".into()], None, None);
+        assert!(!rendered.contains("## Web Content"));
+        assert!(!rendered.contains("Answer in French."));
     }
 
     #[test]
@@ -138,6 +184,8 @@ mod tests {
             model_name: Some("test-model".to_string()),
             date: "2026-01-01".to_string(),
             user_agents_md: Some("always be concise".into()),
+            prompt_prefix: None,
+            prompt_suffix: None,
             sandboxing: false,
             is_linux: false,
             is_windows: false,
@@ -167,6 +215,8 @@ mod tests {
             model_name: Some("test-model".to_string()),
             date: "2026-01-01".to_string(),
             user_agents_md: None,
+            prompt_prefix: None,
+            prompt_suffix: None,
             sandboxing: false,
             is_linux: false,
             is_windows: false,
@@ -200,6 +250,8 @@ mod tests {
             model_name: Some("test-model".to_string()),
             date: "2026-01-01".to_string(),
             user_agents_md: None,
+            prompt_prefix: None,
+            prompt_suffix: None,
             sandboxing: true,
             is_linux: false,
             is_windows: false,
@@ -243,6 +295,8 @@ mod tests {
             model_name: Some("test-model".to_string()),
             date: "2026-01-01".to_string(),
             user_agents_md: None,
+            prompt_prefix: None,
+            prompt_suffix: None,
             sandboxing: true,
             is_linux: true,
             is_windows: false,
@@ -276,6 +330,8 @@ mod tests {
             model_name: Some("test-model".to_string()),
             date: "2026-01-01".to_string(),
             user_agents_md: None,
+            prompt_prefix: None,
+            prompt_suffix: None,
             sandboxing: true,
             is_linux: false,
             is_windows: true,
@@ -306,6 +362,8 @@ mod tests {
             model_name: Some("test-model".to_string()),
             date: "2026-01-01".to_string(),
             user_agents_md: None,
+            prompt_prefix: None,
+            prompt_suffix: None,
             sandboxing: true,
             is_linux: false,
             is_windows: false,
@@ -328,6 +386,8 @@ mod tests {
             model_name: Some("test-model".to_string()),
             date: "2026-01-01".to_string(),
             user_agents_md: None,
+            prompt_prefix: None,
+            prompt_suffix: None,
             sandboxing: true,
             is_linux: false,
             is_windows: false,
@@ -348,6 +408,8 @@ mod tests {
             model_name: Some("test-model".to_string()),
             date: "2026-01-01".to_string(),
             user_agents_md: None,
+            prompt_prefix: None,
+            prompt_suffix: None,
             sandboxing: false,
             is_linux: false,
             is_windows: false,
@@ -366,6 +428,8 @@ mod tests {
             model_name: Some("test-model".to_string()),
             date: "2026-01-01".to_string(),
             user_agents_md: None,
+            prompt_prefix: None,
+            prompt_suffix: None,
             sandboxing: false,
             is_linux: false,
             is_windows: false,
