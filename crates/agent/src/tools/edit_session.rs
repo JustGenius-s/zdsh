@@ -1044,6 +1044,31 @@ async fn ensure_buffer_saved(
         (current, dirty)
     });
 
+    // Edits only apply where their old text still matches, but an overwrite
+    // replaces everything, so it must not discard content the agent never saw.
+    if mode == EditSessionMode::Write
+        && let Some(current) = current_mtime
+    {
+        match last_read_mtime {
+            None => {
+                return Err(format!(
+                    "{} already exists and you have not read it in this conversation. Read it \
+                     with `read_file` before overwriting it, or use `edit_file` to change part \
+                     of it.",
+                    abs_path.display()
+                ));
+            }
+            Some(last_read) if last_read != current => {
+                return Err(format!(
+                    "{} has changed on disk since you last read it. Read it again before \
+                     overwriting it, so you don't discard those changes.",
+                    abs_path.display()
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+
     if is_dirty {
         resolve_dirty_buffer(buffer, mode, context, event_stream, cx).await?;
     }

@@ -113,6 +113,7 @@ The Zed Agent adjusts what the model sees from its tools. The tool cards in the 
 
 - **Oversized results**: when a single tool result has more than about 50 KB of text, the model receives its start and end with a note about the omitted middle, and is told to call the tool again with narrower arguments if it needs that part.
 - **Repeated calls**: when the model sends the same call, with the same arguments, in 3, 5 and 8 responses in a row, the result carries a reminder to check the previous result and change approach. Calls made side by side in one response don't count against each other, and a new message from you starts over.
+- **Overwriting files**: `write_file` won't replace an existing file the agent hasn't read, created or edited in the conversation, or one that changed on disk since. The agent is asked to read the file first. Targeted edits with `edit_file` only apply where the text they replace still matches the file.
 
 ## External Agents {#external-agents}
 

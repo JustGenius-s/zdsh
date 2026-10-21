@@ -21,6 +21,8 @@ const DEFAULT_UI_TEXT: &str = "Writing file";
 ///
 /// To make granular edits to an existing file, prefer the `edit_file` tool instead.
 ///
+/// To overwrite an existing file, first read it with `read_file` in this conversation. If it changed on disk since then, read it again.
+///
 /// Before using this tool, verify the directory path is correct (only applicable when creating new files). Use the `list_directory` tool to verify the parent directory exists and is the correct location
 ///
 /// The only supported path outside the project is `~/.agents/skills` or a descendant, for global agent skills.
@@ -335,6 +337,70 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_overwrite_requires_current_read(cx: &mut TestAppContext) {
+        let (write_tool, project, action_log, fs, _thread) =
+            setup_test(cx, json!({"read.txt": "read"})).await;
+        fs.insert_file(path!("/root/unread.txt"), "unread".into())
+            .await;
+        cx.run_until_parked();
+
+        let write = |path: &str, cx: &mut TestAppContext| {
+            let input = WriteFileToolInput {
+                path: path.into(),
+                content: "new content".into(),
+            };
+            cx.update(|cx| {
+                write_tool.clone().run(
+                    ToolInput::resolved(input),
+                    ToolCallEventStream::test().0,
+                    cx,
+                )
+            })
+        };
+
+        let EditSessionOutput::Error { error, .. } =
+            write("root/unread.txt", cx).await.unwrap_err()
+        else {
+            panic!("expected an error");
+        };
+        assert!(error.contains("you have not read it"), "{error}");
+        assert_eq!(
+            fs.load(path!("/root/unread.txt").as_ref()).await.unwrap(),
+            "unread"
+        );
+
+        fs.save(
+            path!("/root/read.txt").as_ref(),
+            &"changed elsewhere".into(),
+            language::LineEnding::Unix,
+        )
+        .await
+        .unwrap();
+        cx.run_until_parked();
+        let EditSessionOutput::Error { error, .. } = write("root/read.txt", cx).await.unwrap_err()
+        else {
+            panic!("expected an error");
+        };
+        assert!(error.contains("has changed on disk"), "{error}");
+
+        let buffer = project
+            .update(cx, |project, cx| {
+                project.open_local_buffer(path!("/root/read.txt"), cx)
+            })
+            .await
+            .unwrap();
+        action_log.update(cx, |log, cx| log.buffer_read(buffer, cx));
+        assert!(matches!(
+            write("root/read.txt", cx).await,
+            Ok(EditSessionOutput::Success { .. })
+        ));
+        assert!(matches!(
+            write("root/new.txt", cx).await,
+            Ok(EditSessionOutput::Success { .. })
+        ));
+    }
+
+    #[gpui::test]
     async fn test_streaming_write_global_skill_file(cx: &mut TestAppContext) {
         init_test(cx);
 
@@ -585,6 +651,7 @@ mod tests {
         let _handle = project.update(cx, |project, cx| {
             project.register_buffer_with_language_servers(&buffer, cx)
         });
+        action_log.update(cx, |log, cx| log.buffer_read(buffer.clone(), cx));
 
         const UNFORMATTED_CONTENT: &str = "fn main() {println!(\"Hello!\");}\
 ";
@@ -1402,6 +1469,8 @@ mod tests {
             )
         });
         let action_log = thread.read_with(cx, |thread, _| thread.action_log().clone());
+        // Overwriting requires a prior read; tests of overwriting start with every file read.
+        mark_all_files_read(&project, &action_log, cx).await;
         let write_tool = Arc::new(WriteFileTool::new(
             project.clone(),
             thread.downgrade(),
@@ -1409,6 +1478,36 @@ mod tests {
             language_registry,
         ));
         (write_tool, project, action_log, fs, thread)
+    }
+
+    async fn mark_all_files_read(
+        project: &Entity<Project>,
+        action_log: &Entity<ActionLog>,
+        cx: &mut TestAppContext,
+    ) {
+        let project_paths = project.read_with(cx, |project, cx| {
+            project
+                .worktrees(cx)
+                .flat_map(|worktree| {
+                    let worktree = worktree.read(cx);
+                    let worktree_id = worktree.id();
+                    worktree
+                        .files(false, 0)
+                        .map(|entry| ProjectPath {
+                            worktree_id,
+                            path: entry.path.clone(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        });
+        for project_path in project_paths {
+            let buffer = project
+                .update(cx, |project, cx| project.open_buffer(project_path, cx))
+                .await
+                .unwrap();
+            action_log.update(cx, |log, cx| log.buffer_read(buffer, cx));
+        }
     }
 
     async fn setup_test(
