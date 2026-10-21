@@ -2,9 +2,7 @@
 //!
 //! The public API is intentionally platform-neutral. Internally, macOS uses
 //! Seatbelt (`sandbox-exec`), Linux uses Bubblewrap (`bwrap`), and Windows uses
-//! Bubblewrap inside WSL. Restricted-network policies are enforced by an
-//! in-process HTTP/HTTPS proxy (the `http_proxy` crate) that this crate
-//! constructs and owns; callers only describe intent via [`SandboxPolicy`].
+//! Bubblewrap inside WSL. Callers only describe intent via [`SandboxPolicy`].
 
 use std::{
     collections::HashMap,
@@ -12,10 +10,6 @@ use std::{
     path::{Path, PathBuf},
     process::Output,
 };
-
-use http_proxy::ProxyHandle;
-#[cfg(not(target_os = "windows"))]
-use http_proxy::{Allowlist, HostPattern, ProxyConfig, ProxyEvent, UpstreamProxy};
 
 #[cfg(target_os = "linux")]
 mod linux_bubblewrap;
@@ -80,11 +74,13 @@ impl From<PathBuf> for SandboxFilesystemLocation {
 
 /// What a command is allowed to do, expressed as intent. This is the entire
 /// public configuration surface; how each policy is enforced (Seatbelt rules,
-/// Bubblewrap flags, a loopback proxy, …) is an implementation detail.
+/// Bubblewrap flags, …) is an implementation detail.
+///
+/// The sandbox confines filesystem writes only. Sandboxed commands always have
+/// the host's network access.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxPolicy {
     pub fs: SandboxFsPolicy,
-    pub network: SandboxNetPolicy,
 }
 
 /// Filesystem policy for a sandboxed command.
@@ -103,18 +99,6 @@ pub enum SandboxFsPolicy {
         writable_paths: Vec<HostFilesystemLocation>,
         protected_paths: Vec<HostFilesystemLocation>,
     },
-}
-
-/// Outbound-network policy for a sandboxed command.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SandboxNetPolicy {
-    /// Allow unrestricted outbound network access.
-    Unrestricted,
-    /// Block all outbound network access.
-    Blocked,
-    /// Allow outbound HTTP(S) only to these hostnames (exact hosts or
-    /// leading-`*.` subdomain wildcards), enforced by an in-process proxy.
-    Restricted { allowed_domains: Vec<String> },
 }
 
 /// Host paths that should remain readable but not writable, even when they fall
@@ -159,19 +143,18 @@ pub fn wsl_distro_registered() -> bool {
 }
 
 impl SandboxPolicy {
-    /// Combine two policy layers. Filesystem/network grants are unioned into the
+    /// Combine two policy layers. Filesystem grants are unioned into the
     /// least-restrictive policy that satisfies both layers, while protected paths
     /// within restricted filesystem policies are unioned so every layer's
     /// protected subtrees remain protected.
     pub fn merge(self, other: SandboxPolicy) -> SandboxPolicy {
         SandboxPolicy {
             fs: self.fs.merge(other.fs),
-            network: self.network.merge(other.network),
         }
     }
 
     /// Replace the protected paths in the filesystem policy, keeping writable
-    /// paths and network policy unchanged.
+    /// paths unchanged.
     pub fn with_protected_paths(mut self, protected_paths: Vec<HostFilesystemLocation>) -> Self {
         match &mut self.fs {
             SandboxFsPolicy::Unrestricted {
@@ -344,32 +327,6 @@ impl SandboxFsPolicy {
     }
 }
 
-impl SandboxNetPolicy {
-    /// Unrestricted access dominates and `Blocked` is the identity; otherwise the
-    /// allowed domains union.
-    pub fn merge(self, other: SandboxNetPolicy) -> SandboxNetPolicy {
-        match (self, other) {
-            (SandboxNetPolicy::Unrestricted, _) | (_, SandboxNetPolicy::Unrestricted) => {
-                SandboxNetPolicy::Unrestricted
-            }
-            (SandboxNetPolicy::Blocked, other) | (other, SandboxNetPolicy::Blocked) => other,
-            (
-                SandboxNetPolicy::Restricted {
-                    allowed_domains: mut a,
-                },
-                SandboxNetPolicy::Restricted { allowed_domains: b },
-            ) => {
-                for domain in b {
-                    if !a.contains(&domain) {
-                        a.push(domain);
-                    }
-                }
-                SandboxNetPolicy::Restricted { allowed_domains: a }
-            }
-        }
-    }
-}
-
 /// A command and its execution environment, before sandbox wrapping.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CommandAndArgs {
@@ -412,9 +369,10 @@ pub enum SandboxError {
     WslUnavailable(String),
     /// The requested sandbox policy is not supported on this platform.
     UnsupportedPolicy(String),
-    /// The sandbox request is invalid (e.g. a malformed allowed-domain).
+    /// The sandbox request is invalid (e.g. a writable path inside a protected
+    /// path).
     InvalidRequest(String),
-    /// An I/O error occurred (e.g. spawning the network proxy).
+    /// An I/O error occurred (e.g. starting the bind validator).
     Io(String),
     /// Any other sandbox setup failure.
     Other(String),
@@ -461,33 +419,13 @@ struct FsSetup {
     protected_paths: Vec<HostFilesystemLocation>,
 }
 
-/// Resolved network plan derived from [`SandboxNetPolicy`]. For the restricted
-/// case the allowlist is parsed up front; the proxy itself is spawned lazily on
-/// the first [`Sandbox::wrap`] so its upstream-proxy chaining can read the
-/// command's environment.
-enum NetSetup {
-    Unrestricted,
-    Blocked,
-    // Restricted networking is rejected up front on Windows, so this variant is
-    // never constructed there.
-    #[cfg(not(target_os = "windows"))]
-    Restricted {
-        allowlist: Allowlist,
-    },
-}
-
-/// A live sandbox: it owns the per-policy resources (the network proxy, and on
-/// macOS the temporary Seatbelt policy file) and produces sandboxed command
-/// invocations via [`Sandbox::wrap`] / [`Sandbox::execute`].
+/// A live sandbox: it owns the per-policy resources (on Linux the bind
+/// validator, and on macOS the temporary Seatbelt policy file) and produces
+/// sandboxed command invocations via [`Sandbox::wrap`] / [`Sandbox::execute`].
 ///
-/// Keep it alive for as long as commands wrapped by it are running; dropping it
-/// tears down the proxy.
+/// Keep it alive for as long as commands wrapped by it are running.
 pub struct Sandbox {
     fs: FsSetup,
-    network: NetSetup,
-    /// In-process network proxy for the restricted-network case, spawned on the
-    /// first `wrap`. Dropped on a background thread (the join blocks).
-    proxy: Option<ProxyHandle>,
     /// Linux only: the host endpoint that hands the in-sandbox validator the
     /// captured `O_PATH` fds over a unix socket. Runs entirely in-process (a
     /// short-lived background thread, never a separate process) and is owned by
@@ -512,10 +450,8 @@ pub struct Sandbox {
 impl Sandbox {
     /// Create a sandbox for `policy`, validating it for the current platform.
     ///
-    /// This does not spawn the network proxy or probe `bwrap`; the proxy is
-    /// created lazily on the first [`Sandbox::wrap`] (so it can chain through an
-    /// upstream proxy named in the command's environment), and `bwrap`
-    /// availability is checked separately via [`Sandbox::can_create`].
+    /// This does not probe `bwrap`; its availability is checked separately via
+    /// [`Sandbox::can_create`].
     pub fn new(policy: SandboxPolicy) -> Result<Self, SandboxError> {
         let fs = match policy.fs {
             SandboxFsPolicy::Unrestricted { protected_paths } => FsSetup {
@@ -539,18 +475,8 @@ impl Sandbox {
             }
         };
 
-        let network = match policy.network {
-            SandboxNetPolicy::Unrestricted => NetSetup::Unrestricted,
-            SandboxNetPolicy::Blocked => NetSetup::Blocked,
-            SandboxNetPolicy::Restricted { allowed_domains } => {
-                resolve_restricted_network(&allowed_domains)?
-            }
-        };
-
         Ok(Self {
             fs,
-            network,
-            proxy: None,
             #[cfg(target_os = "linux")]
             validation_fd_sender: None,
             #[cfg(target_os = "windows")]
@@ -572,8 +498,8 @@ impl Sandbox {
     }
 
     /// Check whether the platform sandbox can be created on this host without
-    /// actually building a command or spawning the proxy. On Linux this runs a
-    /// brief `bwrap` probe (call it off the main thread).
+    /// actually building a command. On Linux this runs a brief `bwrap` probe
+    /// (call it off the main thread).
     ///
     /// This answers a purely *environmental* question — is a bwrap sandbox
     /// possible here at all (a usable `bwrap`, plus the unprivileged user
@@ -586,19 +512,11 @@ impl Sandbox {
         #[cfg(target_os = "linux")]
         {
             let permissions = linux_bubblewrap::SandboxPermissions {
-                network: linux_probe_network(&policy.network),
                 allow_fs_write: matches!(policy.fs, SandboxFsPolicy::Unrestricted { .. }),
             };
             linux_bubblewrap::check_can_create_sandbox(permissions).map_err(map_linux_status)
         }
-        #[cfg(target_os = "windows")]
-        {
-            if matches!(policy.network, SandboxNetPolicy::Restricted { .. }) {
-                return Err(unsupported_restricted_network_on_windows());
-            }
-            Ok(())
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        #[cfg(not(target_os = "linux"))]
         {
             let _ = policy;
             Ok(())
@@ -607,7 +525,7 @@ impl Sandbox {
 
     /// Transform `command` into the invocation that runs it inside this sandbox.
     /// The returned [`WrappedCommand`] is plain data; keep `self` alive while it
-    /// runs (it owns the proxy and any per-command policy file).
+    /// runs (it owns the bind validator and any per-command policy file).
     pub async fn wrap(&mut self, command: &CommandAndArgs) -> Result<WrappedCommand, SandboxError> {
         #[cfg(target_os = "linux")]
         {
@@ -647,62 +565,6 @@ impl Sandbox {
             .map_err(|error| SandboxError::Io(error.to_string()))
     }
 
-    /// Drop this sandbox on the *current* thread, tearing down the network proxy
-    /// inline (its `Drop` joins a listener thread after a loopback wakeup
-    /// connect).
-    ///
-    /// The blanket [`Drop`] impl instead offloads that join to a fresh thread,
-    /// so an accidental drop on a latency-sensitive thread (e.g. the UI thread)
-    /// can never block. Call this only when you are *already* on a background
-    /// thread or executor and want the teardown to finish before the surrounding
-    /// task completes — it avoids spawning a throwaway thread to do work the
-    /// current one can do.
-    pub fn drop_on_current_thread(mut self) {
-        // Drop the proxy here, synchronously, so the `Drop` impl below sees
-        // `None` and doesn't spawn a thread to repeat the work.
-        drop(self.proxy.take());
-    }
-
-    /// Spawn the restricted-network proxy if it isn't running yet, point the
-    /// command env at it, and return its `(port, host socket path)`. Returns
-    /// `None` for non-restricted network policies.
-    #[cfg(not(target_os = "windows"))]
-    fn ensure_restricted_proxy(
-        &mut self,
-        env: &mut HashMap<String, String>,
-    ) -> Result<Option<(u16, Option<PathBuf>)>, SandboxError> {
-        let NetSetup::Restricted { allowlist } = &self.network else {
-            return Ok(None);
-        };
-
-        if self.proxy.is_none() {
-            let upstream = upstream_proxy_from_env(env);
-            let (events_tx, events_rx) = futures::channel::mpsc::unbounded();
-            let config = ProxyConfig {
-                allowlist: allowlist.clone(),
-                upstream,
-                events: events_tx,
-            };
-            #[cfg(target_os = "linux")]
-            let handle = ProxyHandle::spawn_unix_temp(config);
-            #[cfg(not(target_os = "linux"))]
-            let handle = ProxyHandle::spawn(config);
-            let handle = handle.map_err(|error| {
-                SandboxError::Io(format!("failed to start network proxy: {error:#}"))
-            })?;
-            spawn_proxy_event_logger(events_rx);
-            self.proxy = Some(handle);
-        }
-
-        let proxy = self
-            .proxy
-            .as_ref()
-            .expect("proxy was just ensured to be present");
-        let port = proxy.port();
-        apply_proxy_env(env, port);
-        Ok(Some((port, proxy.socket_path().map(PathBuf::from))))
-    }
-
     /// Return the protected paths for the enforcement layer. Even with broad
     /// filesystem writes, protected paths remain readable but not writable.
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -712,20 +574,7 @@ impl Sandbox {
 
     #[cfg(target_os = "linux")]
     fn wrap_linux(&mut self, command: &CommandAndArgs) -> Result<WrappedCommand, SandboxError> {
-        let mut env = command.env.clone();
-        let proxy = self.ensure_restricted_proxy(&mut env)?;
-
-        let network = match &self.network {
-            NetSetup::Unrestricted => linux_bubblewrap::NetworkAccess::All,
-            NetSetup::Blocked => linux_bubblewrap::NetworkAccess::None,
-            NetSetup::Restricted { .. } => linux_bubblewrap::NetworkAccess::LocalhostPort(
-                proxy.as_ref().map(|(port, _)| *port).unwrap_or(0),
-            ),
-        };
-        let proxy_socket_path = proxy.as_ref().and_then(|(_, socket)| socket.clone());
-
         let permissions = linux_bubblewrap::SandboxPermissions {
-            network,
             allow_fs_write: self.fs.allow_fs_write,
         };
         let protected_paths = self.protected_paths();
@@ -802,7 +651,6 @@ impl Sandbox {
             command.cwd.as_deref(),
             &command.program,
             &command.args,
-            proxy_socket_path.as_deref(),
             validation_socket,
         )
         .map_err(map_anyhow_error)?;
@@ -810,26 +658,14 @@ impl Sandbox {
         Ok(WrappedCommand {
             program,
             args,
-            env,
+            env: command.env.clone(),
             cwd: command.cwd.clone(),
         })
     }
 
     #[cfg(target_os = "macos")]
     fn wrap_macos(&mut self, command: &CommandAndArgs) -> Result<WrappedCommand, SandboxError> {
-        let mut env = command.env.clone();
-        let proxy = self.ensure_restricted_proxy(&mut env)?;
-
-        let network = match &self.network {
-            NetSetup::Unrestricted => macos_seatbelt::NetworkAccess::All,
-            NetSetup::Blocked => macos_seatbelt::NetworkAccess::None,
-            NetSetup::Restricted { .. } => macos_seatbelt::NetworkAccess::LocalhostPort(
-                proxy.as_ref().map(|(port, _)| *port).unwrap_or(0),
-            ),
-        };
-
         let permissions = macos_seatbelt::SandboxPermissions {
-            network,
             allow_fs_write: self.fs.allow_fs_write,
         };
         let protected_paths = self.protected_paths();
@@ -865,7 +701,7 @@ impl Sandbox {
         Ok(WrappedCommand {
             program,
             args,
-            env,
+            env: command.env.clone(),
             cwd: command.cwd.clone(),
         })
     }
@@ -875,9 +711,7 @@ impl Sandbox {
         &mut self,
         command: &CommandAndArgs,
     ) -> Result<WrappedCommand, SandboxError> {
-        // Restricted host network access is rejected at `new` time on Windows.
         let permissions = windows_wsl::SandboxPermissions {
-            allow_network: matches!(self.network, NetSetup::Unrestricted),
             allow_fs_write: self.fs.allow_fs_write,
         };
         let writable_paths = self
@@ -916,19 +750,6 @@ impl Sandbox {
     }
 }
 
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        // Dropping a `ProxyHandle` joins its listener thread after a loopback
-        // wakeup connect; do that off whatever (possibly UI) thread is dropping
-        // the sandbox so a slow shutdown can't stall it. Callers already on a
-        // background executor should prefer `drop_on_current_thread` to avoid
-        // this throwaway thread.
-        if let Some(proxy) = self.proxy.take() {
-            std::thread::spawn(move || drop(proxy));
-        }
-    }
-}
-
 /// Argv flag that marks the WSL-side sandbox-helper re-exec. Shared so the
 /// Windows side (`windows_wsl`, which builds the `wsl.exe` invocation) and the
 /// Linux side (`linux_bubblewrap`, which parses it inside WSL) can't drift.
@@ -944,8 +765,8 @@ pub(crate) const WSL_SANDBOX_RESOLVE_FLAG: &str = "--wsl-sandbox-resolve-path";
 ///
 /// Two Linux re-exec modes funnel through here, neither of which returns if it
 /// matches:
-/// - the in-sandbox launcher (bind validator + restricted-network bridge), run
-///   by bwrap before the real command; and
+/// - the in-sandbox launcher (bind validator + seccomp filter), run by bwrap
+///   before the real command; and
 /// - the WSL-side helper, run inside WSL to capture fds + drive bwrap (the moral
 ///   equivalent of `Sandbox::wrap` on native Linux).
 ///
@@ -956,159 +777,6 @@ pub fn run_sandbox_launcher_if_invoked() {
     {
         linux_bubblewrap::run_launcher_if_invoked();
         linux_bubblewrap::run_wsl_helper_if_invoked();
-    }
-}
-
-// The createability probe only needs to know whether a sandbox *can* be built
-// (namespaces, `bwrap` availability); it does not enforce any grant, so it runs
-// with no writable binds rather than re-deriving paths from the opaque
-// locations.
-
-#[cfg(not(target_os = "windows"))]
-fn resolve_restricted_network(allowed_domains: &[String]) -> Result<NetSetup, SandboxError> {
-    let mut patterns = Vec::with_capacity(allowed_domains.len());
-    for domain in allowed_domains {
-        let pattern = HostPattern::parse(domain).map_err(|error| {
-            SandboxError::InvalidRequest(format!("invalid network host '{domain}': {error}"))
-        })?;
-        patterns.push(pattern);
-    }
-    Ok(NetSetup::Restricted {
-        allowlist: Allowlist::from_patterns(patterns),
-    })
-}
-
-#[cfg(target_os = "windows")]
-fn resolve_restricted_network(_allowed_domains: &[String]) -> Result<NetSetup, SandboxError> {
-    Err(unsupported_restricted_network_on_windows())
-}
-
-#[cfg(target_os = "windows")]
-fn unsupported_restricted_network_on_windows() -> SandboxError {
-    SandboxError::UnsupportedPolicy(
-        "restricted host network access is not yet supported for Windows sandboxes".to_string(),
-    )
-}
-
-#[cfg(target_os = "linux")]
-fn linux_probe_network(network: &SandboxNetPolicy) -> linux_bubblewrap::NetworkAccess {
-    match network {
-        SandboxNetPolicy::Unrestricted => linux_bubblewrap::NetworkAccess::All,
-        SandboxNetPolicy::Blocked => linux_bubblewrap::NetworkAccess::None,
-        // The probe only needs the network namespace flag, not a real port.
-        SandboxNetPolicy::Restricted { .. } => linux_bubblewrap::NetworkAccess::LocalhostPort(0),
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn upstream_proxy_from_env(env: &HashMap<String, String>) -> Option<UpstreamProxy> {
-    let url = first_nonempty_env_value(
-        env,
-        &[
-            "HTTPS_PROXY",
-            "https_proxy",
-            "ALL_PROXY",
-            "all_proxy",
-            "HTTP_PROXY",
-            "http_proxy",
-        ],
-    );
-    let no_proxy = first_nonempty_env_value(env, &["NO_PROXY", "no_proxy"]);
-    match UpstreamProxy::parse(url, no_proxy) {
-        Ok(upstream) => upstream,
-        Err(error) => {
-            log::warn!("[sandbox/network] ignoring upstream proxy env: {error:#}");
-            None
-        }
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn first_nonempty_env_value<'a>(
-    env: &'a HashMap<String, String>,
-    names: &[&str],
-) -> Option<&'a str> {
-    for name in names {
-        if let Some(value) = env.get(*name)
-            && !value.trim().is_empty()
-        {
-            return Some(value.as_str());
-        }
-    }
-    None
-}
-
-/// Point the child's proxy env vars at the in-process proxy and strip any
-/// inherited `NO_PROXY`.
-///
-/// Both upper- and lower-case forms are set because some clients (notably curl
-/// on macOS) only honor the lowercase variant. `NO_PROXY` is blanked so all
-/// egress goes through our proxy unconditionally: an inherited `NO_PROXY`
-/// matching an allowlisted host would make the client attempt a direct
-/// connection, which the sandbox blocks — surfacing as a confusing "connection
-/// refused" instead of a clean policy decision.
-#[cfg(not(target_os = "windows"))]
-fn apply_proxy_env(env: &mut HashMap<String, String>, port: u16) {
-    let url = format!("http://127.0.0.1:{port}");
-    for key in [
-        "HTTPS_PROXY",
-        "https_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ] {
-        env.insert(key.to_string(), url.clone());
-    }
-    for key in ["NO_PROXY", "no_proxy"] {
-        env.insert(key.to_string(), String::new());
-    }
-}
-
-/// Drain the proxy's event channel on a background thread, logging each event.
-/// v1 surfacing only; future integrations (UI, telemetry) can replace this.
-/// The thread exits when the proxy is dropped and the channel closes.
-#[cfg(not(target_os = "windows"))]
-fn spawn_proxy_event_logger(events: futures::channel::mpsc::UnboundedReceiver<ProxyEvent>) {
-    std::thread::spawn(move || {
-        futures::executor::block_on(async move {
-            use futures::StreamExt as _;
-            let mut events = events;
-            while let Some(event) = events.next().await {
-                log_proxy_event(&event);
-            }
-        });
-    });
-}
-
-#[cfg(not(target_os = "windows"))]
-fn log_proxy_event(event: &ProxyEvent) {
-    match event {
-        ProxyEvent::Ready { .. } => {}
-        ProxyEvent::RequestAttempt {
-            host,
-            port,
-            method,
-            outcome,
-        } => {
-            log::debug!(
-                "[sandbox/network] {} {host}:{port} → {outcome:?}",
-                method.as_str()
-            );
-        }
-        ProxyEvent::RequestCompleted {
-            host,
-            port,
-            method,
-            bytes_to_remote,
-            bytes_from_remote,
-            duration_ms,
-        } => {
-            log::debug!(
-                "[sandbox/network] completed {} {host}:{port} sent={bytes_to_remote} recv={bytes_from_remote} duration={duration_ms}ms",
-                method.as_str(),
-            );
-        }
     }
 }
 
@@ -1154,7 +822,6 @@ mod tests {
                     writable_paths: vec![writable_path],
                     protected_paths: vec![protected_git.clone()],
                 },
-                network: SandboxNetPolicy::Blocked,
             });
 
             assert!(matches!(result, Err(SandboxError::InvalidRequest(_))));
@@ -1186,7 +853,6 @@ mod tests {
                 writable_paths: vec![writable_displayed_inside_git],
                 protected_paths: vec![protected_git],
             },
-            network: SandboxNetPolicy::Blocked,
         })
         .expect("captured writable fd is outside protected metadata");
     }
@@ -1238,78 +904,6 @@ mod tests {
                 protected_paths: vec![location(&dir_d), location(&dir_c)],
             }
         );
-    }
-
-    #[test]
-    fn net_merge_unrestricted_dominates_blocked_is_identity_else_unions() {
-        let hosts = |list: &[&str]| SandboxNetPolicy::Restricted {
-            allowed_domains: list.iter().map(|s| s.to_string()).collect(),
-        };
-        assert_eq!(
-            hosts(&["a.com", "b.com"]).merge(hosts(&["b.com", "c.com"])),
-            hosts(&["a.com", "b.com", "c.com"])
-        );
-        assert_eq!(
-            SandboxNetPolicy::Blocked.merge(hosts(&["a.com"])),
-            hosts(&["a.com"])
-        );
-        assert_eq!(
-            hosts(&["a.com"]).merge(SandboxNetPolicy::Blocked),
-            hosts(&["a.com"])
-        );
-        assert_eq!(
-            SandboxNetPolicy::Blocked.merge(SandboxNetPolicy::Blocked),
-            SandboxNetPolicy::Blocked
-        );
-        assert_eq!(
-            hosts(&["a.com"]).merge(SandboxNetPolicy::Unrestricted),
-            SandboxNetPolicy::Unrestricted
-        );
-    }
-
-    #[test]
-    fn upstream_proxy_from_env_uses_precedence_and_no_proxy() {
-        let mut env = HashMap::new();
-        env.insert("HTTPS_PROXY".to_string(), " ".to_string());
-        env.insert("https_proxy".to_string(), "http://lower:1111".to_string());
-        env.insert("ALL_PROXY".to_string(), "http://all:2222".to_string());
-        env.insert("HTTP_PROXY".to_string(), "http://http:3333".to_string());
-        env.insert("NO_PROXY".to_string(), "".to_string());
-        env.insert("no_proxy".to_string(), "internal.example".to_string());
-
-        let upstream = upstream_proxy_from_env(&env).expect("should configure an upstream");
-        assert_eq!(upstream.host, "lower");
-        assert_eq!(upstream.port, 1111);
-        assert!(upstream.bypasses("internal.example", 443));
-        assert!(!upstream.bypasses("zed.dev", 443));
-    }
-
-    #[test]
-    fn apply_proxy_env_points_vars_at_proxy_and_blanks_no_proxy() {
-        let mut env = HashMap::new();
-        env.insert("HTTPS_PROXY".to_string(), "http://corp:3128".to_string());
-        env.insert("NO_PROXY".to_string(), "internal.example".to_string());
-        env.insert("PATH".to_string(), "/usr/bin".to_string());
-
-        apply_proxy_env(&mut env, 54321);
-
-        for key in [
-            "HTTPS_PROXY",
-            "https_proxy",
-            "HTTP_PROXY",
-            "http_proxy",
-            "ALL_PROXY",
-            "all_proxy",
-        ] {
-            assert_eq!(
-                env.get(key).map(String::as_str),
-                Some("http://127.0.0.1:54321")
-            );
-        }
-        for key in ["NO_PROXY", "no_proxy"] {
-            assert_eq!(env.get(key).map(String::as_str), Some(""));
-        }
-        assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin"));
     }
 }
 

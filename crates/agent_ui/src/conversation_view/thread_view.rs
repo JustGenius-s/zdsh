@@ -24,7 +24,7 @@ use agent::{
 use agent_skills::MAX_SKILL_DESCRIPTION_LEN;
 use cloud_api_types::{SubmitAgentThreadFeedbackBody, SubmitAgentThreadFeedbackCommentsBody};
 use editor::actions::OpenExcerpts;
-use sandbox::{SandboxFsPolicy, SandboxNetPolicy, SandboxPolicy};
+use sandbox::{SandboxFsPolicy, SandboxPolicy};
 
 use crate::completion_provider::{AvailableSkill, PromptLocalCommand, pluralize};
 use crate::message_editor::SharedSessionCapabilities;
@@ -576,7 +576,6 @@ pub struct ThreadView {
     pub session_capabilities: SharedSessionCapabilities,
     pub expanded_tool_call_raw_inputs: HashSet<acp_v2::ToolCallId>,
     collapsed_sandbox_authorization_details: HashSet<acp_v2::ToolCallId>,
-    collapsed_sandbox_network_details: HashSet<acp_v2::ToolCallId>,
     /// Sandbox escalation prompts whose "surprising Unicode" warning the user
     /// has explicitly acknowledged. Until a prompt's tool call is in this set,
     /// its allow buttons stay disabled. See [`Self::sandbox_confusable_findings`].
@@ -1062,7 +1061,6 @@ impl ThreadView {
             thread_feedback: Default::default(),
             expanded_tool_call_raw_inputs: HashSet::default(),
             collapsed_sandbox_authorization_details: HashSet::default(),
-            collapsed_sandbox_network_details: HashSet::default(),
             acknowledged_confusable_warnings: HashSet::default(),
             subagent_scroll_handles: RefCell::new(HashMap::default()),
             edits_expanded: false,
@@ -5006,7 +5004,6 @@ impl ThreadView {
 #[derive(Clone)]
 struct SandboxPolicyDisplay {
     fs: SandboxFsDisplay,
-    network: SandboxNetPolicy,
 }
 
 /// The filesystem write-access portion of a [`SandboxPolicyDisplay`].
@@ -5044,10 +5041,7 @@ impl SandboxPolicyDisplay {
                     .collect(),
             ),
         };
-        SandboxPolicyDisplay {
-            fs,
-            network: policy.network.clone(),
-        }
+        SandboxPolicyDisplay { fs }
     }
 }
 
@@ -5096,25 +5090,16 @@ fn augment_settings_sandbox_policy(
             SandboxFsDisplay::Restricted(entries)
         }
     };
-    SandboxPolicyDisplay {
-        fs,
-        network: policy.network.clone(),
-    }
+    SandboxPolicyDisplay { fs }
 }
 
 fn sandbox_section(title: &str, policy: &SandboxPolicyDisplay, show_empty: bool) -> SandboxSection {
     let write_empty = fs_grants_nothing(&policy.fs);
-    let network_empty = network_grants_nothing(&policy.network);
     let mut section = SandboxSection::new(title.to_string());
 
     if show_empty || !write_empty {
         section =
             section.group(SandboxGroup::new("Write Access").rows(sandbox_fs_rows(&policy.fs)));
-    }
-
-    if show_empty || !network_empty {
-        section = section
-            .group(SandboxGroup::new("Network Access").rows(sandbox_network_rows(&policy.network)));
     }
 
     section
@@ -5123,19 +5108,11 @@ fn sandbox_section(title: &str, policy: &SandboxPolicyDisplay, show_empty: bool)
 /// Whether a policy grants nothing worth surfacing, used to decide whether to
 /// show the per-thread overrides section at all.
 fn sandbox_policy_grants_nothing(policy: &SandboxPolicyDisplay) -> bool {
-    fs_grants_nothing(&policy.fs) && network_grants_nothing(&policy.network)
+    fs_grants_nothing(&policy.fs)
 }
 
 fn fs_grants_nothing(fs: &SandboxFsDisplay) -> bool {
     matches!(fs, SandboxFsDisplay::Restricted(entries) if entries.is_empty())
-}
-
-fn network_grants_nothing(network: &SandboxNetPolicy) -> bool {
-    match network {
-        SandboxNetPolicy::Blocked => true,
-        SandboxNetPolicy::Restricted { allowed_domains } => allowed_domains.is_empty(),
-        SandboxNetPolicy::Unrestricted => false,
-    }
 }
 
 /// Rows for the write-access group: a message for the "all"/"none" cases, or one
@@ -5158,22 +5135,6 @@ fn sandbox_fs_rows(fs: &SandboxFsDisplay) -> Vec<SandboxRow> {
                     SandboxRow::path(PathBuf::from("/tmp (isolated)"))
                 }
             })
-            .collect(),
-    }
-}
-
-/// Rows for the network-access group: a message for the "all"/"none" cases, or
-/// one row per allowed domain.
-fn sandbox_network_rows(network: &SandboxNetPolicy) -> Vec<SandboxRow> {
-    match network {
-        SandboxNetPolicy::Unrestricted => vec![SandboxRow::message("All domains (unrestricted)")],
-        SandboxNetPolicy::Blocked => vec![SandboxRow::message("None")],
-        SandboxNetPolicy::Restricted { allowed_domains } if allowed_domains.is_empty() => {
-            vec![SandboxRow::message("None")]
-        }
-        SandboxNetPolicy::Restricted { allowed_domains } => allowed_domains
-            .iter()
-            .map(|domain| SandboxRow::domain(domain.clone()))
             .collect(),
     }
 }
@@ -5978,15 +5939,13 @@ impl ThreadView {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let has_network = details.network_all_hosts || !details.network_hosts.is_empty();
         let has_write = details.allow_fs_write_all || !details.write_paths.is_empty();
         // The dedicated Windows-drive warning prompt is only ever sent while the
         // warning is enabled, so key the banner on the prompt itself. Keeping it
         // visible even after the "Don't show again" checkbox flips the setting
         // avoids the card disappearing out from under the user mid-decision.
         let has_windows_fs_warning = details.warn_windows_fs;
-        if !has_network
-            && !has_write
+        if !has_write
             && !details.unsandboxed
             && details.reason.is_empty()
             && !has_windows_fs_warning
@@ -5999,104 +5958,6 @@ impl ThreadView {
         } else {
             Vec::new()
         };
-
-        let network_section = has_network.then(|| {
-            let summary = if details.network_all_hosts {
-                "any host".to_string()
-            } else {
-                format!(
-                    "{} {}",
-                    details.network_hosts.len(),
-                    if details.network_hosts.len() == 1 {
-                        "host"
-                    } else {
-                        "hosts"
-                    }
-                )
-            };
-            let has_host_list = !details.network_all_hosts && !details.network_hosts.is_empty();
-            let is_open = !self
-                .collapsed_sandbox_network_details
-                .contains(tool_call_id);
-            let mut hosts = details.network_hosts.clone();
-            hosts.sort();
-
-            v_flex()
-                .child(
-                    h_flex()
-                        .id(("sandbox-network-details-header", entry_ix))
-                        // Align text with the allow/deny button icons below,
-                        // which sit at p_1 (container) + Base04 (button) ≈ px_2.
-                        .px_2()
-                        .py_1()
-                        .justify_between()
-                        .when(has_host_list, |this| {
-                            this.cursor_pointer()
-                                .hover(|style| style.bg(cx.theme().colors().element_hover))
-                                .on_click(cx.listener({
-                                    let tool_call_id = tool_call_id.clone();
-                                    move |this, _event, _window, cx| {
-                                        if this
-                                            .collapsed_sandbox_network_details
-                                            .remove(&tool_call_id)
-                                        {
-                                            cx.notify();
-                                            return;
-                                        }
-
-                                        this.collapsed_sandbox_network_details
-                                            .insert(tool_call_id.clone());
-                                        cx.notify();
-                                    }
-                                }))
-                        })
-                        .child(
-                            h_flex()
-                                .gap_1()
-                                .child(
-                                    Label::new("Network access")
-                                        .size(LabelSize::Small)
-                                        .color(Color::Muted),
-                                )
-                                .child(
-                                    Label::new("•")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Disabled),
-                                )
-                                .child(
-                                    Label::new(summary)
-                                        .size(LabelSize::Small)
-                                        .color(Color::Muted),
-                                ),
-                        )
-                        .when(has_host_list, |this| {
-                            this.child(
-                                Disclosure::new(("sandbox-network-details", entry_ix), is_open)
-                                    .opened_icon(IconName::ChevronUp)
-                                    .closed_icon(IconName::ChevronDown),
-                            )
-                        }),
-                )
-                .when(has_host_list && is_open, |this| {
-                    this.child(v_flex().children(hosts.iter().enumerate().map(
-                        |(host_ix, host)| {
-                            h_flex()
-                                .min_w_0()
-                                .px_2()
-                                .py_1p5()
-                                .bg(cx.theme().colors().editor_background)
-                                .when(host_ix < hosts.len() - 1, |this| {
-                                    this.border_b_1().border_color(cx.theme().colors().border)
-                                })
-                                .child(
-                                    Label::new(host.clone())
-                                        .size(LabelSize::XSmall)
-                                        .buffer_font(cx),
-                                )
-                        },
-                    )))
-                })
-        });
 
         let write_section = has_write.then(|| {
             let summary = if details.allow_fs_write_all {
@@ -6218,7 +6079,7 @@ impl ThreadView {
         });
 
         // The command stays in the tool-call title above; here we show what the
-        // command is asking for (paths / domains) and the agent's reason.
+        // command is asking for (paths) and the agent's reason.
         v_flex()
             .border_t_1()
             .border_color(self.tool_card_border_color(cx))
@@ -6233,7 +6094,6 @@ impl ThreadView {
                     cx,
                 ))
             })
-            .children(network_section)
             .children(write_section)
             .children(unsandboxed_section)
             .children(reason_section)
@@ -6254,22 +6114,15 @@ impl ThreadView {
             .into_any_element()
     }
 
-    /// Scan the hosts and paths in a sandbox escalation request for surprising
-    /// Unicode characters (homoglyphs, invisible characters, bidi overrides).
-    /// Returns, for each offending value, the display string shown to the user
-    /// and the distinct suspicious characters it contains. Hosts are decoded from
-    /// Punycode first, so the display string is the Unicode form the user should
-    /// scrutinize. Empty when nothing is surprising.
+    /// Scan the paths in a sandbox escalation request for surprising Unicode
+    /// characters (homoglyphs, invisible characters, bidi overrides). Returns,
+    /// for each offending value, the display string shown to the user and the
+    /// distinct suspicious characters it contains. Empty when nothing is
+    /// surprising.
     fn sandbox_confusable_findings(
         details: &SandboxAuthorizationDetails,
     ) -> Vec<(String, Vec<unicode_confusables::SuspiciousChar>)> {
         let mut findings = Vec::new();
-        for host in &details.network_hosts {
-            let (decoded, suspicious) = unicode_confusables::scan_host(host);
-            if !suspicious.is_empty() {
-                findings.push((decoded, suspicious));
-            }
-        }
         for granted in &details.write_paths {
             // Scan both the requested path and the resolved target (when they
             // differ), so a confusable in either the shown request or the real
@@ -6318,7 +6171,7 @@ impl ThreadView {
         !Self::sandbox_confusable_findings(details).is_empty()
     }
 
-    /// Red banner warning that a requested domain or path contains surprising
+    /// Red banner warning that a requested path contains surprising
     /// Unicode characters, with a checkbox the user must tick to unlock the
     /// allow buttons. See [`Self::sandbox_confusables_block_allow`].
     fn render_sandbox_confusable_warning(

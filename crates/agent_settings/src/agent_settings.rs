@@ -274,12 +274,6 @@ impl Default for AgentProfileId {
 /// [`compile_sandbox_permissions`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxPermissions {
-    /// Allow sandboxed commands to reach any host over the network.
-    pub allow_all_hosts: bool,
-    /// Hosts sandboxed commands may always reach, in canonical form (exact
-    /// hostnames or leading-`*.` subdomain wildcards). Parsed/validated where
-    /// consumed (`agent::sandboxing`).
-    pub network_hosts: Vec<String>,
     pub allow_fs_write_all: bool,
     /// Persistently run agent terminal commands outside the OS sandbox. This is
     /// the model-facing "off switch": when set, the sandboxed terminal tool is
@@ -292,8 +286,8 @@ pub struct SandboxPermissions {
     /// Directory subtree grants, each paired with the canonical
     /// (symlink-resolved) target established when the grant was approved.
     pub write_paths: Vec<settings::GrantedWritePath>,
-    /// Whether sandbox escalation prompts warn about domains or write paths
-    /// that contain potentially confusable Unicode characters (homoglyphs,
+    /// Whether sandbox escalation prompts warn about write paths that contain
+    /// potentially confusable Unicode characters (homoglyphs,
     /// invisible characters, or bidirectional overrides). Enabled by default.
     pub warn_confusable_unicode: bool,
     /// Whether to warn (Windows/WSL only) when a sandbox grant targets a file on
@@ -305,8 +299,6 @@ pub struct SandboxPermissions {
 impl Default for SandboxPermissions {
     fn default() -> Self {
         Self {
-            allow_all_hosts: false,
-            network_hosts: Vec::new(),
             allow_fs_write_all: false,
             allow_unsandboxed: false,
             write_paths: Vec::new(),
@@ -720,14 +712,7 @@ fn compile_sandbox_permissions(
         insert_granted_subtree(&mut write_paths, granted);
     }
 
-    let network_hosts = content
-        .network_hosts
-        .map(|hosts| hosts.0)
-        .unwrap_or_default();
-
     SandboxPermissions {
-        allow_all_hosts: content.allow_all_hosts.unwrap_or(false),
-        network_hosts,
         allow_fs_write_all: content.allow_fs_write_all.unwrap_or(false),
         allow_unsandboxed: content.allow_unsandboxed.unwrap_or(false),
         write_paths,
@@ -860,7 +845,7 @@ fn compile_regex_rules(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{TestAppContext, UpdateGlobal, px};
+    use gpui::{UpdateGlobal, px};
     use serde_json::json;
     use settings::{SettingsStore, ToolPermissionMode, ToolPermissionsContent};
     use std::path::PathBuf;
@@ -1320,8 +1305,6 @@ mod tests {
     #[test]
     fn test_sandbox_permissions_parsing_and_pruning() {
         let json = json!({
-            "allow_all_hosts": true,
-            "network_hosts": ["github.com", "*.npmjs.org"],
             "allow_unsandboxed": true,
             "write_paths": [
                 "/tmp/build/cache",
@@ -1333,11 +1316,6 @@ mod tests {
         let content: settings::SandboxPermissionsContent = serde_json::from_value(json).unwrap();
         let permissions = compile_sandbox_permissions(Some(content));
 
-        assert!(permissions.allow_all_hosts);
-        assert_eq!(
-            permissions.network_hosts,
-            vec!["github.com".to_string(), "*.npmjs.org".to_string()]
-        );
         assert!(!permissions.allow_fs_write_all);
         assert!(permissions.allow_unsandboxed);
         assert_eq!(

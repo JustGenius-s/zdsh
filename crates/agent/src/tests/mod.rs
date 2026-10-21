@@ -8324,12 +8324,6 @@ async fn test_fetch_tool_allow_rule_skips_confirmation(cx: &mut TestAppContext) 
                 invalid_patterns: vec![],
             },
         );
-        // The fetch tool also gates on the shared per-host network grant, so
-        // grant docs.rs to keep this URL fully silent.
-        settings
-            .sandbox_permissions
-            .network_hosts
-            .push("docs.rs".into());
         agent_settings::AgentSettings::override_global(settings, cx);
     });
 
@@ -8349,14 +8343,14 @@ async fn test_fetch_tool_allow_rule_skips_confirmation(cx: &mut TestAppContext) 
     let event = rx.try_recv();
     assert!(
         !matches!(event, Ok(Ok(ThreadEvent::ToolCallAuthorization(_)))),
-        "expected no authorization request for allowed and granted docs.rs URL"
+        "expected no authorization request for allowed docs.rs URL"
     );
 }
 
-/// A fetch to a host that hasn't been granted network access prompts for the
-/// shared per-host sandbox grant, even when the tool itself is allowed.
+/// Fetch asks for no per-host approval: once the tool itself is allowed, a
+/// public host is fetched without any prompt.
 #[gpui::test]
-async fn test_fetch_tool_prompts_for_ungranted_host(cx: &mut TestAppContext) {
+async fn test_fetch_tool_needs_no_host_grant(cx: &mut TestAppContext) {
     init_test(cx);
 
     cx.update(|cx| {
@@ -8374,83 +8368,44 @@ async fn test_fetch_tool_prompts_for_ungranted_host(cx: &mut TestAppContext) {
         agent_settings::AgentSettings::override_global(settings, cx);
     });
 
-    let http_client = gpui::http_client::FakeHttpClient::with_200_response();
-
-    #[allow(clippy::arc_with_non_send_sync)]
-    let tool = Arc::new(crate::FetchTool::new(http_client));
-    let (event_stream, mut rx) = crate::ToolCallEventStream::test();
-
-    let input: crate::FetchToolInput =
-        serde_json::from_value(json!({"url": "https://example.com/page"})).unwrap();
-
-    let _task = cx.update(|cx| tool.run(ToolInput::resolved(input), event_stream, cx));
-
-    cx.run_until_parked();
-
-    let authorization = rx.expect_authorization().await;
-    let details = acp_thread::sandbox_authorization_details_from_meta(
-        &authorization.tool_call.meta.value().cloned(),
-    )
-    .expect("an ungranted host should request a sandbox network grant");
-    assert_eq!(details.network_hosts, vec!["example.com".to_string()]);
-    assert!(!details.network_all_hosts);
-}
-
-/// A host already present in the shared sandbox grants lets a fetch proceed
-/// without any prompt — the same grant the terminal tool records and consults.
-#[gpui::test]
-async fn test_fetch_tool_granted_host_skips_prompt(cx: &mut TestAppContext) {
-    init_test(cx);
-
-    cx.update(|cx| {
-        let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-        // Allow the tool itself so only the shared per-host grant is under test.
-        settings.tool_permissions.tools.insert(
-            FetchTool::NAME.into(),
-            agent_settings::ToolRules {
-                default: Some(settings::ToolPermissionMode::Allow),
-                always_allow: vec![],
-                always_deny: vec![],
-                always_confirm: vec![],
-                invalid_patterns: vec![],
-            },
-        );
-        settings
-            .sandbox_permissions
-            .network_hosts
-            .push("example.com".into());
-        agent_settings::AgentSettings::override_global(settings, cx);
+    let http_client = gpui::http_client::FakeHttpClient::create(|_| async move {
+        Ok(gpui::http_client::Response::builder()
+            .status(200)
+            .header("content-type", "text/plain")
+            .body("page content".into())
+            .unwrap())
     });
 
-    let http_client = gpui::http_client::FakeHttpClient::with_200_response();
-
     #[allow(clippy::arc_with_non_send_sync)]
     let tool = Arc::new(crate::FetchTool::new(http_client));
     let (event_stream, mut rx) = crate::ToolCallEventStream::test();
 
     let input: crate::FetchToolInput =
-        serde_json::from_value(json!({"url": "https://example.com/page"})).unwrap();
+        serde_json::from_value(json!({"url": "https://93.184.215.14/page"})).unwrap();
 
-    let _task = cx.update(|cx| tool.run(ToolInput::resolved(input), event_stream, cx));
-
-    cx.run_until_parked();
+    let task = cx.update(|cx| tool.run(ToolInput::resolved(input), event_stream, cx));
+    let result = task.await;
+    assert_eq!(
+        result.expect("a public host should be fetched"),
+        "page content"
+    );
 
     let event = rx.try_recv();
     assert!(
         !matches!(event, Ok(Ok(ThreadEvent::ToolCallAuthorization(_)))),
-        "expected no authorization request for an already-granted host"
+        "expected no authorization request for a public host"
     );
 }
 
-/// Loopback / IP-literal hosts can't be granted individually, so without
-/// unsandboxed access a fetch to them is refused with guidance to grant it.
+/// Without unsandboxed access, a host that resolves into loopback space is
+/// refused with guidance on how to reach it.
 #[gpui::test]
 async fn test_fetch_tool_refuses_loopback_without_unsandboxed(cx: &mut TestAppContext) {
     init_test(cx);
 
     cx.update(|cx| {
         let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-        // Allow the tool itself so the request reaches the per-host gate.
+        // Allow the tool itself so the request reaches the private-address guard.
         settings.tool_permissions.tools.insert(
             FetchTool::NAME.into(),
             agent_settings::ToolRules {
@@ -8482,9 +8437,8 @@ async fn test_fetch_tool_refuses_loopback_without_unsandboxed(cx: &mut TestAppCo
     );
 }
 
-/// Granting unsandboxed access lifts every fetch restriction, matching the
-/// terminal: even loopback hosts become reachable and no per-host prompt is
-/// requested.
+/// Granting unsandboxed access lifts the private-address guard, matching the
+/// terminal: even loopback hosts become reachable.
 #[gpui::test]
 async fn test_fetch_tool_unsandboxed_lifts_restrictions(cx: &mut TestAppContext) {
     init_test(cx);
@@ -8492,7 +8446,7 @@ async fn test_fetch_tool_unsandboxed_lifts_restrictions(cx: &mut TestAppContext)
     cx.update(|cx| {
         let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
         settings.sandbox_permissions.allow_unsandboxed = true;
-        // Allow the tool itself so only the per-host gate is under test.
+        // Allow the tool itself so only the private-address guard is under test.
         settings.tool_permissions.tools.insert(
             FetchTool::NAME.into(),
             agent_settings::ToolRules {
@@ -8512,8 +8466,7 @@ async fn test_fetch_tool_unsandboxed_lifts_restrictions(cx: &mut TestAppContext)
     let tool = Arc::new(crate::FetchTool::new(http_client));
     let (event_stream, mut rx) = crate::ToolCallEventStream::test();
 
-    // A loopback host that could never be granted individually is reachable,
-    // and no per-host authorization is requested.
+    // A loopback host is reachable, and no authorization is requested.
     let input: crate::FetchToolInput =
         serde_json::from_value(json!({"url": "http://localhost:3000/api"})).unwrap();
 
@@ -8528,11 +8481,10 @@ async fn test_fetch_tool_unsandboxed_lifts_restrictions(cx: &mut TestAppContext)
     );
 }
 
-/// A granted host that redirects to a loopback target must not have that
-/// redirect followed: loopback hosts can't be granted individually, so the hop
-/// is refused just like a direct loopback fetch. This is the redirect variant of
-/// the SSRF protection — the approved domain can't be used to bounce the request
-/// onto the local machine.
+/// A public host that redirects to a loopback target must not have that
+/// redirect followed: the hop is refused just like a direct loopback fetch.
+/// This is the redirect variant of the SSRF protection — a public host can't be
+/// used to bounce the request onto the local machine.
 #[gpui::test]
 async fn test_fetch_tool_refuses_redirect_to_loopback(cx: &mut TestAppContext) {
     init_test(cx);
@@ -8549,10 +8501,6 @@ async fn test_fetch_tool_refuses_redirect_to_loopback(cx: &mut TestAppContext) {
                 invalid_patterns: vec![],
             },
         );
-        settings
-            .sandbox_permissions
-            .network_hosts
-            .push("example.com".into());
         agent_settings::AgentSettings::override_global(settings, cx);
     });
 
@@ -8588,11 +8536,10 @@ async fn test_fetch_tool_refuses_redirect_to_loopback(cx: &mut TestAppContext) {
     );
 }
 
-/// A granted host that redirects to a *different*, ungranted host triggers a
-/// fresh per-host authorization prompt for the redirect target — the redirect is
-/// not silently followed to a host the user never approved.
+/// A redirect to a *different* public host is followed without any prompt; only
+/// the private-address guard applies to each hop.
 #[gpui::test]
-async fn test_fetch_tool_reauthorizes_redirect_to_new_host(cx: &mut TestAppContext) {
+async fn test_fetch_tool_follows_redirect_to_new_host(cx: &mut TestAppContext) {
     init_test(cx);
 
     cx.update(|cx| {
@@ -8607,25 +8554,26 @@ async fn test_fetch_tool_reauthorizes_redirect_to_new_host(cx: &mut TestAppConte
                 invalid_patterns: vec![],
             },
         );
-        settings
-            .sandbox_permissions
-            .network_hosts
-            .push("example.com".into());
         agent_settings::AgentSettings::override_global(settings, cx);
     });
 
     let http_client = gpui::http_client::FakeHttpClient::create(|req| async move {
         let uri = req.uri().to_string();
-        assert!(
-            uri.contains("example.com"),
-            "the ungranted redirect target must not be requested before authorization, \
-             but saw {uri}"
-        );
-        Ok(gpui::http_client::Response::builder()
-            .status(302)
-            .header("location", "https://redirect-target.example/landing")
-            .body("".into())
-            .unwrap())
+        if uri.contains("93.184.215.14") {
+            Ok(gpui::http_client::Response::builder()
+                .status(302)
+                .header("location", "https://8.8.8.8/landing")
+                .body("".into())
+                .unwrap())
+        } else if uri.contains("8.8.8.8") {
+            Ok(gpui::http_client::Response::builder()
+                .status(200)
+                .header("content-type", "text/plain")
+                .body("landing content".into())
+                .unwrap())
+        } else {
+            panic!("unexpected request to {uri}");
+        }
     });
 
     #[allow(clippy::arc_with_non_send_sync)]
@@ -8633,27 +8581,25 @@ async fn test_fetch_tool_reauthorizes_redirect_to_new_host(cx: &mut TestAppConte
     let (event_stream, mut rx) = crate::ToolCallEventStream::test();
 
     let input: crate::FetchToolInput =
-        serde_json::from_value(json!({"url": "https://example.com/start"})).unwrap();
+        serde_json::from_value(json!({"url": "https://93.184.215.14/start"})).unwrap();
 
-    let _task = cx.update(|cx| tool.run(ToolInput::resolved(input), event_stream, cx));
-
-    cx.run_until_parked();
-
-    let authorization = rx.expect_authorization().await;
-    let details = acp_thread::sandbox_authorization_details_from_meta(
-        &authorization.tool_call.meta.value().cloned(),
-    )
-    .expect("a redirect to an ungranted host should request a sandbox network grant");
+    let task = cx.update(|cx| tool.run(ToolInput::resolved(input), event_stream, cx));
+    let result = task.await;
     assert_eq!(
-        details.network_hosts,
-        vec!["redirect-target.example".to_string()]
+        result.expect("a redirect to another public host should succeed"),
+        "landing content"
     );
-    assert!(!details.network_all_hosts);
+
+    let event = rx.try_recv();
+    assert!(
+        !matches!(event, Ok(Ok(ThreadEvent::ToolCallAuthorization(_)))),
+        "expected no authorization prompt for a redirect to another public host"
+    );
 }
 
-/// Redirects between paths on an already-granted host are followed without any
-/// additional prompt, so ordinary redirects (http→https upgrades, trailing-slash
-/// canonicalization, etc.) keep working after the per-hop authorization change.
+/// Redirects between paths on the same host are followed without any prompt,
+/// so ordinary redirects (http→https upgrades, trailing-slash canonicalization,
+/// etc.) keep working with the per-hop check.
 #[gpui::test]
 async fn test_fetch_tool_follows_same_host_redirect(cx: &mut TestAppContext) {
     init_test(cx);
@@ -8670,10 +8616,6 @@ async fn test_fetch_tool_follows_same_host_redirect(cx: &mut TestAppContext) {
                 invalid_patterns: vec![],
             },
         );
-        settings
-            .sandbox_permissions
-            .network_hosts
-            .push("example.com".into());
         agent_settings::AgentSettings::override_global(settings, cx);
     });
 
@@ -8713,7 +8655,7 @@ async fn test_fetch_tool_follows_same_host_redirect(cx: &mut TestAppContext) {
     let event = rx.try_recv();
     assert!(
         !matches!(event, Ok(Ok(ThreadEvent::ToolCallAuthorization(_)))),
-        "expected no authorization prompt for a redirect to an already-granted host"
+        "expected no authorization prompt for a same-host redirect"
     );
 }
 

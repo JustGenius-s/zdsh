@@ -89,7 +89,6 @@ members = [
     "crates/html_to_markdown",
     "crates/http_client",
     "crates/http_client_tls",
-    "crates/http_proxy",
     "crates/icons",
     "crates/image_viewer",
     "crates/input_latency_ui",
@@ -333,7 +332,6 @@ grammars = { path = "crates/grammars" }
 html_to_markdown = { path = "crates/html_to_markdown" }
 http_client = { path = "crates/http_client" }
 http_client_tls = { path = "crates/http_client_tls" }
-http_proxy = { path = "crates/http_proxy" }
 icons = { path = "crates/icons" }
 image_viewer = { path = "crates/image_viewer" }
 input_latency_ui = { path = "crates/input_latency_ui" }

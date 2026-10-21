@@ -17,8 +17,7 @@ use std::{
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::SandboxFallbackDecision;
 use crate::sandboxing::{
-    NetworkRequest, sandbox_git_dirs, sandbox_worktree_writable_paths,
-    sandboxing_enabled_for_project,
+    sandbox_git_dirs, sandbox_worktree_writable_paths, sandboxing_enabled_for_project,
 };
 use crate::{AgentTool, ThreadEnvironment, ToolCallEventStream, ToolInput};
 
@@ -112,38 +111,6 @@ pub struct SandboxedTerminalToolInput {
     /// Return only the last N lines of terminal output to the model after the command finishes. Do not pipe output to `tail`; use this parameter instead so the user can still see live output. Avoid requesting too many lines, or the response may waste tokens or exceed the context window.
     #[serde(default)]
     pub tail_lines: Option<usize>,
-    /// Hosts the command needs outbound network access to.
-    ///
-    /// Sandboxed commands cannot reach the network by default. List the hosts
-    /// the command needs (e.g. `["github.com", "*.npmjs.org"]`) when running
-    /// commands that fetch or upload (installing dependencies, cloning,
-    /// pushing, downloading, etc.). Each entry must be a hostname or a
-    /// leading-`*.` subdomain wildcard; IP literals and other wildcards are
-    /// rejected. Requesting network access triggers a user approval prompt, so
-    /// only list hosts you expect the command to need.
-    #[cfg_attr(
-        any(target_os = "macos", target_os = "linux"),
-        doc = "\nHost-specific access is enforced by an HTTP/HTTPS proxy, so use \
-        `https://` URLs rather than `git@`/`ssh://`."
-    )]
-    #[cfg_attr(
-        target_os = "windows",
-        doc = "\nNOTE: on Windows the sandbox cannot currently restrict network \
-        access to specific hosts. Do not set `allow_hosts` on Windows; request \
-        `allow_all_hosts: true` if the command needs network access, or omit \
-        network permissions entirely."
-    )]
-    #[serde(default)]
-    pub allow_hosts: Vec<String>,
-    /// Set to `true` only if the command needs outbound network access to
-    /// hosts you can't enumerate up front.
-    ///
-    /// This grants unrestricted outbound network access. On platforms that
-    /// support host-specific grants, prefer `allow_hosts` with specific
-    /// hostnames whenever possible, so the user knows what's being approved.
-    /// Requesting it triggers a user approval prompt.
-    #[serde(default)]
-    pub allow_all_hosts: Option<bool>,
     /// Paths the command needs to write to outside the default-writable
     /// locations.
     ///
@@ -186,7 +153,7 @@ pub struct SandboxedTerminalToolInput {
     /// Set to `true` only as a last resort, to run the command fully outside
     /// the sandbox.
     ///
-    /// First try the narrower options (`allow_hosts`, `fs_write_paths`, or
+    /// First try the narrower options (`fs_write_paths` or
     /// `allow_fs_write_all`); use this only when the command
     /// needs behavior the sandbox can't grant on a per-permission basis,
     /// including commands that must write Git metadata.
@@ -203,8 +170,8 @@ pub struct SandboxedTerminalToolInput {
     #[serde(default)]
     pub unsandboxed: Option<bool>,
     /// A short justification for why this command needs the sandbox
-    /// permission(s) it requests (`allow_hosts`, `allow_all_hosts`,
-    /// `fs_write_paths`, `allow_fs_write_all`, or `unsandboxed`).
+    /// permission(s) it requests (`fs_write_paths`, `allow_fs_write_all`, or
+    /// `unsandboxed`).
     ///
     /// Required whenever you request any of those permissions; omit it for
     /// ordinary commands that request none. Write it in your own voice — it
@@ -216,8 +183,6 @@ pub struct SandboxedTerminalToolInput {
 
 #[derive(Clone, Debug, Default)]
 struct TerminalSandboxInput {
-    allow_hosts: Vec<String>,
-    allow_all_hosts: Option<bool>,
     fs_write_paths: Vec<String>,
     allow_fs_write_all: Option<bool>,
     unsandboxed: Option<bool>,
@@ -258,8 +223,6 @@ impl From<SandboxedTerminalToolInput> for TerminalToolRequest {
                 tail_lines: input.tail_lines,
             },
             sandbox: Some(TerminalSandboxInput {
-                allow_hosts: input.allow_hosts,
-                allow_all_hosts: input.allow_all_hosts,
                 fs_write_paths: input.fs_write_paths,
                 allow_fs_write_all: input.allow_fs_write_all,
                 unsandboxed: input.unsandboxed,
@@ -430,32 +393,22 @@ async fn run_terminal_tool(
     let selection = input.selection;
     let sandbox_input = input.sandbox.clone().unwrap_or_default();
 
-    let (working_dir, authorize, sandboxing, is_local_project, wsl_zed_release) =
-        cx.update(|cx| {
-            let working_dir =
-                working_dir(&input.cd, &project, cx).map_err(|err| err.to_string())?;
-            let context =
-                crate::ToolPermissionContext::new(TerminalTool::NAME, vec![input.command.clone()]);
-            let authorize =
-                event_stream.authorize(SharedString::new(input.command.clone()), context, cx);
-            let sandboxing =
-                input.sandbox.is_some() && sandboxing_enabled_for_project(project.read(cx), cx);
-            let is_local_project = project.read(cx).is_local();
-            let wsl_zed_release = wsl_zed_release(cx);
-            Result::<_, String>::Ok((
-                working_dir,
-                authorize,
-                sandboxing,
-                is_local_project,
-                wsl_zed_release,
-            ))
-        })?;
+    let (working_dir, authorize, sandboxing, wsl_zed_release) = cx.update(|cx| {
+        let working_dir = working_dir(&input.cd, &project, cx).map_err(|err| err.to_string())?;
+        let context =
+            crate::ToolPermissionContext::new(TerminalTool::NAME, vec![input.command.clone()]);
+        let authorize =
+            event_stream.authorize(SharedString::new(input.command.clone()), context, cx);
+        let sandboxing =
+            input.sandbox.is_some() && sandboxing_enabled_for_project(project.read(cx), cx);
+        let wsl_zed_release = wsl_zed_release(cx);
+        Result::<_, String>::Ok((working_dir, authorize, sandboxing, wsl_zed_release))
+    })?;
 
     authorize.await.map_err(|e| e.to_string())?;
 
     let want_fs_write_all = sandboxing && sandbox_input.allow_fs_write_all == Some(true);
     let want_unsandboxed = sandboxing && sandbox_input.unsandboxed == Some(true);
-    let want_all_hosts = sandboxing && sandbox_input.allow_all_hosts == Some(true);
 
     let persistent = cx.update(|cx| {
         agent_settings::AgentSettings::get_global(cx)
@@ -475,7 +428,6 @@ async fn run_terminal_tool(
         && (event_stream.unsandboxed_granted_for_thread()
             || event_stream.sandbox_fallback_granted_for_thread());
     let fs_unrestricted_floor = sandboxing && floor.allow_fs_write_all;
-    let net_unrestricted_floor = sandboxing && matches!(floor.network, NetworkRequest::AnyHost);
 
     if sandboxing && !want_unsandboxed {
         if unsandboxed_floor {
@@ -483,12 +435,6 @@ async fn run_terminal_tool(
             // runs without one and no sandbox-scoping field can take effect.
             // Name exactly which ones the model set so it can drop them.
             let mut ineffective = Vec::new();
-            if !sandbox_input.allow_hosts.is_empty() {
-                ineffective.push("`allow_hosts`");
-            }
-            if sandbox_input.allow_all_hosts == Some(true) {
-                ineffective.push("`allow_all_hosts`");
-            }
             if !sandbox_input.fs_write_paths.is_empty() {
                 ineffective.push("`fs_write_paths`");
             }
@@ -504,49 +450,17 @@ async fn run_terminal_tool(
                     ineffective.join(", "),
                 ));
             }
-        } else {
-            if fs_unrestricted_floor
-                && !want_fs_write_all
-                && !sandbox_input.fs_write_paths.is_empty()
-            {
-                return Err(
-                    "Unrestricted filesystem writes are enabled for this thread, so every command \
-                     can already write anywhere except protected Git metadata; `fs_write_paths` \
-                     cannot narrow that. Remove `fs_write_paths`."
-                        .to_string(),
-                );
-            }
-            if net_unrestricted_floor && !want_all_hosts && !sandbox_input.allow_hosts.is_empty() {
-                return Err(
-                    "Unrestricted network access is enabled for this thread, so every command can \
-                     already reach any host; `allow_hosts` cannot narrow that. Remove `allow_hosts`."
-                        .to_string(),
-                );
-            }
+        } else if fs_unrestricted_floor
+            && !want_fs_write_all
+            && !sandbox_input.fs_write_paths.is_empty()
+        {
+            return Err(
+                "Unrestricted filesystem writes are enabled for this thread, so every command \
+                 can already write anywhere except protected Git metadata; `fs_write_paths` \
+                 cannot narrow that. Remove `fs_write_paths`."
+                    .to_string(),
+            );
         }
-    }
-
-    // Validate the model-supplied host patterns up front. Malformed input is
-    // the model's responsibility, so surface it back as a tool-call error
-    // (the model retries) rather than letting the user approve a request that
-    // then fails.
-    let network = if sandboxing && !want_unsandboxed {
-        build_network_request(&sandbox_input)?
-    } else {
-        NetworkRequest::None
-    };
-
-    // Host-specific network access is enforced by a loopback proxy that
-    // confines the sandbox to its port. A non-local project's terminal can't
-    // reach the proxy, and Windows does not support this path yet. Reject the
-    // narrower request rather than silently widening it to all-host access.
-    let can_restrict_to_hosts =
-        (cfg!(target_os = "macos") || cfg!(target_os = "linux")) && is_local_project;
-    if !can_restrict_to_hosts && matches!(network, NetworkRequest::Hosts(_)) {
-        return Err(
-            "This platform or project cannot restrict sandboxed network access to specific hosts. Use `allow_all_hosts: true` if the command needs network access."
-                .to_string(),
-        );
     }
 
     let write_paths: Vec<PathBuf> = if sandboxing && !want_unsandboxed {
@@ -628,7 +542,6 @@ async fn run_terminal_tool(
     };
 
     let request = crate::sandboxing::SandboxRequest {
-        network,
         allow_fs_write_all: !want_unsandboxed && want_fs_write_all,
         unsandboxed: want_unsandboxed,
         write_paths,
@@ -735,12 +648,6 @@ async fn run_terminal_tool(
             None
         } else {
             let effective = event_stream.effective_sandbox_request(&request, &persistent);
-            if !can_restrict_to_hosts && matches!(effective.network, NetworkRequest::Hosts(_)) {
-                return Err(
-                    "This platform or project has a saved host-specific network grant, but cannot enforce host-specific sandboxed network access. Request `allow_all_hosts: true` if the command needs network access."
-                        .to_string(),
-                );
-            }
             let (writable_paths, protected_paths) = cx.update(|cx| {
                 (
                     sandbox_worktree_writable_paths(project.read(cx), cx),
@@ -751,9 +658,7 @@ async fn run_terminal_tool(
                 writable_paths,
                 extra_write_paths: effective.write_paths,
                 protected_paths,
-                network: network_request_to_sandbox_network_access(&effective.network),
                 allow_fs_write: effective.allow_fs_write_all,
-                is_local: is_local_project,
                 wsl_zed_release: wsl_zed_release.clone(),
             };
 
@@ -1141,56 +1046,6 @@ fn wsl_absolute_path(raw: &str) -> Option<PathBuf> {
     } else {
         None
     }
-}
-
-/// Convert a (validated) network request into the access mode enforced by the
-/// terminal sandbox.
-fn network_request_to_sandbox_network_access(
-    network: &NetworkRequest,
-) -> acp_thread::SandboxNetworkAccess {
-    match network {
-        NetworkRequest::None => acp_thread::SandboxNetworkAccess::None,
-        NetworkRequest::AnyHost => acp_thread::SandboxNetworkAccess::All,
-        NetworkRequest::Hosts(hosts) => {
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            {
-                acp_thread::SandboxNetworkAccess::Restricted(http_proxy::Allowlist::from_patterns(
-                    hosts.iter().cloned(),
-                ))
-            }
-            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-            {
-                let _ = hosts;
-                acp_thread::SandboxNetworkAccess::None
-            }
-        }
-    }
-}
-
-/// Parse and validate the model's network escalation request. `allow_all_hosts`
-/// subsumes any specific `allow_hosts` list. Returns an error string suitable
-/// for showing back to the model when a host pattern is malformed.
-fn build_network_request(sandbox: &TerminalSandboxInput) -> Result<NetworkRequest, String> {
-    if sandbox.allow_all_hosts == Some(true) {
-        return Ok(NetworkRequest::AnyHost);
-    }
-    if sandbox.allow_hosts.is_empty() {
-        return Ok(NetworkRequest::None);
-    }
-    let mut patterns = Vec::with_capacity(sandbox.allow_hosts.len());
-    for raw in &sandbox.allow_hosts {
-        match http_proxy::HostPattern::parse(raw) {
-            Ok(pattern) => patterns.push(pattern),
-            Err(error) => {
-                return Err(format!(
-                    "`allow_hosts` contains an invalid pattern '{raw}': {error}. \
-                     Hostnames only — no IP literals; leading-`*.` wildcards \
-                     are supported (e.g. `*.example.com`)."
-                ));
-            }
-        }
-    }
-    Ok(NetworkRequest::Hosts(patterns))
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -3217,14 +3072,6 @@ mod tests {
         let schema = serde_json::to_string(&schemars::schema_for!(SandboxedTerminalToolInput))
             .expect("input schema should serialize");
         assert!(
-            schema.contains("allow_hosts"),
-            "schema should advertise allow_hosts: {schema}"
-        );
-        assert!(
-            schema.contains("allow_all_hosts"),
-            "schema should advertise allow_all_hosts: {schema}"
-        );
-        assert!(
             schema.contains("fs_write_paths"),
             "schema should advertise fs_write_paths: {schema}"
         );
@@ -3249,8 +3096,6 @@ mod tests {
             "cd": ".",
         }))
         .expect("minimal input should deserialize");
-        assert!(input.allow_hosts.is_empty());
-        assert_eq!(input.allow_all_hosts, None);
         assert!(input.fs_write_paths.is_empty());
         assert_eq!(input.allow_fs_write_all, None);
         assert_eq!(input.unsandboxed, None);
@@ -3311,8 +3156,6 @@ mod tests {
             &authorization.tool_call.meta.clone().take(),
         )
         .expect("legacy allow_fs_write should request sandbox authorization details");
-        assert!(details.network_hosts.is_empty());
-        assert!(!details.network_all_hosts);
         assert!(details.allow_fs_write_all);
         assert!(!details.unsandboxed);
         assert!(details.write_paths.is_empty());
@@ -3396,7 +3239,6 @@ mod tests {
         let input: SandboxedTerminalToolInput = serde_json::from_value(serde_json::json!({
             "command": "echo hi",
             "cd": "root",
-            "allow_all_hosts": true,
             "allow_fs_write_all": true,
             "unsandboxed": true,
             "reason": "needs full access for this task",
@@ -3413,8 +3255,6 @@ mod tests {
             &authorization.tool_call.meta.clone().take(),
         )
         .expect("unsandboxed should request sandbox authorization details");
-        assert!(details.network_hosts.is_empty());
-        assert!(!details.network_all_hosts);
         assert!(!details.allow_fs_write_all);
         assert!(details.unsandboxed);
         assert!(details.write_paths.is_empty());
@@ -3681,7 +3521,7 @@ mod tests {
             "command": "touch build/out",
             "cd": "root",
             "fs_write_paths": ["build"],
-            "allow_all_hosts": true,
+            "allow_fs_write_all": true,
             "reason": "write build artifacts",
         }))
         .unwrap();
@@ -3695,7 +3535,7 @@ mod tests {
         );
         // The error must name exactly the fields that have no effect.
         assert!(
-            error.contains("`fs_write_paths`") && error.contains("`allow_all_hosts`"),
+            error.contains("`fs_write_paths`") && error.contains("`allow_fs_write_all`"),
             "error should name the ineffective fields: {error}"
         );
         assert_eq!(environment.terminal_creation_count(), 0);
@@ -3734,103 +3574,5 @@ mod tests {
             "unexpected error: {error}"
         );
         assert_eq!(environment.terminal_creation_count(), 0);
-    }
-
-    /// A standing "any host" network grant makes scoping to specific hosts
-    /// meaningless, so such a request is rejected.
-    #[gpui::test]
-    async fn test_unrestricted_network_grant_rejects_scoped_hosts(cx: &mut gpui::TestAppContext) {
-        let mut grants = crate::sandboxing::ThreadSandboxGrants::default();
-        grants.record(&crate::sandboxing::SandboxRequest {
-            network: NetworkRequest::AnyHost,
-            ..Default::default()
-        });
-        let (tool, event_stream, _receiver, environment) =
-            floor_test_tool(cx, agent_settings::SandboxPermissions::default(), grants).await;
-
-        let input: SandboxedTerminalToolInput = serde_json::from_value(serde_json::json!({
-            "command": "curl https://github.com",
-            "cd": "root",
-            "allow_hosts": ["github.com"],
-            "reason": "fetch from github",
-        }))
-        .unwrap();
-        let task = cx.update(|cx| tool.run(crate::ToolInput::resolved(input), event_stream, cx));
-        let error = task
-            .await
-            .expect_err("scoping hosts when network is unrestricted should be rejected");
-        assert!(
-            error.contains("Unrestricted network access is enabled for this thread"),
-            "unexpected error: {error}"
-        );
-        assert_eq!(environment.terminal_creation_count(), 0);
-    }
-
-    fn host_request(list: &[&str]) -> NetworkRequest {
-        NetworkRequest::Hosts(
-            list.iter()
-                .map(|h| http_proxy::HostPattern::parse(h).unwrap())
-                .collect(),
-        )
-    }
-
-    #[test]
-    fn test_build_network_request_validates_and_classifies() {
-        // No fields -> None.
-        assert_eq!(
-            build_network_request(&TerminalSandboxInput::default()).unwrap(),
-            NetworkRequest::None
-        );
-        // allow_all_hosts -> AnyHost, even alongside specific hosts.
-        assert_eq!(
-            build_network_request(&TerminalSandboxInput {
-                allow_hosts: vec!["github.com".into()],
-                allow_all_hosts: Some(true),
-                ..Default::default()
-            })
-            .unwrap(),
-            NetworkRequest::AnyHost
-        );
-        // Valid hosts parse to patterns.
-        assert_eq!(
-            build_network_request(&TerminalSandboxInput {
-                allow_hosts: vec!["github.com".into(), "*.npmjs.org".into()],
-                ..Default::default()
-            })
-            .unwrap(),
-            host_request(&["github.com", "*.npmjs.org"])
-        );
-        // An IP literal is rejected with an actionable message.
-        let err = build_network_request(&TerminalSandboxInput {
-            allow_hosts: vec!["127.0.0.1".into()],
-            ..Default::default()
-        })
-        .unwrap_err();
-        assert!(err.contains("127.0.0.1"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn test_network_request_to_sandbox_network_access_uses_explicit_unrestricted_variant() {
-        match network_request_to_sandbox_network_access(&NetworkRequest::None) {
-            acp_thread::SandboxNetworkAccess::None => {}
-            other => panic!("expected no network access, got {other:?}"),
-        }
-
-        match network_request_to_sandbox_network_access(&NetworkRequest::AnyHost) {
-            acp_thread::SandboxNetworkAccess::All => {}
-            other => panic!("expected unrestricted network access, got {other:?}"),
-        }
-
-        // macOS and Linux confine host requests through the allowlist proxy.
-        match network_request_to_sandbox_network_access(&host_request(&["github.com"])) {
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            acp_thread::SandboxNetworkAccess::Restricted(allowlist) => {
-                assert!(allowlist.allows("github.com"));
-                assert!(!allowlist.allows("example.com"));
-            }
-            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-            acp_thread::SandboxNetworkAccess::None => {}
-            other => panic!("unexpected network access for host request, got {other:?}"),
-        }
     }
 }

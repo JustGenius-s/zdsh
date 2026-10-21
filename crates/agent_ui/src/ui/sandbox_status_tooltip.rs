@@ -8,7 +8,6 @@ use ui::{Divider, prelude::*};
 pub enum SandboxRow {
     Message(SharedString),
     Path(PathBuf),
-    Domain(SharedString),
 }
 
 impl SandboxRow {
@@ -18,10 +17,6 @@ impl SandboxRow {
 
     pub fn path(path: impl Into<PathBuf>) -> Self {
         Self::Path(path.into())
-    }
-
-    pub fn domain(domain: impl Into<SharedString>) -> Self {
-        Self::Domain(domain.into())
     }
 
     fn render(self, cx: &App) -> AnyElement {
@@ -48,7 +43,6 @@ impl SandboxRow {
                     .unwrap_or_else(|| icon_basic(IconName::Folder));
                 (icon, path.display().to_string())
             }
-            SandboxRow::Domain(domain) => (icon_basic(IconName::Public), domain.to_string()),
         };
 
         h_flex()
@@ -209,35 +203,27 @@ impl Component for SandboxStatusTooltip {
 
     fn description() -> &'static str {
         "The tooltip shown on the sandboxing lock icon in the agent panel, \
-        describing the filesystem, network, and Git access granted to the \
+        describing the filesystem and Git access granted to the \
         agent for each of the possible sandbox states."
     }
 
     fn preview(_window: &mut Window, cx: &mut App) -> AnyElement {
-        let settings_section = SandboxSection::new("Defined in your settings:")
-            .group(SandboxGroup::new("Write Access").rows([
+        let settings_section = SandboxSection::new("Defined in your settings:").group(
+            SandboxGroup::new("Write Access").rows([
                 SandboxRow::path("/Users/you/project"),
                 SandboxRow::path("/tmp (isolated)"),
-            ]))
-            .group(SandboxGroup::new("Network Access").rows([
-                SandboxRow::domain("github.com"),
-                SandboxRow::domain("*.npmjs.org"),
-            ]));
+            ]),
+        );
 
-        let thread_section = SandboxSection::new("Allowed for this thread:")
-            .group(
-                SandboxGroup::new("Write Access").row(SandboxRow::path("/Users/you/project/build")),
-            )
-            .group(SandboxGroup::new("Network Access").row(SandboxRow::message("None")));
+        let thread_section = SandboxSection::new("Allowed for this thread:").group(
+            SandboxGroup::new("Write Access").row(SandboxRow::path("/Users/you/project/build")),
+        );
 
-        let unrestricted_section = SandboxSection::new("Defined in your settings:")
-            .group(SandboxGroup::new("Write Access").row(SandboxRow::message(
+        let unrestricted_section = SandboxSection::new("Defined in your settings:").group(
+            SandboxGroup::new("Write Access").row(SandboxRow::message(
                 "All paths except protected Git metadata",
-            )))
-            .group(
-                SandboxGroup::new("Network Access")
-                    .row(SandboxRow::message("All domains (unrestricted)")),
-            );
+            )),
+        );
 
         let container = || div().p_2().elevation_2(cx).max_w_112();
 

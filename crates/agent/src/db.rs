@@ -100,13 +100,6 @@ pub struct DbSandboxGrants {
     /// via [`settings::GrantedWritePath`]'s string-or-object format.
     #[serde(default)]
     pub write_paths: Vec<settings::GrantedWritePath>,
-    /// Host patterns granted network access, in canonical string form (e.g.
-    /// `github.com`, `*.npmjs.org`). Parsed back into patterns on load.
-    #[serde(default)]
-    pub network_hosts: Vec<String>,
-    /// Whether arbitrary-host network access was granted.
-    #[serde(default)]
-    pub network_any_host: bool,
     /// Whether unrestricted filesystem writes (the broad escape hatch) were
     /// granted.
     #[serde(default)]
@@ -1149,8 +1142,6 @@ mod tests {
                     PathBuf::from("/tmp/real"),
                 ),
             ],
-            network_hosts: vec!["github.com".to_string(), "*.npmjs.org".to_string()],
-            network_any_host: false,
             allow_fs_write_all: false,
             unsandboxed: true,
             sandbox_fallback: true,

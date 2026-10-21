@@ -34,12 +34,9 @@ use anyhow::{Context as _, Result, bail, ensure};
 
 use crate::WSL_SANDBOX_UNAVAILABLE_PREFIX;
 
-/// Per-command relaxations of the WSL/Bubblewrap sandbox. Windows can only
-/// toggle network access wholesale (no loopback-proxy confinement yet), so this
-/// is a plain bool rather than the richer cross-platform [`crate::SandboxNetPolicy`].
+/// Per-command relaxations of the WSL/Bubblewrap sandbox.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SandboxPermissions {
-    pub(crate) allow_network: bool,
     pub(crate) allow_fs_write: bool,
 }
 
@@ -733,7 +730,7 @@ fn probe_script() -> String {
          if [ -d /run/WSL ]; then interop=interop; mask='--tmpfs /run/WSL'; \
          else interop=no-interop; mask=''; fi; \
          \"$bwrap_path\" --ro-bind / / --tmpfs /tmp $mask --dev /dev --proc /proc \
-         --unshare-net --unshare-user --unshare-ipc --unshare-uts --unshare-pid \
+         --unshare-user --unshare-ipc --unshare-uts --unshare-pid \
          --unshare-cgroup-try --die-with-parent -- true >/dev/null \
          || exit {BWRAP_UNUSABLE_EXIT_CODE}; \
          printf '{PROBE_RESULT_PREFIX} %s %s\\n' \"$interop\" \"$bwrap_path\""
@@ -1275,8 +1272,8 @@ fn build_bwrap_args<S: std::hash::BuildHasher>(
     // Without this, a sandboxed process can exec a Windows binary (e.g.
     // /mnt/c/Windows/System32/cmd.exe), which the kernel's binfmt handler
     // (`/init`) hands off to the Windows host over an AF_UNIX socket — running
-    // fully outside bwrap and defeating both the filesystem and the network
-    // restrictions. `/init` locates that socket via the $WSL_INTEROP
+    // fully outside bwrap and defeating the filesystem restrictions. `/init`
+    // locates that socket via the $WSL_INTEROP
     // environment variable, so we drop it; and we mask the socket directory
     // (when it exists) so the value can't be rediscovered by listing
     // /run/WSL and re-exporting it. Both steps are required: unsetting the
@@ -1294,10 +1291,6 @@ fn build_bwrap_args<S: std::hash::BuildHasher>(
         "--proc".to_string(),
         "/proc".to_string(),
     ]);
-
-    if !permissions.allow_network {
-        args.push("--unshare-net".to_string());
-    }
 
     args.extend([
         "--unshare-user".to_string(),
@@ -1647,7 +1640,6 @@ mod tests {
         let script = probe_script();
         for flag in [
             "--unshare-user",
-            "--unshare-net",
             "--unshare-ipc",
             "--unshare-uts",
             "--unshare-pid",
@@ -1740,7 +1732,7 @@ mod tests {
     }
 
     #[test]
-    fn bwrap_denies_network_by_default() {
+    fn bwrap_shares_the_host_network() {
         let args = build_bwrap_args(
             &["/home/me/project".to_string()],
             &[],
@@ -1749,27 +1741,11 @@ mod tests {
             true,
             &HashMap::new(),
         );
-        assert!(args.iter().any(|arg| arg == "--unshare-net"));
+        assert!(!args.iter().any(|arg| arg == "--unshare-net"));
         assert!(
             args.windows(3)
                 .any(|window| window == ["--bind", "/home/me/project", "/home/me/project"])
         );
-    }
-
-    #[test]
-    fn bwrap_allows_network_when_requested() {
-        let args = build_bwrap_args(
-            &[],
-            &[],
-            SandboxPermissions {
-                allow_network: true,
-                allow_fs_write: false,
-            },
-            None,
-            true,
-            &HashMap::new(),
-        );
-        assert!(!args.iter().any(|arg| arg == "--unshare-net"));
     }
 
     #[test]
@@ -1824,7 +1800,6 @@ mod tests {
             &[],
             &["/home/me/project/.git".to_string()],
             SandboxPermissions {
-                allow_network: false,
                 allow_fs_write: true,
             },
             None,
@@ -1875,7 +1850,6 @@ mod tests {
             &[],
             &[],
             SandboxPermissions {
-                allow_network: true,
                 allow_fs_write: true,
             },
             None,
@@ -1883,8 +1857,7 @@ mod tests {
             &HashMap::new(),
         );
         // Interop is host code execution, not just a filesystem write, so it
-        // stays blocked even when the user has granted unrestricted writes
-        // and network.
+        // stays blocked even when the user has granted unrestricted writes.
         assert!(
             args.windows(2)
                 .any(|window| window == ["--unsetenv", "WSL_INTEROP"])

@@ -3,7 +3,6 @@ use anyhow::{Result, bail};
 use collections::HashMap;
 use futures::{FutureExt as _, future::Shared};
 use gpui::{App, AppContext, AsyncApp, Context, Entity, Task};
-use http_proxy::Allowlist;
 use language::LanguageRegistry;
 use markdown::Markdown;
 use project::Project;
@@ -28,9 +27,9 @@ use util::get_default_system_shell_preferring_bash;
 /// via Bubblewrap inside WSL), so callers describe the *intent* with plain data
 /// here rather than constructing platform-specific types directly.
 ///
-/// Default is the fully-sandboxed run (no network, project-only writes).
-/// Setting `network` / `allow_fs_write` requests a relaxation; the caller is
-/// responsible for having obtained user approval before reaching this point.
+/// Default is the fully-sandboxed run (project-only writes). Setting
+/// `allow_fs_write` requests a relaxation; the caller is responsible for having
+/// obtained user approval before reaching this point.
 #[derive(Clone, Debug, Default)]
 pub struct SandboxWrap {
     /// Directory subtrees the sandbox should allow writes to. Pass the
@@ -49,18 +48,12 @@ pub struct SandboxWrap {
     /// [`granted_write_path_to_location`]) rather than re-resolving the bare
     /// requested path, which closes a symlink TOCTOU.
     pub extra_write_paths: Vec<settings::GrantedWritePath>,
-    /// Outbound network access explicitly approved for this command.
-    pub network: SandboxNetworkAccess,
     /// Additional paths that should remain readable but not writable, even when
     /// they fall under writable paths.
     pub protected_paths: Vec<PathBuf>,
     /// Allow unrestricted filesystem writes except for protected paths (ignores
     /// ordinary writable paths).
     pub allow_fs_write: bool,
-    /// Whether the project (and therefore this terminal) is local. The
-    /// enforcing proxy binds a loopback port on this host, so it can only
-    /// confine local commands; a remote terminal can't reach it.
-    pub is_local: bool,
     /// Windows/WSL only: `(release channel, version)` of the Linux `zed` to
     /// provision inside WSL as the sandbox helper (version `latest` for dev
     /// builds). Resolved by the agent (which can read the running app's release
@@ -68,19 +61,6 @@ pub struct SandboxWrap {
     /// the release can't be determined, in which case the WSL backend falls back
     /// to running bwrap without in-sandbox bind validation.
     pub wsl_zed_release: Option<(String, String)>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub enum SandboxNetworkAccess {
-    /// Block all outbound network access.
-    #[default]
-    None,
-    /// Allow only hosts in this allowlist, enforced by routing HTTP/HTTPS
-    /// through an in-process proxy and confining the command to the proxy's
-    /// loopback port.
-    Restricted(Allowlist),
-    /// Allow unrestricted outbound network access.
-    All,
 }
 
 /// A structured, serializable reason the OS sandbox could not be created for a
@@ -304,18 +284,7 @@ impl SandboxWrap {
                 protected_paths,
             }
         };
-        let network = match &self.network {
-            SandboxNetworkAccess::None => sandbox::SandboxNetPolicy::Blocked,
-            SandboxNetworkAccess::All => sandbox::SandboxNetPolicy::Unrestricted,
-            SandboxNetworkAccess::Restricted(allowlist) => sandbox::SandboxNetPolicy::Restricted {
-                allowed_domains: allowlist
-                    .patterns()
-                    .iter()
-                    .map(|pattern| pattern.to_string())
-                    .collect(),
-            },
-        };
-        Ok(sandbox::SandboxPolicy { fs, network })
+        Ok(sandbox::SandboxPolicy { fs })
     }
 }
 
@@ -341,8 +310,8 @@ pub enum SandboxNotAppliedReason {
     ErrorLinuxWsl(LinuxWslSandboxError),
 }
 
-/// The live sandbox kept alive for its per-command resources (the network proxy
-/// and, on macOS, the Seatbelt policy file) until the terminal exits.
+/// The live sandbox kept alive for its per-command resources (on Linux the bind
+/// validator and, on macOS, the Seatbelt policy file) until the terminal exits.
 type SandboxConfigHandle = sandbox::Sandbox;
 
 /// Upper bound on preparing a WSL-sandboxed command. Deliberately generous:
@@ -356,10 +325,6 @@ pub(crate) const WSL_SANDBOX_WRAP_TIMEOUT: std::time::Duration = std::time::Dura
 /// invocation (program, argv, env) plus the live [`sandbox::Sandbox`] that must
 /// be kept alive for the command's duration. When `sandbox_wrap` is `None` the
 /// command is returned unchanged.
-///
-/// The sandbox owns the network proxy (for restricted-network policies) and any
-/// per-command policy file; the env it returns already routes through that
-/// proxy when applicable.
 pub(crate) async fn prepare_sandbox_wrap(
     program: String,
     args: Vec<String>,
@@ -412,10 +377,9 @@ pub struct Terminal {
     /// (e.g., clicking the Stop button). This is set before kill() is called
     /// so that code awaiting wait_for_exit() can check it deterministically.
     user_stopped: Arc<AtomicBool>,
-    /// The live sandbox (Seatbelt policy file and/or network proxy) kept alive
+    /// The live sandbox (bind validator and/or Seatbelt policy file) kept alive
     /// until the sandboxed command exits. `None` when the command isn't
-    /// sandboxed or after it finishes. Dropping it tears down the proxy on a
-    /// background thread (see `sandbox::Sandbox`'s `Drop`).
+    /// sandboxed or after it finishes.
     _sandbox: Option<SandboxConfigHandle>,
 }
 
@@ -511,15 +475,13 @@ impl Terminal {
         cx: &mut Context<Self>,
     ) -> Self {
         let command_task = terminal.read(cx).wait_for_completed_task(cx);
-        // Tear the sandbox down on a GPUI background thread when this entity is
-        // released, rather than relying on `Sandbox`'s `Drop` (which would spawn
-        // a throwaway thread) on whatever thread releases us. `on_release` hands
-        // us an `App`, so we can drive the teardown through the background
-        // executor with `drop_on_current_thread`.
+        // Tearing the sandbox down removes its validator socket and policy
+        // file, so do it on a background thread rather than whatever thread
+        // releases this entity.
         cx.on_release(|this, cx| {
             if let Some(sandbox) = this._sandbox.take() {
                 cx.background_executor()
-                    .spawn(async move { sandbox.drop_on_current_thread() })
+                    .spawn(async move { drop(sandbox) })
                     .detach();
             }
         })
@@ -553,14 +515,13 @@ impl Terminal {
                         this.terminal.update(cx, |terminal, _cx| {
                             terminal.release_pty_resources();
                         });
-                        // Free the sandbox (and its network proxy) as soon as
-                        // the command finishes, rather than holding it until
-                        // this entity is released. The proxy's teardown joins a
-                        // listener thread, so run it on the background executor
-                        // to keep it off the foreground thread.
+                        // Free the sandbox as soon as the command finishes,
+                        // rather than holding it until this entity is released.
+                        // Its teardown does filesystem I/O, so keep it off the
+                        // foreground thread.
                         if let Some(sandbox) = this._sandbox.take() {
                             cx.background_executor()
-                                .spawn(async move { sandbox.drop_on_current_thread() })
+                                .spawn(async move { drop(sandbox) })
                                 .detach();
                         }
                     })
@@ -1055,8 +1016,7 @@ mod linux_tests {
     /// a single-file worktree (e.g. `settings.json/.git`). Unlike a writable
     /// grant, a protection can't be materialized, and `.git` protection has an
     /// inherent accepted loophole (`git init`), so failing here would only break
-    /// legitimate cases. Unit-level companion to the `settings.json/.git` NixOS
-    /// check.
+    /// legitimate cases.
     #[test]
     fn to_policy_skips_uncapturable_protected_paths() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");

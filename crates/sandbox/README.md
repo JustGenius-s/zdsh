@@ -7,8 +7,10 @@ Cross-platform sandboxing for shell commands.
 This crate allows creating a `Sandbox` according to some `SandboxPolicy`. A
 `SandboxPolicy` expresses:
 - what filesystem operations are allowed
-- which kinds of networking operations are allowed
 - which paths stay protected even under writable subtrees
+
+Sandboxed commands always have IP network access. Unix domain sockets are
+blocked on every platform (see "Blocking IPC-socket escapes" below).
 
 Once you have a `Sandbox`, you can use it to run commands that are constrained
 by that policy.
@@ -55,18 +57,10 @@ Though not defined in this crate, the default grants provided by the Zed agent i
 
 ## Architecture
 
-Filesystem restrictions are different on all platforms. Network restrictions
-however largely follow a similar approach (details omitted):
-- Disable networking in the sandbox, except for one localhost port
-- Within the sandbox, set `HTTP_PROXY` and friends to tell programs to
-  communicate with that socket
-- On the Zed host side, there is a proxy that listens to that port that enforces
-  domain filtering
-
-On Linux specifically, there is an intermediate socket that allows data to flow
-out of the sandbox. This is required because, unlike seatbelt, bubblewrap runs
-sandboxed programs in an entirely separate network stack (i.e. it has a
-different `localhost`).
+Filesystem restrictions are different on all platforms. On Linux and WSL the
+sandbox shares the host's network namespace; on macOS the Seatbelt profile
+allows IP networking but not `(allow network*)`, which would also allow
+connecting to any Unix socket.
 
 ### Linux
 
@@ -183,8 +177,8 @@ There are two options:
 2. send them into a helper process inside the sandbox using an `SCM_RIGHTS`
   socket, and validate from the inside of the sandbox.
 
-We chose option 2 because we already have a helper process inside the sandbox
-(to set up the HTTP proxy).
+We chose option 2 because we already run a helper process inside the sandbox
+(to install the seccomp filter, see below).
 
 The flow for this approach in detail is:
 - open each *writable* path we `--bind` and get an `O_PATH` FD (which pins the
@@ -282,10 +276,9 @@ device nodes) from the read-only-filesystem write check, because connecting
 modifies no filesystem data. So even with `--ro-bind / /`, a sandboxed command
 could reach a session IPC socket in `$XDG_RUNTIME_DIR` (a Wayland compositor,
 the D-Bus session bus, ...) or a system socket like the Docker daemon, and use
-it to run a process *outside* the sandbox — defeating both the filesystem and
-network restrictions, regardless of the read/write grant. `--unshare-net` does
-not help: it isolates abstract sockets and TCP/IP, but these are pathname
-sockets on the bound filesystem.
+it to run a process *outside* the sandbox — defeating the filesystem
+restrictions, regardless of the read/write grant. The sandbox shares the host's
+network namespace, so abstract sockets are reachable too.
 
 The fix is a seccomp-BPF filter (built with `seccompiler`) installed on the
 untrusted command just before it runs. Rather than trying to hide every socket,
@@ -301,19 +294,19 @@ it stops the command from *obtaining* one it could escape through:
 - `connect`/`recvmsg`/`sendmsg`/`bind`/`listen`/`accept` stay allowed. With no
   way to create a forbidden socket — and, by fd hygiene, none inherited — there
   is nothing dangerous for them to act on, and blocking `connect` would break
-  legitimate loopback/proxy use. `seccompiler`'s architecture check kills
+  legitimate network use. `seccompiler`'s architecture check kills
   foreign-arch syscalls, closing the 32-bit (`socketcall`) bypass.
 
-The filter must apply to the command but **not** to the launcher/bridge process,
-which keeps using `AF_UNIX` to reach the host proxy for every request. So it is
-installed inline right before `exec` in the direct case, and via the child's
-`pre_exec` in the restricted-network bridge case. Because the filter lives in the
-in-sandbox launcher, the launcher is now **always** run (even when there are no
-writable binds to validate and no bridge), so the filter is always installed.
+The launcher validates the writable binds (which needs its `AF_UNIX`
+validation socket), then installs the filter right before it `exec`s the
+command. Because the filter lives in the in-sandbox launcher, the launcher is
+**always** run (even when there are no writable binds to validate), so the
+filter is always installed.
 
-This is Linux/WSL-specific. On macOS, Seatbelt gates Unix-socket `connect` as a
-separate `network-outbound` capability that is denied by default, so the same
-escape is already closed there without a seccomp filter.
+This is Linux/WSL-specific. On macOS, Seatbelt gates Unix-socket `connect` as
+`network-outbound (remote unix-socket ...)`, which the profile never grants
+(it allows only `(remote ip)`), so the same escape is already closed there
+without a seccomp filter.
 
 ### Windows
 

@@ -2636,8 +2636,8 @@ impl Thread {
             .sum::<usize>();
         breakdown.rules = estimate_tokens(global_rules_len + project_rules_len);
         breakdown.skills = estimate_tokens(skills_len);
-        breakdown.system_prompt = estimate_tokens(system_prompt.len())
-            .saturating_sub(breakdown.rules + breakdown.skills);
+        breakdown.system_prompt =
+            estimate_tokens(system_prompt.len()).saturating_sub(breakdown.rules + breakdown.skills);
 
         // Mirrors `extend_request_history_until`: a summary compaction replaces everything before
         // it with the retained user messages plus the summary.
@@ -2646,7 +2646,10 @@ impl Thread {
             match latest_compaction_message_ix_before(&self.messages, self.messages.len()) {
                 Some(compaction_ix) => {
                     if let Some(compaction) = self.messages.get(compaction_ix) {
-                        if matches!(&**compaction, Message::Compaction(CompactionInfo::Summary(_))) {
+                        if matches!(
+                            &**compaction,
+                            Message::Compaction(CompactionInfo::Summary(_))
+                        ) {
                             summarized_messages.extend(retained_user_request_messages_before(
                                 &self.messages,
                                 compaction_ix,
@@ -6363,8 +6366,8 @@ impl ToolCallEventStream {
         self.run_authorization_loop(title, options, Some(context), None, cx)
     }
 
-    /// Gate a sandbox *escalation* (network access, per-path writes, or full
-    /// filesystem write access) on user approval.
+    /// Gate a sandbox *escalation* (per-path writes, full filesystem write
+    /// access, or running unsandboxed) on user approval.
     ///
     /// Offers the user three grant lifetimes — "once", "for the rest of this
     /// thread", and "always". Thread grants live in the shared, in-memory
@@ -6381,20 +6384,11 @@ impl ToolCallEventStream {
             return Task::ready(Ok(()));
         }
 
-        let (network_hosts, network_all_hosts) = match &request.network {
-            crate::sandboxing::NetworkRequest::None => (Vec::new(), false),
-            crate::sandboxing::NetworkRequest::AnyHost => (Vec::new(), true),
-            crate::sandboxing::NetworkRequest::Hosts(hosts) => {
-                (hosts.iter().map(|host| host.to_string()).collect(), false)
-            }
-        };
         let sandbox_authorization_details = acp_thread::SandboxAuthorizationDetails {
             // The command stays in the tool-call title (set by the terminal
             // tool), so the approval card keeps showing it; the details only
             // describe the requested access and the agent's reason.
             command: None,
-            network_hosts,
-            network_all_hosts,
             allow_fs_write_all: request.allow_fs_write_all,
             unsandboxed: request.unsandboxed,
             write_paths: request.write_paths.clone(),
@@ -6527,8 +6521,6 @@ impl ToolCallEventStream {
 
         let details = acp_thread::SandboxAuthorizationDetails {
             command: None,
-            network_hosts: Vec::new(),
-            network_all_hosts: false,
             allow_fs_write_all: false,
             unsandboxed: false,
             write_paths: Vec::new(),
@@ -6645,36 +6637,6 @@ impl ToolCallEventStream {
         cx.update(|cx| {
             update_settings_file(fs, cx, move |settings, _| {
                 let agent = settings.agent.get_or_insert_default();
-                match &request.network {
-                    crate::sandboxing::NetworkRequest::None => {}
-                    crate::sandboxing::NetworkRequest::AnyHost => {
-                        agent.allow_sandbox_all_hosts();
-                    }
-                    crate::sandboxing::NetworkRequest::Hosts(hosts) => {
-                        // Rebuild the persisted list with subsumption pruning
-                        // so granting `*.github.com` retires a previously
-                        // persisted `api.github.com` instead of accumulating
-                        // redundant entries. Unparsable hand-edited entries
-                        // are preserved untouched.
-                        let mut patterns = Vec::new();
-                        let mut unparsable = Vec::new();
-                        for raw in agent.sandbox_network_hosts() {
-                            match http_proxy::HostPattern::parse(raw) {
-                                Ok(pattern) => {
-                                    crate::sandboxing::insert_host_pattern(&mut patterns, pattern)
-                                }
-                                Err(_) => unparsable.push(raw.clone()),
-                            }
-                        }
-                        for host in hosts {
-                            crate::sandboxing::insert_host_pattern(&mut patterns, host.clone());
-                        }
-                        let mut host_strings = unparsable;
-                        host_strings.extend(patterns.iter().map(|pattern| pattern.to_string()));
-                        agent.set_sandbox_network_hosts(host_strings);
-                    }
-                }
-
                 if request.allow_fs_write_all {
                     agent.allow_sandbox_fs_write_all();
                 }
@@ -6728,9 +6690,8 @@ impl ToolCallEventStream {
     /// Whether unsandboxed access is currently in effect: granted for this
     /// thread (a model-requested `unsandboxed` escape or a sandbox-creation
     /// fallback) or configured persistently via `allow_unsandboxed`. When true,
-    /// commands already run without any OS sandbox, so per-host network grants
-    /// no longer provide isolation and callers may skip host authorization
-    /// entirely.
+    /// commands already run without any OS sandbox, so fetch's private-address
+    /// guard no longer provides isolation and is skipped.
     pub(crate) fn unsandboxed_access_granted(&self, cx: &App) -> bool {
         self.unsandboxed_granted_for_thread()
             || self.sandbox_fallback_granted_for_thread()
@@ -9134,7 +9095,6 @@ mod tests {
 
         let (event_stream, mut receiver) = ToolCallEventStream::test();
         let request = SandboxRequest {
-            network: crate::sandboxing::NetworkRequest::None,
             allow_fs_write_all: false,
             unsandboxed: false,
             write_paths: vec![
@@ -9157,8 +9117,6 @@ mod tests {
             &authorization.tool_call.meta.value().cloned(),
         )
         .expect("sandbox authorization should include request details");
-        assert!(details.network_hosts.is_empty());
-        assert!(!details.network_all_hosts);
         assert_eq!(details.allow_fs_write_all, request.allow_fs_write_all);
         assert_eq!(details.unsandboxed, request.unsandboxed);
         assert_eq!(details.write_paths, request.write_paths);

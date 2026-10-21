@@ -1041,7 +1041,6 @@ pub struct SettingsWindow {
     shown_errors: HashSet<String>,
     pub(crate) hidden_deleted_skill_directory_paths: HashSet<PathBuf>,
     pub(crate) regex_validation_error: Option<String>,
-    pub(crate) sandbox_host_validation_error: Option<String>,
     last_copied_link_path: Option<&'static str>,
     /// Cached configuration views per provider, created lazily.
     pub(crate) provider_configuration_views:
@@ -2081,7 +2080,6 @@ impl SettingsWindow {
             shown_errors: HashSet::default(),
             hidden_deleted_skill_directory_paths: HashSet::default(),
             regex_validation_error: None,
-            sandbox_host_validation_error: None,
             list_state,
             bottom_spacer_height: px(0.),
             last_copied_link_path: None,
@@ -4393,7 +4391,6 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<SettingsWindow>,
     ) {
-        self.sandbox_host_validation_error = None;
         self.sub_page_stack
             .push(SubPage::new(sub_page_link, section_header));
         self.content_focus_handle.focus_handle(cx).focus(window, cx);
@@ -4600,7 +4597,6 @@ impl SettingsWindow {
 
     pub(crate) fn pop_sub_page(&mut self, window: &mut Window, cx: &mut Context<SettingsWindow>) {
         self.regex_validation_error = None;
-        self.sandbox_host_validation_error = None;
         if let Some(popped) = self.sub_page_stack.pop()
             && popped.link.r#type == SubPageType::SkillCreator
         {
@@ -5527,7 +5523,6 @@ pub mod test {
                 shown_errors: HashSet::default(),
                 hidden_deleted_skill_directory_paths: HashSet::default(),
                 regex_validation_error: None,
-                sandbox_host_validation_error: None,
                 last_copied_link_path: None,
                 provider_configuration_views: HashMap::default(),
                 provider_model_filters: HashMap::default(),
@@ -5668,7 +5663,6 @@ pub mod test {
             shown_errors: HashSet::default(),
             hidden_deleted_skill_directory_paths: HashSet::default(),
             regex_validation_error: None,
-            sandbox_host_validation_error: None,
             last_copied_link_path: None,
             provider_configuration_views: HashMap::default(),
             provider_model_filters: HashMap::default(),

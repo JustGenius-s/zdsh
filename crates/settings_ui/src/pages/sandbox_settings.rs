@@ -2,20 +2,17 @@ use std::path::PathBuf;
 
 use agent_settings::AgentSettings;
 use gpui::{ReadGlobal as _, ScrollHandle, prelude::*};
-use http_proxy::HostPattern;
 use settings::{Settings as _, SettingsStore};
-use ui::{Banner, Divider, Severity, SwitchField, ToggleState, Tooltip, prelude::*};
+use ui::{Divider, SwitchField, ToggleState, Tooltip, prelude::*};
 use util::ResultExt as _;
 
 use crate::SettingsWindow;
 use crate::components::{SettingsInputField, SettingsSectionHeader};
 
-const DOMAINS_DESCRIPTION: &str = "Each entry is an exact domain (github.com) or a leading-*. subdomain wildcard (*.npmjs.org). IP addresses and local domains are not allowed.";
-
 const WRITE_PATHS_DESCRIPTION: &str = "Each entry must be an absolute path and grants write access to the whole subtree, except protected Git metadata.";
 
 pub(crate) fn render_sandbox_settings_page(
-    settings_window: &SettingsWindow,
+    _settings_window: &SettingsWindow,
     scroll_handle: &ScrollHandle,
     _window: &mut Window,
     cx: &mut Context<SettingsWindow>,
@@ -23,21 +20,13 @@ pub(crate) fn render_sandbox_settings_page(
     // Sandbox permissions are a user-level setting; they aren't configurable
     // per-project, so always operate against the global value here.
     let permissions = AgentSettings::get_global(cx).sandbox_permissions.clone();
-    let validation_error = settings_window.sandbox_host_validation_error.clone();
 
     // Read the list values from the raw user settings content rather than the
     // compiled `AgentSettings`. The compiled `write_paths` are lexically
     // normalized (see `compile_sandbox_permissions`), so editing or removing a
     // row by the normalized value would fail to match the literal entry stored
     // in settings.json and silently leave the permission in place.
-    let (network_hosts, write_paths) = raw_sandbox_lists(cx);
-
-    let host_rows: Vec<AnyElement> = network_hosts
-        .into_iter()
-        .enumerate()
-        .map(|(index, host)| render_host_row(index, host, cx))
-        .collect();
-    let add_host_input = render_add_host_input(cx);
+    let write_paths = raw_sandbox_write_paths(cx);
 
     let path_rows: Vec<AnyElement> = write_paths
         .into_iter()
@@ -93,50 +82,6 @@ pub(crate) fn render_sandbox_settings_page(
             )
         })
         .when(sandbox_enabled, |this| this
-        .when_some(validation_error, |this, error| {
-            this.child(
-                Banner::new()
-                    .severity(Severity::Warning)
-                    .child(Label::new(error).size(LabelSize::Small))
-                    .action_slot(
-                        Button::new("dismiss-sandbox-host-error", "Dismiss")
-                            .style(ButtonStyle::Tinted(ui::TintColor::Warning))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.sandbox_host_validation_error = None;
-                                cx.notify();
-                            })),
-                    ),
-            )
-        })
-        .child(
-            v_flex()
-                .gap_4()
-                .child(SettingsSectionHeader::new("Network").no_padding(true))
-                .child(
-                    SwitchField::new(
-                        "sandbox-allow-all-hosts",
-                        Some("Allow All Domains"),
-                        Some(
-                            "Let sandboxed commands reach any domain over the network without prompting."
-                                .into(),
-                        ),
-                        permissions.allow_all_hosts,
-                        move |state, _window, cx| {
-                            set_allow_all_hosts(*state == ToggleState::Selected, cx);
-                        },
-                    )
-                    .tab_index(0),
-                )
-                .child(render_list_section(
-                    "Allowed Domains",
-                    DOMAINS_DESCRIPTION,
-                    host_rows,
-                    add_host_input,
-                    empty_border,
-                )),
-        )
-
-        .child(Divider::horizontal())
         .child(
             v_flex()
                 .gap_4()
@@ -174,7 +119,7 @@ pub(crate) fn render_sandbox_settings_page(
                         "sandbox-warn-confusable-unicode",
                         Some("Warn About Confusable Unicode"),
                         Some(
-                            "Warn when an approval prompt requests a domain or write path that contains potentially confusable Unicode characters, such as homoglyphs (i.e. two symbols that look similar, such as a Cyrillic `а`)"
+                            "Warn when an approval prompt requests a write path that contains potentially confusable Unicode characters, such as homoglyphs (i.e. two symbols that look similar, such as a Cyrillic `а`)"
                                 .into(),
                         ),
                         permissions.warn_confusable_unicode,
@@ -251,89 +196,6 @@ fn render_empty_state(border_color: gpui::Hsla) -> AnyElement {
         .into_any_element()
 }
 
-fn render_host_row(index: usize, host: String, cx: &mut Context<SettingsWindow>) -> AnyElement {
-    let host_for_delete = host.clone();
-    let host_for_update = host.clone();
-    let settings_window = cx.entity().downgrade();
-
-    SettingsInputField::new(format!("sandbox-host-{}", index))
-        .with_initial_text(host)
-        .tab_index(0)
-        .with_buffer_font()
-        .color(Color::Default)
-        .action_slot(
-            IconButton::new(format!("sandbox-host-delete-{}", index), IconName::Trash)
-                .icon_size(IconSize::Small)
-                .icon_color(Color::Muted)
-                .tooltip(Tooltip::text("Remove Domain"))
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    remove_network_host(host_for_delete.clone(), cx);
-                })),
-        )
-        .on_confirm(move |new_host, _window, cx| {
-            let Some(new_host) = new_host else {
-                return;
-            };
-            let new_host = new_host.trim().to_string();
-            if new_host.is_empty() || new_host == host_for_update {
-                return;
-            }
-            let result = canonicalize_host(&new_host);
-            settings_window
-                .update(cx, |this, cx| {
-                    match result {
-                        Ok(canonical) => {
-                            this.sandbox_host_validation_error = None;
-                            update_network_host(host_for_update.clone(), canonical, cx);
-                        }
-                        Err(error) => {
-                            this.sandbox_host_validation_error = Some(error);
-                        }
-                    }
-                    cx.notify();
-                })
-                .log_err();
-        })
-        .into_any_element()
-}
-
-fn render_add_host_input(cx: &mut Context<SettingsWindow>) -> AnyElement {
-    let settings_window = cx.entity().downgrade();
-
-    SettingsInputField::new("sandbox-host-new")
-        .with_placeholder("Add domain (e.g. github.com or *.npmjs.org)…")
-        .tab_index(0)
-        .with_buffer_font()
-        .display_clear_button()
-        .display_confirm_button()
-        .clear_on_confirm()
-        .on_confirm(move |host, _window, cx| {
-            let Some(host) = host else {
-                return;
-            };
-            let host = host.trim().to_string();
-            if host.is_empty() {
-                return;
-            }
-            let result = canonicalize_host(&host);
-            settings_window
-                .update(cx, |this, cx| {
-                    match result {
-                        Ok(canonical) => {
-                            this.sandbox_host_validation_error = None;
-                            add_network_host(canonical, cx);
-                        }
-                        Err(error) => {
-                            this.sandbox_host_validation_error = Some(error);
-                        }
-                    }
-                    cx.notify();
-                })
-                .log_err();
-        })
-        .into_any_element()
-}
-
 fn render_path_row(index: usize, path: PathBuf, cx: &mut Context<SettingsWindow>) -> AnyElement {
     let path_for_delete = path.clone();
     let path_for_update = path.clone();
@@ -395,23 +257,19 @@ fn render_add_path_input(cx: &mut Context<SettingsWindow>) -> AnyElement {
         .into_any_element()
 }
 
-/// The literal host and write-path lists as stored in user settings.json. These
-/// are the exact strings/paths that edits and removals must match against.
-fn raw_sandbox_lists(cx: &App) -> (Vec<String>, Vec<PathBuf>) {
+/// The literal write-path list as stored in user settings.json. These are the
+/// exact paths that edits and removals must match against.
+fn raw_sandbox_write_paths(cx: &App) -> Vec<PathBuf> {
     let store = SettingsStore::global(cx);
     let permissions = store
         .raw_user_settings()
         .and_then(|user| user.content.agent.as_ref())
         .and_then(|agent| agent.sandbox_permissions.as_ref());
 
-    let network_hosts = permissions
-        .and_then(|permissions| permissions.network_hosts.as_ref())
-        .map(|hosts| hosts.0.clone())
-        .unwrap_or_default();
     // Display and match on the requested path of each entry (the literal a
     // hand-edit types); Zed-written "allow always" grants also carry a resolved
     // canonical, but the settings row still keys off the requested path.
-    let write_paths = permissions
+    permissions
         .and_then(|permissions| permissions.write_paths.as_ref())
         .map(|paths| {
             paths
@@ -420,31 +278,7 @@ fn raw_sandbox_lists(cx: &App) -> (Vec<String>, Vec<PathBuf>) {
                 .map(|entry| entry.requested.clone())
                 .collect()
         })
-        .unwrap_or_default();
-
-    (network_hosts, write_paths)
-}
-
-/// Validate and canonicalize a user-provided domain, returning either the
-/// canonical form to persist or a domain-friendly error to surface.
-fn canonicalize_host(host: &str) -> Result<String, String> {
-    use http_proxy::HostPatternError;
-
-    HostPattern::parse(host)
-        .map(|pattern| pattern.to_string())
-        .map_err(|error| match error {
-            HostPatternError::Empty => "Domain cannot be empty.".to_string(),
-            HostPatternError::IpLiteral(_) => {
-                "IP addresses and local domains aren't allowed; enter a domain like github.com."
-                    .to_string()
-            }
-            HostPatternError::InvalidWildcard(_) => {
-                "Wildcards are only allowed as a leading label, e.g. *.github.com.".to_string()
-            }
-            HostPatternError::Invalid { .. } => {
-                "Not a valid domain. Use a domain like github.com or *.npmjs.org.".to_string()
-            }
-        })
+        .unwrap_or_default()
 }
 
 fn update_sandbox_permissions(
@@ -470,12 +304,6 @@ fn set_sandbox_enabled(value: bool, cx: &mut App) {
     });
 }
 
-fn set_allow_all_hosts(value: bool, cx: &mut App) {
-    update_sandbox_permissions(cx, move |permissions| {
-        permissions.allow_all_hosts = Some(value);
-    });
-}
-
 fn set_allow_fs_write_all(value: bool, cx: &mut App) {
     update_sandbox_permissions(cx, move |permissions| {
         permissions.allow_fs_write_all = Some(value);
@@ -491,35 +319,6 @@ fn set_warn_confusable_unicode(value: bool, cx: &mut App) {
 fn set_warn_ntfs_grants(value: bool, cx: &mut App) {
     update_sandbox_permissions(cx, move |permissions| {
         permissions.warn_ntfs_grants = Some(value);
-    });
-}
-
-fn add_network_host(host: String, cx: &mut App) {
-    update_sandbox_permissions(cx, move |permissions| {
-        let hosts = &mut permissions.network_hosts.get_or_insert_default().0;
-        if !hosts.contains(&host) {
-            hosts.push(host);
-        }
-    });
-}
-
-fn update_network_host(old_host: String, new_host: String, cx: &mut App) {
-    update_sandbox_permissions(cx, move |permissions| {
-        let hosts = &mut permissions.network_hosts.get_or_insert_default().0;
-        if hosts.contains(&new_host) {
-            return;
-        }
-        if let Some(entry) = hosts.iter_mut().find(|host| **host == old_host) {
-            *entry = new_host;
-        }
-    });
-}
-
-fn remove_network_host(host: String, cx: &mut App) {
-    update_sandbox_permissions(cx, move |permissions| {
-        if let Some(hosts) = permissions.network_hosts.as_mut() {
-            hosts.0.retain(|entry| *entry != host);
-        }
     });
 }
 

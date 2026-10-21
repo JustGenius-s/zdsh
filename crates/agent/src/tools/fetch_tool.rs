@@ -1,3 +1,4 @@
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs as _};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::{borrow::Cow, cell::RefCell};
@@ -13,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use ui::SharedString;
 use util::markdown::{MarkdownEscaped, MarkdownInlineCode};
 
-use crate::sandboxing::{NetworkRequest, SandboxRequest};
 use crate::{AgentTool, ToolCallEventStream, ToolInput};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
@@ -23,14 +23,14 @@ enum ContentType {
     Json,
 }
 
-/// The maximum number of HTTP redirects the fetch tool will follow. Each hop is
-/// re-authorized against the shared network grants before being followed.
+/// The maximum number of HTTP redirects the fetch tool will follow. Each hop's
+/// host is checked against the private-address guard before being followed.
 const MAX_REDIRECTS: usize = 20;
 
 /// The outcome of a single (non-redirect-following) HTTP request.
 enum FetchStep {
     /// The server responded with a redirect to this absolute URL. Its host must
-    /// be authorized before the redirect is followed.
+    /// be checked before the redirect is followed.
     Redirect(String),
     /// A terminal response was received and converted to Markdown.
     Complete(String),
@@ -48,16 +48,10 @@ fn normalize_url(url: &str) -> Cow<'_, str> {
 
 /// Fetches a URL and returns the content as Markdown.
 ///
-/// This tool is not run inside the terminal OS sandbox, but it still refuses to
-/// reach any host that hasn't been granted network access. It shares the same
-/// per-host grants as the `terminal` tool: approving a host for one authorizes
-/// it for the other, whether the grant is for this thread or saved permanently.
-/// HTTP redirects are followed one hop at a time, and each hop's host must be
-/// granted the same way, so a granted host can't redirect the request to a host
-/// that hasn't been approved.
-/// When unsandboxed access has been granted, these restrictions are lifted
-/// entirely, matching the terminal, which is also how loopback and IP-literal
-/// hosts (which can't be granted individually) become reachable.
+/// Hosts that resolve only to loopback, private, or link-local addresses are
+/// refused, and HTTP redirects are followed one hop at a time with each hop's
+/// host checked the same way. When unsandboxed access has been granted, this
+/// restriction is lifted, matching the terminal.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FetchToolInput {
     /// The URL to fetch.
@@ -74,8 +68,7 @@ impl FetchTool {
     }
 
     /// Performs a single HTTP GET *without* following redirects, so the tool can
-    /// re-authorize each hop against the shared network grants before following
-    /// it. Returns the redirect target when the server responds with a 3xx, or
+    /// check each hop's host before following it. Returns the redirect target when the server responds with a 3xx, or
     /// the final content converted to Markdown otherwise.
     async fn fetch_step(http_client: Arc<HttpClientWithUrl>, url: &str) -> Result<FetchStep> {
         let normalized = normalize_url(url);
@@ -167,9 +160,8 @@ impl FetchTool {
 }
 
 /// Resolve the host of `url` and confirm it doesn't point into loopback /
-/// private / link-local space, applying the same forbidden-IP policy the
-/// terminal sandbox's proxy uses. Returns an error (including "resolves only to
-/// forbidden addresses") that aborts the fetch.
+/// private / link-local space. Returns an error (including "resolves only to
+/// loopback/private/link-local addresses") that aborts the fetch.
 ///
 /// DNS resolution blocks, so callers should run this off the foreground thread.
 /// See the caller for why this is a gate rather than a full resolve-to-connect
@@ -179,7 +171,7 @@ fn verify_host_not_forbidden(url: &str) -> Result<()> {
     let parsed =
         url::Url::parse(&normalized).with_context(|| format!("could not parse URL {url:?}"))?;
     let host = parsed
-        .host_str()
+        .host()
         .with_context(|| format!("URL {url:?} has no host to reach"))?;
     // Default to the scheme's port when the URL omits one; resolution needs a
     // port but the value doesn't affect which IPs a host resolves to.
@@ -187,28 +179,60 @@ fn verify_host_not_forbidden(url: &str) -> Result<()> {
         .port_or_known_default()
         .unwrap_or(if parsed.scheme() == "http" { 80 } else { 443 });
 
-    http_proxy::PinnedHost::resolve(host, port).map(|_pinned| ())?;
+    let addresses: Vec<SocketAddr> = match host {
+        url::Host::Domain(domain) => (domain, port)
+            .to_socket_addrs()
+            .with_context(|| format!("resolving {domain}:{port}"))?
+            .collect(),
+        url::Host::Ipv4(ip) => vec![SocketAddr::new(ip.into(), port)],
+        url::Host::Ipv6(ip) => vec![SocketAddr::new(ip.into(), port)],
+    };
+    if addresses.is_empty() {
+        bail!("{host}:{port} did not resolve to any address");
+    }
+    if addresses
+        .iter()
+        .all(|address| is_forbidden_ip(address.ip()))
+    {
+        bail!(
+            "{host} resolves only to loopback/private/link-local addresses, which fetch can \
+             only reach once unsandboxed access has been granted (for example, via a terminal \
+             command that requests it)"
+        );
+    }
     Ok(())
 }
 
-/// Extracts the host from a fetch URL as a [`http_proxy::HostPattern`] so it can
-/// be matched against the shared network grants. Mirrors the scheme handling in
-/// [`normalize_url`] (defaulting to `https://` when none is given).
-fn host_pattern_for_url(url: &str) -> Result<http_proxy::HostPattern> {
-    let normalized = normalize_url(url);
-    let parsed =
-        url::Url::parse(&normalized).with_context(|| format!("could not parse URL {url:?}"))?;
-    let host = parsed
-        .host_str()
-        .with_context(|| format!("URL {url:?} has no host to authorize network access for"))?;
-    http_proxy::HostPattern::parse(host).map_err(|error| match error {
-        http_proxy::HostPatternError::IpLiteral(_) => anyhow::anyhow!(
-            "cannot fetch {host:?}: loopback and IP-literal hosts can't be granted network \
-             access individually. They are only reachable once unsandboxed access has been \
-             granted (for example, via a terminal command that requests it)."
-        ),
-        error => anyhow::anyhow!("cannot authorize network access to {host:?}: {error}"),
-    })
+/// Whether a resolved address is in loopback / private / link-local space,
+/// which fetch must not reach on the model's behalf.
+fn is_forbidden_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_forbidden_ipv4(v4),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_forbidden_ipv4(v4);
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                // Link-local (fe80::/10) and unique-local (fc00::/7); the
+                // dedicated `is_unicast_link_local` / `is_unique_local`
+                // methods are not yet stable.
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+        }
+    }
+}
+
+fn is_forbidden_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local() // includes 169.254.169.254 cloud metadata
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        // Shared address space (RFC 6598, 100.64.0.0/10): CGNAT, and notably
+        // Tailscale-style overlay networks.
+        || (octets[0] == 100 && (octets[1] & 0xc0) == 64)
 }
 
 impl AgentTool for FetchTool {
@@ -265,26 +289,20 @@ impl AgentTool for FetchTool {
                 }
             };
 
-            // Then, unless unsandboxed access is already in effect, the per-host
-            // network grant shared with the terminal tool. If the host isn't
-            // already granted (for this thread or in saved settings) the user is
-            // shown the same escalation prompt the terminal uses; a denial
-            // aborts the fetch. This tool never runs inside the OS sandbox, so
-            // the grant is only consulted to decide whether the request may
-            // proceed. When unsandboxed access has been granted the terminal
-            // already runs without isolation, so we drop fetch's restrictions
-            // too — including reaching hosts that can't be granted individually
-            // (loopback and IP literals).
+            // Then, unless unsandboxed access is already in effect, refuse hosts
+            // that resolve into loopback / private / link-local space, so a
+            // fetched page can't steer the model into the local machine, the
+            // LAN, or a cloud metadata endpoint. When unsandboxed access has
+            // been granted the terminal already runs without isolation, so we
+            // drop the check too; that's also how local services become
+            // reachable. When the sandboxing feature flag is off the terminal
+            // isn't sandboxed either, so skip it entirely (the pre-sandboxing
+            // behavior).
             //
-            // Crucially, this authorization is applied to every redirect hop as
-            // well as the initial URL, so a granted host can't 30x-redirect the
-            // fetch to a host the user never approved. We disable the HTTP
-            // client's own redirect following and re-run the grant for each hop
-            // before requesting it.
-            //
-            // When the sandboxing feature flag is off the terminal isn't
-            // sandboxed either, so gating fetch by host would provide no
-            // isolation; skip it entirely (the pre-sandboxing behavior).
+            // The check applies to every redirect hop as well as the initial
+            // URL, so a public host can't 30x-redirect the fetch into private
+            // space. We disable the HTTP client's own redirect following and
+            // re-run the check for each hop before requesting it.
             let unsandboxed = cx.update(|cx| {
                 !crate::sandboxing::sandboxing_enabled(cx)
                     || event_stream.unsandboxed_access_granted(cx)
@@ -294,36 +312,14 @@ impl AgentTool for FetchTool {
             let mut redirects = 0;
             let text = loop {
                 if !unsandboxed {
-                    let host = host_pattern_for_url(&current_url).map_err(|e| e.to_string())?;
-                    let authorize_host = cx.update(|cx| {
-                        let request = SandboxRequest {
-                            network: NetworkRequest::Hosts(vec![host]),
-                            ..Default::default()
-                        };
-                        event_stream.authorize_sandbox(request, String::new(), cx)
-                    });
-                    futures::select! {
-                        result = authorize_host.fuse() => result.map_err(|e| e.to_string())?,
-                        _ = event_stream.cancelled_by_user().fuse() => {
-                            return Err("Fetch cancelled by user".to_string());
-                        }
-                    };
-
-                    // Authorizing the *hostname* is not enough: a granted host
-                    // (or a redirect to one) whose DNS points into loopback /
-                    // private / link-local space would otherwise let the model
-                    // reach the local machine or LAN (SSRF / DNS rebinding).
-                    // Resolve and vet the host now, applying the same
-                    // forbidden-IP policy the terminal sandbox's proxy enforces.
-                    //
                     // NOTE: this is a gate, not a full pin. `HttpClientWithUrl`
                     // resolves the hostname again when it connects, so a DNS
                     // answer that flips between this check and that connect could
                     // still slip through. Closing that residual window would
                     // require the HTTP client to connect to a pre-vetted IP
-                    // (`PinnedHost::socket_addrs`) rather than re-resolving;
-                    // until then this blocks the realistic case of a stably
-                    // resolving host that points at forbidden space.
+                    // rather than re-resolving; until then this blocks the
+                    // realistic case of a stably resolving host that points at
+                    // forbidden space.
                     let verify_task = cx.background_spawn({
                         let url = current_url.clone();
                         async move { verify_host_not_forbidden(&url) }
@@ -376,10 +372,7 @@ mod tests {
     use super::*;
 
     // These use IP-literal URLs, which "resolve" to themselves, so the SSRF gate
-    // is exercised without depending on real DNS. IP literals can't be *granted*
-    // network access (that's a separate, earlier check), but they can be the
-    // target a granted hostname redirects to or resolves into — which is exactly
-    // the case this gate defends.
+    // is exercised without depending on real DNS.
 
     #[test]
     fn verify_host_rejects_loopback_literal() {
@@ -410,5 +403,57 @@ mod tests {
     fn verify_host_allows_public_literal() {
         verify_host_not_forbidden("https://93.184.215.14/")
             .expect("a public address must be allowed through the gate");
+        verify_host_not_forbidden("https://[2606:2800:220:1:248:1893:25c8:1946]/")
+            .expect("a public IPv6 address must be allowed through the gate");
+    }
+
+    #[test]
+    fn forbidden_ip_covers_v4_ranges() {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "192.168.1.1",
+            "172.16.0.1",
+            "169.254.169.254", // cloud metadata
+            "0.0.0.0",
+            "255.255.255.255",
+            "100.64.0.1", // CGNAT / Tailscale
+        ] {
+            assert!(
+                is_forbidden_ip(ip.parse().unwrap()),
+                "expected {ip} to be forbidden"
+            );
+        }
+    }
+
+    #[test]
+    fn forbidden_ip_covers_v6_ranges() {
+        for ip in [
+            "::1",              // loopback
+            "::",               // unspecified
+            "fe80::1",          // link-local
+            "fc00::1",          // unique-local
+            "::ffff:127.0.0.1", // IPv4-mapped loopback
+            "::ffff:10.0.0.1",  // IPv4-mapped private
+        ] {
+            assert!(
+                is_forbidden_ip(ip.parse().unwrap()),
+                "expected {ip} to be forbidden"
+            );
+        }
+    }
+
+    #[test]
+    fn public_ips_are_allowed() {
+        for ip in [
+            "93.184.215.14",
+            "8.8.8.8",
+            "2606:2800:220:1:248:1893:25c8:1946",
+        ] {
+            assert!(
+                !is_forbidden_ip(ip.parse().unwrap()),
+                "expected {ip} to be allowed"
+            );
+        }
     }
 }

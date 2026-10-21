@@ -16,10 +16,9 @@
 //!    under `sandbox-exec -f <config-path>`.
 //!
 //! Reads are permitted by default; writes are restricted to a caller-
-//! provided list of directories; IP network access and unrestricted writes
-//! must be opted into per command. Callers may separately allow specific
-//! Unix domain sockets for local IPC; those do not permit sending packets to
-//! other machines.
+//! provided list of directories, and unrestricted writes must be opted into
+//! per command. IP networking is always allowed. Unix domain sockets are not,
+//! except specific sockets callers allow for local IPC.
 
 use std::path::Path;
 use std::{io::Write, path::PathBuf};
@@ -39,29 +38,8 @@ use tempfile::NamedTempFile;
 /// module deliberately doesn't expose).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SandboxPermissions {
-    /// Network access policy for the command.
-    pub network: NetworkAccess,
     /// Allow unrestricted filesystem writes.
     pub allow_fs_write: bool,
-}
-
-/// Network-access setting for a sandboxed command.
-///
-/// The default ([`NetworkAccess::None`]) blocks all outbound network at the
-/// Seatbelt layer. [`NetworkAccess::LocalhostPort`] confines the command to a
-/// single loopback port — used to force all egress through the in-process
-/// HTTP/HTTPS proxy that enforces a hostname allowlist (see the `http_proxy`
-/// crate). [`NetworkAccess::All`] lifts the restriction entirely.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum NetworkAccess {
-    /// All outbound network blocked.
-    #[default]
-    None,
-    /// Outbound TCP allowed only to `localhost:<port>`. Used to confine
-    /// sandboxed commands to the in-process HTTP/HTTPS proxy.
-    LocalhostPort(u16),
-    /// All outbound network allowed.
-    All,
 }
 
 /// A Seatbelt config file written to a temporary path on disk, suitable
@@ -92,8 +70,7 @@ impl SeatbeltConfigFile {
     /// fall under a writable directory. Contents remain readable.
     ///
     /// `allowed_unix_socket_paths` lists Unix domain sockets the command may
-    /// connect to for local IPC even when IP network access is otherwise
-    /// disabled. This does not permit sending packets to other machines.
+    /// connect to for local IPC. Every other Unix socket stays unreachable.
     pub fn new(
         writable_directories: &[&Path],
         protected_paths: &[&Path],
@@ -140,8 +117,7 @@ impl SeatbeltConfigFile {
 /// * `protected_paths` - Paths whose writes should be denied even if they fall
 ///   under a writable directory. Contents remain readable.
 /// * `allowed_unix_socket_paths` - Unix domain sockets the command may
-///   connect to for local IPC even when IP network access is otherwise
-///   disabled. This does not permit sending packets to other machines.
+///   connect to for local IPC. Every other Unix socket stays unreachable.
 /// * `permissions` - Sandbox relaxations requested for this command.
 ///
 /// # Returns
@@ -190,13 +166,11 @@ pub fn wrap_invocation(
 /// worktree paths plus any per-command scratch directory the caller wants
 /// allowed) and the standard `/dev/*` write targets are also allowed by
 /// default. Writes to paths in `protected_paths` are denied even when they
-/// would otherwise be writable; contents remain readable. Unix domain socket paths in
-/// `allowed_unix_socket_paths` are reachable for local IPC even when IP
-/// network access is otherwise blocked. This does not permit sending packets
-/// to other machines.
+/// would otherwise be writable; contents remain readable. IP networking is
+/// always allowed. Unix domain socket paths in `allowed_unix_socket_paths` are
+/// reachable for local IPC; every other Unix socket is not.
 ///
-/// Network access and unrestricted filesystem writes must be requested via
-/// [`SandboxPermissions`].
+/// Unrestricted filesystem writes must be requested via [`SandboxPermissions`].
 ///
 /// The returned string is the textual content to write to the
 /// [`SeatbeltConfigFile`] passed to `sandbox-exec -f`.
@@ -354,46 +328,24 @@ fn generate_seatbelt_config(
         ));
     }
 
-    match permissions.network {
-        NetworkAccess::None => {}
-        NetworkAccess::All => {
-            config.push_str(
-                r#"
-; Allow network access
-(allow network*)
-"#,
-            );
-        }
-        NetworkAccess::LocalhostPort(port) => {
-            // Seatbelt rejects IP literals in `(remote tcp ...)` rules — it
-            // only accepts `*` or `localhost` as the host part. The runtime
-            // resolves correctly when the sandboxed process connects to
-            // `127.0.0.1:<port>`, so this is a syntactic constraint, not a
-            // routing one.
-            config.push_str(&format!(
-                r#"
-; Allow outbound network only to the in-process proxy on localhost
-(allow network-outbound (remote tcp "localhost:{port}"))
-; Network binds (sandboxed process picking its own ephemeral source port)
-(allow network-bind (local ip "localhost:*"))
-"#,
-            ));
-        }
-    }
+    // IP networking only, never `(allow network*)`: that would also permit
+    // connecting to any Unix socket (e.g. the Docker socket), which is a
+    // sandbox escape. Linux blocks Unix sockets with seccomp to the same end.
+    // Tools that do their own DNS resolution, TLS trust evaluation, and
+    // network-configuration lookups also need a few more Mach services; still
+    // an allowlist (mirrors Codex's Seatbelt network policy) that excludes
+    // LaunchServices/launchd.
+    config.push_str(
+        r#"
+; Allow IP networking
+(allow network-outbound (remote ip))
+(allow network-inbound (local ip))
+(allow network-bind (local ip))
 
-    // When outbound network is permitted at all, tools that do their own DNS
-    // resolution, TLS trust evaluation, and network-configuration lookups need a
-    // few more Mach services. Kept out of the base allowlist so a no-network
-    // command can't reach them. Still an allowlist (mirrors Codex's Seatbelt
-    // network policy) that excludes LaunchServices/launchd.
-    if !matches!(permissions.network, NetworkAccess::None) {
-        config.push_str(
-            r#"
-; Extra Mach services for DNS / TLS-trust / network configuration, needed only
-; when outbound network is permitted. Still an allowlist that excludes
-; LaunchServices/launchd. If hostname resolution fails, add
-; `com.apple.mDNSResponder`; if offline code-signature verification of loaded
-; dylibs/plugins fails, move the trust services into the base block above.
+; Extra Mach services for DNS / TLS-trust / network configuration. Still an
+; allowlist that excludes LaunchServices/launchd. If hostname resolution fails,
+; add `com.apple.mDNSResponder`; if offline code-signature verification of
+; loaded dylibs/plugins fails, move the trust services into the base block above.
 (allow mach-lookup
     ; network / DNS configuration
     (global-name "com.apple.SystemConfiguration.configd")
@@ -405,15 +357,13 @@ fn generate_seatbelt_config(
     (global-name "com.apple.trustd.agent")
     (global-name "com.apple.ocspd"))
 "#,
-        );
-    }
+    );
 
     if !allowed_unix_socket_paths.is_empty() {
         config.push_str(
             r#"
 ; Allow local IPC to inherited Unix domain sockets. Seatbelt models this as
-; network-outbound, but this does not permit IP networking or sending packets
-; to other machines.
+; network-outbound; only the sockets listed below are reachable.
 ;
 ; `system-socket` only governs the `socket()` syscall (creating an AF_UNIX
 ; socket), which is harmless on its own. The capability that matters,
@@ -494,7 +444,6 @@ mod tests {
             &[],
             &[],
             SandboxPermissions {
-                network: NetworkAccess::None,
                 allow_fs_write: true,
             },
         )
@@ -541,27 +490,32 @@ mod tests {
         assert!(!rules.contains("launchservicesd"));
         assert!(!rules.contains("com.apple.lsd"));
         assert!(!rules.contains("com.apple.pasteboard"));
-
-        // Network-only services must not be granted without network.
-        assert!(!rules.contains("com.apple.SecurityServer"));
-        assert!(!rules.contains("com.apple.SystemConfiguration.configd"));
     }
 
     #[test]
-    fn test_generate_seatbelt_config_adds_network_mach_services_when_network_allowed() {
+    fn test_generate_seatbelt_config_allows_ip_network_but_not_unix_sockets() {
         let dir = PathBuf::from("/Users/test/projects/myproject");
-        let config = generate_seatbelt_config(
-            &[dir.as_path()],
-            &[],
-            &[],
-            SandboxPermissions {
-                network: NetworkAccess::All,
-                allow_fs_write: false,
-            },
-        )
-        .unwrap();
+        let config =
+            generate_seatbelt_config(&[dir.as_path()], &[], &[], SandboxPermissions::default())
+                .unwrap();
+        let rules = seatbelt_rules_only(&config);
 
-        // DNS / TLS / network-config services appear only when network is allowed.
+        assert!(rules.contains("(allow network-outbound (remote ip))"));
+        assert!(rules.contains("(allow network-inbound (local ip))"));
+        assert!(rules.contains("(allow network-bind (local ip))"));
+        // The blanket form would also allow connecting to any Unix socket.
+        assert!(!rules.contains("(allow network*)"));
+        assert!(!rules.contains("remote unix-socket"));
+        assert!(!rules.contains("AF_UNIX"));
+    }
+
+    #[test]
+    fn test_generate_seatbelt_config_adds_network_mach_services() {
+        let dir = PathBuf::from("/Users/test/projects/myproject");
+        let config =
+            generate_seatbelt_config(&[dir.as_path()], &[], &[], SandboxPermissions::default())
+                .unwrap();
+
         assert!(config.contains("com.apple.SystemConfiguration.configd"));
         assert!(config.contains("com.apple.SecurityServer"));
         assert!(config.contains("com.apple.trustd"));
@@ -571,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_seatbelt_config_allows_unix_socket_paths_without_network() {
+    fn test_generate_seatbelt_config_allows_listed_unix_socket_paths() {
         let dir = PathBuf::from("/Users/test/projects/myproject");
         let socket_path = PathBuf::from("/private/tmp/com.example.test/Listeners");
         let config = generate_seatbelt_config(
@@ -659,6 +613,56 @@ mod tests {
             "sandbox should allow connecting to the allow-listed unix socket: stderr={} stdout={}",
             String::from_utf8_lossy(&output.stderr),
             String::from_utf8_lossy(&output.stdout),
+        );
+    }
+
+    #[test]
+    fn test_sandbox_allows_tcp_but_blocks_unlisted_unix_socket() {
+        use std::net::TcpListener;
+        use std::os::unix::net::UnixListener;
+        use std::process::{Command, Stdio};
+
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").expect("test TCP socket should bind");
+        let tcp_port = tcp_listener.local_addr().unwrap().port();
+
+        // See `test_sandbox_allows_connecting_to_allowed_unix_socket` for why
+        // this binds under `/tmp`.
+        let temp_dir = tempfile::Builder::new()
+            .prefix("zed-sock-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let socket_path = temp_dir.path().join("other.sock");
+        let _unix_listener = UnixListener::bind(&socket_path).expect("test socket should bind");
+
+        let run = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            let (program, args, _config_file) = wrap_invocation(
+                "/usr/bin/nc",
+                &args,
+                &[temp_dir.path()],
+                &[],
+                &[],
+                SandboxPermissions::default(),
+            )
+            .unwrap();
+            Command::new(&program)
+                .args(&args)
+                .stdin(Stdio::null())
+                .output()
+                .expect("failed to execute sandbox-exec")
+        };
+
+        let tcp = run(&["-z", "-w", "5", "127.0.0.1", &tcp_port.to_string()]);
+        assert!(
+            tcp.status.success(),
+            "sandbox should allow TCP connections: stderr={}",
+            String::from_utf8_lossy(&tcp.stderr),
+        );
+
+        let unix = run(&["-z", "-U", "-w", "5", &socket_path.display().to_string()]);
+        assert!(
+            !unix.status.success(),
+            "sandbox should block Unix sockets that aren't allow-listed"
         );
     }
 
@@ -753,7 +757,6 @@ mod tests {
             &[protected_file.as_path()],
             &[],
             SandboxPermissions {
-                network: NetworkAccess::None,
                 allow_fs_write: true,
             },
         )
@@ -774,46 +777,6 @@ mod tests {
             std::fs::read_to_string(&protected_file).unwrap(),
             "target\n"
         );
-    }
-
-    #[test]
-    fn test_generate_seatbelt_config_contains_network_when_allowed() {
-        let dir = PathBuf::from("/Users/test/projects/myproject");
-        let config = generate_seatbelt_config(
-            &[dir.as_path()],
-            &[],
-            &[],
-            SandboxPermissions {
-                network: NetworkAccess::All,
-                allow_fs_write: false,
-            },
-        )
-        .unwrap();
-
-        assert!(config.contains("(allow network*)"));
-        assert!(config.contains("/Users/test/projects/myproject"));
-        assert!(config.contains("(allow file-write*"));
-        assert!(!config.contains("; Allow unrestricted filesystem writes"));
-    }
-
-    #[test]
-    fn test_generate_seatbelt_config_localhost_port_narrows_network() {
-        let dir = PathBuf::from("/Users/test/projects/myproject");
-        let config = generate_seatbelt_config(
-            &[dir.as_path()],
-            &[],
-            &[],
-            SandboxPermissions {
-                network: NetworkAccess::LocalhostPort(54321),
-                allow_fs_write: false,
-            },
-        )
-        .unwrap();
-
-        // Only the loopback proxy port is reachable; no blanket network rule.
-        assert!(config.contains("(allow network-outbound (remote tcp \"localhost:54321\"))"));
-        assert!(config.contains("(allow network-bind (local ip \"localhost:*\"))"));
-        assert!(!config.contains("(allow network*)"));
     }
 
     #[test]
@@ -939,7 +902,6 @@ mod tests {
             &[],
             &[],
             SandboxPermissions {
-                network: NetworkAccess::None,
                 allow_fs_write: true,
             },
         )
@@ -974,7 +936,6 @@ mod tests {
             &[],
             &[],
             SandboxPermissions {
-                network: NetworkAccess::None,
                 allow_fs_write: true,
             },
         )
@@ -1085,7 +1046,6 @@ mod tests {
             &[],
             &[],
             SandboxPermissions {
-                network: NetworkAccess::None,
                 allow_fs_write: true,
             },
         )

@@ -54,7 +54,7 @@ pub struct SystemPromptTemplate<'a> {
     /// Whether agent-run terminal commands are wrapped in an OS-level
     /// sandbox for this thread. When `true` — and the `terminal` tool is
     /// in `available_tools` — the rendered prompt describes the sandbox's
-    /// read/write/network rules and the per-command flags the model can
+    /// read/write rules and the per-command flags the model can
     /// request to relax them. Otherwise the prompt omits the sandbox
     /// section entirely.
     pub sandboxing: bool,
@@ -227,7 +227,7 @@ mod tests {
         let templates = Templates::new();
         let rendered = template.render(&templates).unwrap();
         assert!(!rendered.contains("## Terminal sandbox"));
-        assert!(!rendered.contains("allow_hosts"));
+        assert!(!rendered.contains("fs_write_paths"));
     }
 
     #[test]
@@ -265,8 +265,8 @@ mod tests {
         assert!(rendered.contains("## Terminal sandbox"));
         assert!(rendered.contains("`/tmp/alpha`"));
         assert!(rendered.contains("`/tmp/beta`"));
-        assert!(rendered.contains("allow_hosts"));
-        assert!(rendered.contains("allow_all_hosts: true"));
+        assert!(rendered.contains("outbound network access is unrestricted"));
+        assert!(!rendered.contains("allow_hosts"));
         assert!(rendered.contains("fs_write_paths"));
         assert!(rendered.contains("allow_fs_write_all: true"));
         assert!(rendered.contains("unsandboxed: true"));
@@ -318,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn test_system_prompt_windows_sandbox_section_rejects_host_specific_network() {
+    fn test_system_prompt_windows_sandbox_section_routes_through_wsl() {
         use prompt_store::{ProjectContext, WorktreeContext};
 
         let worktrees = vec![WorktreeContext {
@@ -344,9 +344,7 @@ mod tests {
 
         assert!(rendered.contains("commands run inside WSL under Bubblewrap"));
         assert!(rendered.contains("Protected Git metadata remains read-only"));
-        assert!(rendered.contains("do not use this on Windows"));
-        assert!(rendered.contains("such requests are rejected"));
-        assert!(rendered.contains("allow_all_hosts: true"));
+        assert!(rendered.contains("outbound network access is unrestricted"));
         assert!(rendered.contains("git --no-optional-locks status"));
         // Out-of-project `create_directory` grants aren't supported on Windows,
         // so the prompt must not recommend that flow; it suggests granting the
@@ -399,7 +397,7 @@ mod tests {
         let rendered = template.render(&templates).unwrap();
 
         assert!(!rendered.contains("## Terminal sandbox"));
-        assert!(!rendered.contains("allow_hosts"));
+        assert!(!rendered.contains("fs_write_paths"));
     }
 
     #[test]
