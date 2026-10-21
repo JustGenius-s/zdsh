@@ -13,6 +13,7 @@ use std::time::Duration;
 use theme_settings::ThemeSettings;
 
 const JUMP_TO_LATEST_TRANSITION: Duration = Duration::from_millis(200);
+const PLANNING_NEXT_MOVE_DELAY: Duration = Duration::from_secs(1);
 
 /// Whether the reader has scrolled away from the latest entry, mirroring GPUI Kit's
 /// `MessageScrollerState::is_scrolled_up`.
@@ -906,7 +907,7 @@ impl ThreadView {
         .into_any_element()
     }
 
-    pub(super) fn render_generating(&self, confirmation: bool, cx: &App) -> impl IntoElement {
+    pub(super) fn render_generating(&self, confirmation: bool, cx: &App) -> AnyElement {
         let show_stats = AgentSettings::get_global(cx).show_turn_stats;
         let elapsed_label = show_stats
             .then(|| {
@@ -917,8 +918,6 @@ impl ThreadView {
             })
             .flatten();
 
-        let is_blocked_on_terminal_command =
-            !confirmation && self.is_blocked_on_terminal_command(cx);
         let is_waiting = confirmation || self.thread.read(cx).has_in_progress_tool_calls();
 
         let turn_tokens_label = elapsed_label
@@ -931,19 +930,21 @@ impl ThreadView {
             })
             .flatten();
 
+        let status_label = if confirmation {
+            Some("Awaiting Confirmation…")
+        } else if self.show_planning_next_move(cx) {
+            Some("Planning Next Move…")
+        } else {
+            None
+        };
+        if status_label.is_none() && elapsed_label.is_none() && turn_tokens_label.is_none() {
+            return Empty.into_any_element();
+        }
+
         let arrow_icon = if is_waiting {
             IconName::ArrowUp
         } else {
             IconName::ArrowDown
-        };
-
-        // A running terminal shows its own progress, so a second indicator would only repeat it.
-        let status_label = if confirmation {
-            Some("Awaiting Confirmation…")
-        } else if is_blocked_on_terminal_command {
-            None
-        } else {
-            Some("Generating…")
         };
 
         let shades = text_shades(cx);
@@ -971,6 +972,43 @@ impl ThreadView {
                 )
             })
             .into_any_element()
+    }
+
+    fn show_planning_next_move(&self, cx: &App) -> bool {
+        let waited = self
+            .turn_fields
+            .turn_started_at
+            .is_some_and(|started_at| started_at.elapsed() >= PLANNING_NEXT_MOVE_DELAY);
+        waited && !self.current_turn_has_visible_output(cx)
+    }
+
+    fn current_turn_has_visible_output(&self, cx: &App) -> bool {
+        for entry in self.thread.read(cx).entries().iter().rev() {
+            match entry {
+                AgentThreadEntry::UserMessage(message) if !message.indented => return false,
+                AgentThreadEntry::UserMessage(_) => {}
+                AgentThreadEntry::AssistantMessage(message) => {
+                    let visible = message.chunks.iter().any(|chunk| {
+                        let block = match chunk {
+                            AssistantMessageChunk::Message { block, .. }
+                            | AssistantMessageChunk::Thought { block, .. } => block,
+                        };
+                        block.visible_content(cx)
+                    });
+                    if visible {
+                        return true;
+                    }
+                }
+                AgentThreadEntry::ToolCall(tool_call)
+                    if !is_hidden_canceled_tool_call(tool_call, cx) =>
+                {
+                    return true;
+                }
+                AgentThreadEntry::ToolCall(_) | AgentThreadEntry::ContextCompaction(_) => {}
+                AgentThreadEntry::Elicitation(_) => return true,
+            }
+        }
+        false
     }
 
     fn render_message_content(

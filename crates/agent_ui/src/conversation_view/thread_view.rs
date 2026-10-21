@@ -5887,39 +5887,6 @@ impl ThreadView {
         if text.is_empty() { None } else { Some(text) }
     }
 
-    fn is_blocked_on_terminal_command(&self, cx: &App) -> bool {
-        let thread = self.thread.read(cx);
-        if !matches!(thread.status(), ThreadStatus::Generating) {
-            return false;
-        }
-
-        let mut has_running_terminal_call = false;
-
-        for entry in thread.entries().iter().rev() {
-            match entry {
-                AgentThreadEntry::UserMessage(_) => break,
-                AgentThreadEntry::ToolCall(tool_call)
-                    if matches!(
-                        tool_call.status(),
-                        ToolCallStatus::InProgress | ToolCallStatus::Pending
-                    ) =>
-                {
-                    if matches!(tool_call.kind(), acp_v2::ToolKind::Execute) {
-                        has_running_terminal_call = true;
-                    } else {
-                        return false;
-                    }
-                }
-                AgentThreadEntry::ToolCall(_)
-                | AgentThreadEntry::Elicitation(_)
-                | AgentThreadEntry::AssistantMessage(_)
-                | AgentThreadEntry::ContextCompaction(_) => {}
-            }
-        }
-
-        has_running_terminal_call
-    }
-
     fn sandbox_not_applied_warning(
         &self,
         reason: &SandboxNotAppliedReason,
