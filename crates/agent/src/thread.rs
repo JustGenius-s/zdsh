@@ -126,6 +126,57 @@ pub const MIN_COMPACTION_CONTEXT_WINDOW: u64 = 80_000;
 // Using the heuristic that 1 token is about 4 bytes, keep the last 80K bytes of user-message content (~20k tokens).
 const COMPACTION_RETAINED_USER_MESSAGES_BYTE_BUDGET: usize = 80_000;
 
+/// Images are sent as base64 PNGs whose size says little about their token cost, which providers
+/// cap per image after resizing, so each one counts as a typical capped image.
+const ESTIMATED_IMAGE_TOKENS: u64 = 1_600;
+
+/// Estimated token counts for each part of a request. See [`Thread::context_breakdown`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContextBreakdown {
+    pub system_prompt: u64,
+    pub tool_definitions: u64,
+    pub rules: u64,
+    pub skills: u64,
+    pub mcp_tools: u64,
+    pub subagent_definitions: u64,
+    pub summarized_conversation: u64,
+    pub conversation: u64,
+}
+
+fn estimate_tokens(byte_len: usize) -> u64 {
+    byte_len.div_ceil(4) as u64
+}
+
+fn estimate_request_message_tokens(message: &LanguageModelRequestMessage) -> u64 {
+    message
+        .content
+        .iter()
+        .map(|content| match content {
+            MessageContent::Text(text)
+            | MessageContent::Thinking { text, .. }
+            | MessageContent::RedactedThinking(text) => estimate_tokens(text.len()),
+            MessageContent::Image(_) => ESTIMATED_IMAGE_TOKENS,
+            MessageContent::ToolUse(tool_use) => {
+                estimate_tokens(tool_use.name.len() + tool_use.raw_input.len())
+            }
+            MessageContent::ToolResult(tool_result) => tool_result
+                .content
+                .iter()
+                .map(|content| match content {
+                    LanguageModelToolResultContent::Text(text) => estimate_tokens(text.len()),
+                    LanguageModelToolResultContent::Image(_) => ESTIMATED_IMAGE_TOKENS,
+                })
+                .sum(),
+            MessageContent::Compaction(language_model::CompactedContext::Summary {
+                content,
+                ..
+            }) => estimate_tokens(content.len()),
+            // Provider-native compaction state is opaque, so its cost is unknown.
+            MessageContent::Compaction(language_model::CompactedContext::ProviderState(_)) => 0,
+        })
+        .sum()
+}
+
 /// Returned when a turn is attempted but no language model has been selected.
 #[derive(Debug)]
 pub struct NoModelConfiguredError;
@@ -2536,6 +2587,98 @@ impl Thread {
         })
     }
 
+    /// Roughly how the next request splits across its parts, for the context usage panel. Each
+    /// part is estimated from its size, so the parts are only meaningful relative to each other.
+    pub fn context_breakdown(&self, cx: &App) -> ContextBreakdown {
+        let enabled_tools;
+        let tools = match self.running_turn.as_ref() {
+            Some(turn) => &turn.tools,
+            None => {
+                enabled_tools = self.enabled_tools(cx);
+                &enabled_tools
+            }
+        };
+        let builtin_tool_names = self
+            .tools
+            .keys()
+            .map(|name| provider_compatible_tool_name(name))
+            .collect::<HashSet<_>>();
+
+        let mut breakdown = ContextBreakdown::default();
+        for (name, tool) in tools {
+            let tokens = estimate_tokens(
+                name.len() + tool.description().len() + tool.input_schema().to_string().len(),
+            );
+            if name.as_ref() == SpawnAgentTool::NAME {
+                breakdown.subagent_definitions += tokens;
+            } else if builtin_tool_names.contains(name.as_ref()) {
+                breakdown.tool_definitions += tokens;
+            } else {
+                breakdown.mcp_tools += tokens;
+            }
+        }
+
+        let system_prompt = self.render_system_prompt(tools.keys().cloned().collect(), cx);
+        let project_context = self.project_context.read(cx);
+        let global_rules_len = UserAgentsMd::global(cx)
+            .and_then(|agents_md| agents_md.content())
+            .map_or(0, |content| content.len());
+        let project_rules_len = project_context
+            .worktrees
+            .iter()
+            .filter_map(|worktree| worktree.rules_file.as_ref())
+            .map(|rules_file| rules_file.text.len())
+            .sum::<usize>();
+        let skills_len = project_context
+            .skills()
+            .iter()
+            .map(|skill| skill.name.len() + skill.description.len() + skill.location.len())
+            .sum::<usize>();
+        breakdown.rules = estimate_tokens(global_rules_len + project_rules_len);
+        breakdown.skills = estimate_tokens(skills_len);
+        breakdown.system_prompt = estimate_tokens(system_prompt.len())
+            .saturating_sub(breakdown.rules + breakdown.skills);
+
+        // Mirrors `extend_request_history_until`: a summary compaction replaces everything before
+        // it with the retained user messages plus the summary.
+        let mut summarized_messages = Vec::new();
+        let conversation_start =
+            match latest_compaction_message_ix_before(&self.messages, self.messages.len()) {
+                Some(compaction_ix) => {
+                    if let Some(compaction) = self.messages.get(compaction_ix) {
+                        if matches!(&**compaction, Message::Compaction(CompactionInfo::Summary(_))) {
+                            summarized_messages.extend(retained_user_request_messages_before(
+                                &self.messages,
+                                compaction_ix,
+                            ));
+                        }
+                        summarized_messages.extend(compaction.to_request());
+                    }
+                    compaction_ix + 1
+                }
+                None => 0,
+            };
+        breakdown.summarized_conversation = summarized_messages
+            .iter()
+            .map(estimate_request_message_tokens)
+            .sum();
+        breakdown.conversation = self
+            .messages
+            .get(conversation_start..)
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|message| message.to_request())
+            .chain(
+                self.pending_message
+                    .iter()
+                    .flat_map(|message| message.to_request()),
+            )
+            .map(|message| estimate_request_message_tokens(&message))
+            .sum();
+
+        breakdown
+    }
+
     /// Get the total input token count as of the message before the given message.
     ///
     /// Returns `None` if:
@@ -4695,9 +4838,26 @@ impl Thread {
         let end_ix = end_ix.min(self.messages.len());
         log::trace!("Building request messages from {} thread messages", end_ix);
 
+        let system_prompt = self.render_system_prompt(available_tools, cx);
+        let mut messages = vec![LanguageModelRequestMessage {
+            role: Role::System,
+            content: vec![system_prompt.into()],
+            cache: false,
+            reasoning_details: None,
+        }];
+        self.extend_request_history_until(&mut messages, end_ix);
+
+        if let Some(last_message) = messages.last_mut() {
+            last_message.cache = true;
+        }
+
+        messages
+    }
+
+    fn render_system_prompt(&self, available_tools: Vec<SharedString>, cx: &App) -> String {
         let user_agents_md = UserAgentsMd::global(cx).and_then(|s| s.content().cloned());
         let profile = AgentSettings::get_global(cx).profiles.get(&self.profile_id);
-        let system_prompt = SystemPromptTemplate {
+        SystemPromptTemplate {
             project: self.project_context.read(cx),
             available_tools,
             model_name: self.model().map(|m| m.name().0.to_string()),
@@ -4714,20 +4874,7 @@ impl Thread {
         }
         .render(&self.templates)
         .context("failed to build system prompt")
-        .expect("Invalid template");
-        let mut messages = vec![LanguageModelRequestMessage {
-            role: Role::System,
-            content: vec![system_prompt.into()],
-            cache: false,
-            reasoning_details: None,
-        }];
-        self.extend_request_history_until(&mut messages, end_ix);
-
-        if let Some(last_message) = messages.last_mut() {
-            last_message.cache = true;
-        }
-
-        messages
+        .expect("Invalid template")
     }
 
     fn extend_request_history_until(

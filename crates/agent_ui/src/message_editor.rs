@@ -24,9 +24,13 @@ use editor::{
 };
 use futures::{FutureExt as _, future::join_all};
 use gpui::{
-    AppContext, ClipboardEntry, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, Image, ImageFormat, KeyContext, SharedString, Subscription, Task, TaskExt,
-    TextStyle, WeakEntity,
+    AppContext, ClipboardEntry, ClipboardItem, Context, DismissEvent, Entity, EventEmitter,
+    FocusHandle, Focusable, Image, ImageFormat, KeyContext, ObjectFit, SharedString, Subscription,
+    Task, TaskExt, TextStyle, WeakEntity, img,
+};
+use gpui_kit::component::{
+    Sizable as _,
+    button::{Button as KitButton, ButtonRounded, ButtonVariants as _},
 };
 use language::{Buffer, language_settings::InlayHintKind};
 use parking_lot::RwLock;
@@ -39,10 +43,10 @@ use settings::Settings;
 use std::{cmp::min, fmt::Write, ops::Range, rc::Rc, sync::Arc};
 use text::LineEnding;
 use theme_settings::ThemeSettings;
-use ui::{ContextMenu, prelude::*};
+use ui::{ContextMenu, Tooltip, prelude::*};
 use util::paths::PathStyle;
 use util::{ResultExt, debug_panic};
-use workspace::{CollaboratorId, Workspace};
+use workspace::{CollaboratorId, ModalView, Workspace};
 use zed_actions::agent::{Chat, PasteRaw};
 
 #[derive(Default)]
@@ -533,7 +537,8 @@ impl MessageEditor {
 
             editor
         });
-        let mention_set = cx.new(|_cx| MentionSet::new(project, thread_store.clone()));
+        let mention_set = cx
+            .new(|_cx| MentionSet::new(project, thread_store.clone()).with_images_as_attachments());
         let local_commands: SharedLocalCommands = Arc::new(RwLock::new(Vec::new()));
         let completion_provider = Rc::new(PromptCompletionProvider::new(
             MessageEditorCompletionDelegate {
@@ -561,6 +566,12 @@ impl MessageEditor {
 
         let mut has_hint = false;
         let mut subscriptions = Vec::new();
+
+        // The mention set only notifies when its image attachments change.
+        subscriptions.push(cx.observe(&mention_set, |_, _, cx| {
+            cx.emit(MessageEditorEvent::Edited);
+            cx.notify();
+        }));
 
         subscriptions.push(cx.subscribe_in(&editor, window, {
             move |this, editor, event, window, cx| {
@@ -758,7 +769,21 @@ impl MessageEditor {
     }
 
     pub fn is_empty(&self, cx: &App) -> bool {
+        self.is_text_empty(cx) && self.mention_set.read(cx).image_attachments().is_empty()
+    }
+
+    fn is_text_empty(&self, cx: &App) -> bool {
         self.editor.read(cx).text(cx).trim().is_empty()
+    }
+
+    /// Whether the content takes more than one line: a line break, a soft wrap, or image
+    /// thumbnails above the text.
+    pub fn spans_lines(&self, cx: &mut App) -> bool {
+        let snapshot = self
+            .editor
+            .update(cx, |editor, cx| editor.display_snapshot(cx));
+        snapshot.max_point().row().0 > 0
+            || !self.mention_set.read(cx).image_attachments().is_empty()
     }
 
     pub fn is_completions_menu_visible(&self, cx: &App) -> bool {
@@ -911,13 +936,25 @@ impl MessageEditor {
         let contents = self
             .mention_set
             .update(cx, |store, cx| store.contents(full_mention_content, cx));
+        let image_attachments = self
+            .mention_set
+            .read(cx)
+            .image_attachments()
+            .iter()
+            .map(|attachment| (attachment.name.clone(), attachment.mention.clone()))
+            .collect::<Vec<_>>();
         let editor = self.editor.clone();
         let supports_embedded_context =
             self.session_capabilities.read().supports_embedded_context();
 
         cx.spawn(async move |_, cx| {
             let mut contents = contents.await?;
-            Ok(editor.update(cx, |editor, cx| {
+            let mut blocks = Vec::new();
+            for (name, mention) in image_attachments {
+                let mention = mention.await.map_err(|error| anyhow!(error))?;
+                blocks.push(image_attachment_content_block(&name, &mention));
+            }
+            let (chunks, tracked_buffers) = editor.update(cx, |editor, cx| {
                 let crease_snapshot = editor.display_map.read(cx).crease_snapshot();
                 let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
                 let text = editor.text(cx);
@@ -932,7 +969,9 @@ impl MessageEditor {
                             .map(|(uri, mention)| (uri, Some(mention)))
                     },
                 )
-            }))
+            });
+            blocks.extend(chunks);
+            Ok((blocks, tracked_buffers))
         })
     }
 
@@ -953,7 +992,15 @@ impl MessageEditor {
             supports_embedded_context,
             |crease_id| mention_set.resolved_mention_for_crease(crease_id),
         );
-        chunks
+        mention_set
+            .image_attachments()
+            .iter()
+            .filter_map(|attachment| {
+                let mention = attachment.mention.clone().now_or_never()?.ok()?;
+                Some(image_attachment_content_block(&attachment.name, &mention))
+            })
+            .chain(chunks)
+            .collect()
     }
 
     pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1722,7 +1769,7 @@ impl MessageEditor {
 
         if let Some(separator) = separator
             && !separator.is_empty()
-            && !self.is_empty(cx)
+            && !self.is_text_empty(cx)
         {
             self.editor.update(cx, |editor, cx| {
                 editor.insert(separator, window, cx);
@@ -1744,8 +1791,10 @@ impl MessageEditor {
         };
 
         let path_style = workspace.read(cx).project().read(cx).path_style(cx);
+        let images_as_attachments = self.mention_set.read(cx).images_as_attachments();
         let mut text = String::new();
         let mut mentions = Vec::new();
+        let mut image_attachments = Vec::new();
         let append_normalized = |text: &mut String, mut segment: String| {
             LineEnding::normalize(&mut segment);
             text.push_str(&segment);
@@ -1806,20 +1855,41 @@ impl MessageEditor {
                         log::error!("failed to parse MIME type for image: {mime_type:?}");
                         continue;
                     };
+                    let mention = Mention::Image(MentionImage {
+                        data: data.into(),
+                        format,
+                    });
+                    if images_as_attachments && let MentionUri::PastedImage { name } = &mention_uri
+                    {
+                        if let Some(image) = decode_image_mention(&mention) {
+                            image_attachments.push((
+                                SharedString::from(name.clone()),
+                                image,
+                                mention,
+                            ));
+                        }
+                        continue;
+                    }
                     let start = text.len();
                     append_normalized(&mut text, mention_uri.as_link().to_string());
                     let end = text.len();
-                    mentions.push((
-                        start..end,
-                        mention_uri,
-                        Mention::Image(MentionImage {
-                            data: data.into(),
-                            format,
-                        }),
-                    ));
+                    mentions.push((start..end, mention_uri, mention));
                 }
                 _ => {}
             }
+        }
+
+        if !image_attachments.is_empty() {
+            self.mention_set.update(cx, |mention_set, cx| {
+                for (name, image, mention) in image_attachments {
+                    mention_set.add_image_attachment(
+                        name,
+                        image,
+                        Task::ready(Ok(mention)).shared(),
+                        cx,
+                    );
+                }
+            });
         }
 
         if text.is_empty() && mentions.is_empty() {
@@ -2018,8 +2088,139 @@ impl Focusable for MessageEditor {
     }
 }
 
+impl MessageEditor {
+    fn render_image_attachment(
+        &self,
+        id: usize,
+        name: SharedString,
+        image: Arc<Image>,
+        can_remove: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = cx.theme().colors();
+        let group = SharedString::from(format!("image-attachment-{id}"));
+
+        div()
+            .id(("image-attachment", id))
+            .group(group.clone())
+            .relative()
+            .flex_none()
+            .size(px(56.))
+            .rounded(px(10.))
+            .overflow_hidden()
+            .border_1()
+            .border_color(colors.border_variant)
+            .bg(colors.element_background)
+            .cursor_pointer()
+            .tooltip(Tooltip::text(name))
+            .child(img(image.clone()).size_full().object_fit(ObjectFit::Cover))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.preview_image(image.clone(), window, cx);
+            }))
+            .when(can_remove, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top_1()
+                        .right_1()
+                        .invisible()
+                        .group_hover(group, |style| style.visible())
+                        .child(
+                            KitButton::new(("remove-image-attachment", id))
+                                .secondary()
+                                .xsmall()
+                                .rounded(ButtonRounded::Size(px(10.)))
+                                .icon(gpui_kit::component::IconName::Close)
+                                .tooltip("Remove Image")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    // The tile behind would otherwise open the preview.
+                                    cx.stop_propagation();
+                                    this.mention_set.update(cx, |mention_set, cx| {
+                                        mention_set.remove_image_attachment(id, cx)
+                                    });
+                                })),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn preview_image(&self, image: Arc<Image>, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace.toggle_modal(window, cx, |_, cx| ImagePreview::new(image, cx));
+            })
+            .log_err();
+    }
+}
+
+/// An attached image at full size, opened by clicking its thumbnail.
+struct ImagePreview {
+    image: Arc<Image>,
+    focus_handle: FocusHandle,
+}
+
+impl ImagePreview {
+    fn new(image: Arc<Image>, cx: &mut Context<Self>) -> Self {
+        Self {
+            image,
+            focus_handle: cx.focus_handle(),
+        }
+    }
+}
+
+impl EventEmitter<DismissEvent> for ImagePreview {}
+
+impl Focusable for ImagePreview {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl ModalView for ImagePreview {}
+
+impl Render for ImagePreview {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = window.viewport_size();
+        div()
+            .key_context("ImagePreview")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|_, _: &menu::Cancel, _, cx| cx.emit(DismissEvent)))
+            .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
+            .p_1p5()
+            .elevation_3(cx)
+            .child(
+                img(self.image.clone())
+                    .max_w(viewport.width * 0.8)
+                    .max_h(viewport.height * 0.7)
+                    .object_fit(ObjectFit::Contain)
+                    .rounded_sm(),
+            )
+    }
+}
+
 impl Render for MessageEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let can_remove = !self.editor.read(cx).read_only(cx);
+        let attachments = self
+            .mention_set
+            .read(cx)
+            .image_attachments()
+            .iter()
+            .map(|attachment| {
+                (
+                    attachment.id,
+                    attachment.name.clone(),
+                    attachment.image.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|(id, name, image)| self.render_image_attachment(id, name, image, can_remove, cx))
+            .collect::<Vec<_>>();
+        let attachment_row = (!attachments.is_empty())
+            .then(|| h_flex().w_full().flex_wrap().gap_2().children(attachments));
+
         div()
             .key_context("MessageEditor")
             .on_action(cx.listener(Self::chat))
@@ -2031,6 +2232,10 @@ impl Render for MessageEditor {
             .on_action(cx.listener(Self::paste_raw))
             .capture_action(cx.listener(Self::paste))
             .flex_1()
+            .when(attachment_row.is_some(), |this| {
+                this.flex().flex_col().gap_2()
+            })
+            .children(attachment_row)
             .child({
                 let text_style = Self::text_style(cx);
 
@@ -2119,6 +2324,11 @@ fn build_chunks_from_creases(
 fn image_preview_task_for_mention(
     mention: &Mention,
 ) -> Option<futures::future::Shared<Task<Result<Arc<Image>, String>>>> {
+    let image = decode_image_mention(mention)?;
+    Some(Task::ready(Ok::<Arc<Image>, String>(image)).shared())
+}
+
+fn decode_image_mention(mention: &Mention) -> Option<Arc<Image>> {
     let Mention::Image(mention_image) = mention else {
         return None;
     };
@@ -2132,12 +2342,17 @@ fn image_preview_task_for_mention(
             }
         };
 
-    Some(
-        Task::ready(Ok::<Arc<Image>, String>(Arc::new(Image::from_bytes(
-            mention_image.format,
-            bytes,
-        ))))
-        .shared(),
+    Some(Arc::new(Image::from_bytes(mention_image.format, bytes)))
+}
+
+fn image_attachment_content_block(name: &str, mention: &Mention) -> acp_v2::ContentBlock {
+    mention_to_content_block(
+        &MentionUri::PastedImage {
+            name: name.to_string(),
+        },
+        Some(mention),
+        false,
+        &mut Vec::new(),
     )
 }
 
@@ -5392,24 +5607,17 @@ mod tests {
         }
         .to_uri()
         .to_string();
-        let expected_image_uri = MentionUri::PastedImage {
-            name: image_name.clone(),
-        }
-        .to_uri()
-        .to_string();
-
         editor.update(&mut cx, |editor, cx| {
-            assert_eq!(
-                editor.text(cx),
-                format!("[@{image_name}]({expected_image_uri}) [@file.txt]({expected_file_uri}) ")
-            );
+            assert_eq!(editor.text(cx), format!("[@file.txt]({expected_file_uri}) "));
         });
 
         let contents = mention_contents(&message_editor, &mut cx).await;
 
         assert_eq!(contents.len(), 2);
         assert!(contents.iter().any(|(uri, mention)| {
-            matches!(uri, MentionUri::PastedImage { .. }) && matches!(mention, Mention::Image(_))
+            *uri == MentionUri::PastedImage {
+                name: image_name.clone(),
+            } && matches!(mention, Mention::Image(_))
         }));
         assert!(contents.iter().any(|(uri, mention)| {
             *uri == MentionUri::File {
@@ -5455,7 +5663,7 @@ mod tests {
                         name: "Image".into(),
                     };
                     editor.update(&mut cx, |editor, cx| {
-                        assert_eq!(editor.text(cx), format!("{} ", image_uri.as_link()));
+                        assert_eq!(editor.text(cx), "");
                     });
                     let contents = mention_contents(&message_editor, &mut cx).await;
                     assert_eq!(contents.len(), 1);
@@ -5536,7 +5744,6 @@ mod tests {
                         && matches!(mention, Mention::Text { content, .. } if content == "plain text")
                 }));
             }
-            expected_text.push_str(&format!("{} ", image_uri.as_link()));
             assert_eq!(contents.len(), if inline { 1 } else { 2 });
             editor.update(&mut cx, |editor, cx| {
                 assert_eq!(editor.text(cx), expected_text);
@@ -5702,16 +5909,26 @@ mod tests {
         message_editor: &Entity<MessageEditor>,
         cx: &mut VisualTestContext,
     ) -> Vec<(MentionUri, Mention)> {
-        message_editor
-            .update(cx, |message_editor, cx| {
-                message_editor
-                    .mention_set()
-                    .update(cx, |mention_set, cx| mention_set.contents(false, cx))
+        let (contents, image_attachments) = message_editor.update(cx, |message_editor, cx| {
+            message_editor.mention_set().update(cx, |mention_set, cx| {
+                let image_attachments = mention_set
+                    .image_attachments()
+                    .iter()
+                    .map(|attachment| (attachment.name.clone(), attachment.mention.clone()))
+                    .collect::<Vec<_>>();
+                (mention_set.contents(false, cx), image_attachments)
             })
-            .await
-            .unwrap()
-            .into_values()
-            .collect::<Vec<_>>()
+        });
+        let mut mentions = contents.await.unwrap().into_values().collect::<Vec<_>>();
+        for (name, mention) in image_attachments {
+            mentions.push((
+                MentionUri::PastedImage {
+                    name: name.to_string(),
+                },
+                mention.await.unwrap(),
+            ));
+        }
+        mentions
     }
 
     fn write_test_png_file(extension: Option<&str>) -> PathBuf {

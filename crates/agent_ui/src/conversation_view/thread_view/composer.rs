@@ -10,7 +10,9 @@ use gpui_kit::{
     base::Selectable as _,
     component::{
         Disableable as _, Icon as KitIcon, IndexPath, Size as KitSize, Theme as KitTheme,
-        button::{Button as KitButton, ButtonRounded, ButtonVariant, ButtonVariants as _},
+        button::{
+            Button as KitButton, ButtonRounded, ButtonVariant, ButtonVariants as _, DropdownButton,
+        },
         list::{List as KitList, ListDelegate, ListEvent, ListItem as KitListItem, ListState},
         menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
         tag::Tag,
@@ -24,13 +26,17 @@ use ui::{HighlightedLabel, ProgressBar, Switch};
 const FOLLOW_UP_PLACEHOLDER: &str = "Send follow-up";
 
 impl ThreadView {
+    /// Returns the composer, plus the changes chips when they should float over the transcript's
+    /// bottom edge instead of sitting in the composer. `cards_above_composer` says whether the
+    /// thread stacks anything between the transcript and the composer.
     pub(crate) fn render_message_editor(
         &mut self,
+        cards_above_composer: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> (AnyElement, Option<AnyElement>) {
         if self.is_subagent() {
-            return div().into_any_element();
+            return (div().into_any_element(), None);
         }
 
         let editor_expanded = self.editor_expanded;
@@ -97,10 +103,18 @@ impl ThreadView {
         let agent_selector = is_empty_thread
             .then(|| self.render_agent_selector(cx))
             .flatten();
-        // Once the thread has a transcript, the chips float over its bottom edge instead.
-        let changes_chips = is_empty_thread
-            .then(|| self.render_changes_chips(cx))
-            .flatten();
+        // The chips always sit right above the input. They float over the transcript only when
+        // nothing is stacked between the two; otherwise they'd end up above those cards.
+        let changes_chips = self.render_changes_chips(cx);
+        let float_changes_chips = !is_empty_thread
+            && !cards_above_composer
+            && context_usage_card.is_none()
+            && docked_menus.is_empty();
+        let (changes_chips, floating_changes_chips) = if float_changes_chips {
+            (None, changes_chips)
+        } else {
+            (changes_chips, None)
+        };
         let composer = if is_empty_thread {
             div()
                 .relative()
@@ -109,13 +123,15 @@ impl ThreadView {
                 .child(self.render_composer_card(cx))
                 .children(floating_menus)
                 .into_any_element()
+        } else if self.update_composer_stacked(cx) {
+            self.render_composer_card(cx)
         } else {
             self.render_composer_pill(cx)
         };
         let sandbox_status = self.render_sandbox_status(cx);
         let footer = self.render_composer_footer(sandbox_status, cx);
 
-        v_flex()
+        let composer = v_flex()
             .flex_none()
             .w_full()
             .px_4()
@@ -155,7 +171,23 @@ impl ThreadView {
                     .child(composer)
                     .child(footer),
             )
-            .into_any()
+            .into_any();
+        (composer, floating_changes_chips)
+    }
+
+    /// Stacking widens the input, which can undo the soft wrap that triggered it, so the composer
+    /// stays stacked until the input is cleared rather than flipping back and forth.
+    fn update_composer_stacked(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.message_editor.read(cx).is_empty(cx) {
+            self.composer_stacked = false;
+        }
+        if !self.composer_stacked {
+            self.composer_stacked = self.editor_expanded
+                || self
+                    .message_editor
+                    .update(cx, |message_editor, cx| message_editor.spans_lines(cx));
+        }
+        self.composer_stacked
     }
 
     fn render_composer_pill(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -187,13 +219,15 @@ impl ThreadView {
             .into_any_element()
     }
 
-    /// The composer of an empty thread: a card like Cursor's, with the message editor above its
-    /// controls, centered in the thread.
+    /// A card like Cursor's, with the message editor above its controls: the composer of an
+    /// empty thread, and the docked composer once its input takes more than one line.
     fn render_composer_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let editor_expanded = self.editor_expanded;
         let (background, border) = composer_surface(cx);
         v_flex()
             .w_full()
             .min_w_0()
+            .when(editor_expanded, |this| this.flex_1().min_h_0())
             .gap_2()
             .p_2()
             .rounded(px(16.))
@@ -205,6 +239,7 @@ impl ThreadView {
                     .w_full()
                     .min_w_0()
                     .min_h(rems(3.))
+                    .when(editor_expanded, |this| this.flex_1().min_h_0())
                     .px_1p5()
                     .pt_1()
                     .child(self.message_editor.clone()),
@@ -665,7 +700,7 @@ impl ThreadView {
         })
     }
 
-    pub(super) fn render_changes_chips(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_changes_chips(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let thread = self.thread.read(cx);
         if thread.parent_session_id().is_some() {
             return None;
@@ -694,9 +729,9 @@ impl ThreadView {
 
             PillButton::new("composer-changes")
                 .variant(ButtonVariant::Secondary)
-                .size(KitSize::Small)
-            // Filled rather than outlined: the chips float over the transcript, whose text would
-            // otherwise show through them.
+                .outline()
+                .backdrop(cx.theme().colors().surface_background)
+                .size(KitSize::Medium)
                 .toggle_state(self.edits_expanded)
                 .child(Label::new("Changes"))
                 .child(Label::new(format!("+{}", stats.lines_added)).color(Color::Success))
@@ -718,15 +753,24 @@ impl ThreadView {
         });
 
         let commit_chip = has_uncommitted_changes.then(|| {
-            KitButton::new("composer-commit")
+            DropdownButton::new("composer-commit")
                 .secondary()
-                .small()
-                .rounded(ButtonRounded::Size(px(12.)))
-                .label("Commit")
-                .dropdown_caret(true)
+                .outline()
+                .with_size(KitSize::Medium)
+                // The halves are translucent outline buttons, so paint the thread's surface
+                // behind the pair, rounded like them.
+                .bg(cx.theme().colors().surface_background)
+                .rounded(KitTheme::global(cx).radius)
+                .button(
+                    KitButton::new("composer-commit-action")
+                        .label("Commit")
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(git::Commit.boxed_clone(), cx)
+                        }),
+                )
+                .menu_accessibility_label("More Commit Options")
                 .dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, |menu, _, _| {
-                    menu.menu("Commit…", git::Commit.boxed_clone())
-                        .menu("Amend Last Commit…", git::Amend.boxed_clone())
+                    menu.menu("Amend Last Commit…", git::Amend.boxed_clone())
                         .separator()
                         .menu("Push", git::Push.boxed_clone())
                 })
@@ -818,69 +862,13 @@ impl ThreadView {
             0.0
         };
 
-        let cost_label = thread.cost().map(|cost| {
-            let precision = if cost.amount > 0.0 && cost.amount < 0.01 {
-                4
-            } else {
-                2
-            };
-            format!("{:.prec$} {}", cost.amount, cost.currency, prec = precision)
-        });
-
-        let native_thread = self.as_native_thread(cx);
-        let split = self.supports_split_token_display(cx).then(|| {
-            let (max_input_tokens, max_output_tokens) = native_thread
-                .as_ref()
-                .map(|thread| {
-                    let thread = thread.read(cx);
-                    (
-                        thread.input_token_capacity().unwrap_or(usage.max_tokens),
-                        thread
-                            .model()
-                            .and_then(|model| model.max_output_tokens())
-                            .unwrap_or(0),
-                    )
-                })
-                .unwrap_or((usage.max_tokens, 0));
-            SplitTokenUsage {
-                input: format!(
-                    "{} / {}",
-                    crate::humanize_token_count(usage.input_tokens),
-                    crate::humanize_token_count(max_input_tokens)
-                ),
-                output: format!(
-                    "{} / {}",
-                    crate::humanize_token_count(usage.output_tokens),
-                    crate::humanize_token_count(max_output_tokens)
-                ),
-            }
-        });
-
-        let project_rules_entry_ids = native_thread
-            .map(|thread| {
-                thread
-                    .read(cx)
-                    .project_context()
-                    .read(cx)
-                    .worktrees
-                    .iter()
-                    .filter_map(|worktree| worktree.rules_file.as_ref())
-                    .map(|rules_file| ProjectEntryId::from_usize(rules_file.project_entry_id))
-                    .collect()
-            })
-            .unwrap_or_default();
-
         Some(ContextUsage {
             ratio,
+            used_tokens: usage.used_tokens,
+            max_tokens: usage.max_tokens,
             percentage: format!("{}%", (ratio * 100.0).round() as u32),
             used: crate::humanize_token_count(usage.used_tokens),
             max: crate::humanize_token_count(usage.max_tokens),
-            split,
-            cost_label,
-            global_rules_loaded: UserAgentsMd::global(cx)
-                .and_then(|agents_md| agents_md.content())
-                .is_some(),
-            project_rules_entry_ids,
         })
     }
 
@@ -922,88 +910,73 @@ impl ThreadView {
         let usage = self.context_usage(cx)?;
         let colors = cx.theme().colors();
         let bar_color = Self::context_usage_color(usage.ratio, cx);
-
-        let detail_row = |label: &'static str, value: String| {
-            h_flex()
-                .w_full()
-                .gap_2()
-                .justify_between()
-                .child(Label::new(label).color(Color::Muted))
-                .child(Label::new(value).color(Color::Muted))
-        };
-
-        let rules_row = |id: &'static str, label: &'static str, value: String| {
-            h_flex()
-                .id(id)
-                .w_full()
-                .gap_2()
-                .justify_between()
-                .cursor_pointer()
-                .child(Label::new(label).color(Color::Muted))
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .child(Label::new(value).color(Color::Muted))
-                        .child(
-                            Icon::new(IconName::ArrowUpRight)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
-                        ),
+        let segments = self
+            .as_native_thread(cx)
+            .map(|thread| {
+                context_usage_segments(
+                    &thread.read(cx).context_breakdown(cx),
+                    usage.used_tokens,
+                    cx,
                 )
-        };
-
-        let global_rules_row = usage.global_rules_loaded.then(|| {
-            let workspace = self.workspace.clone();
-            rules_row("open-global-rules", "Global rules", "1 file".to_string()).on_click(
-                move |_, window, cx| {
-                    workspace
-                        .update(cx, |workspace, cx| {
-                            workspace
-                                .open_abs_path(
-                                    paths::agents_file().clone(),
-                                    workspace::OpenOptions {
-                                        focus: Some(true),
-                                        ..Default::default()
-                                    },
-                                    window,
-                                    cx,
-                                )
-                                .detach_and_log_err(cx);
-                        })
-                        .log_err();
-                },
-            )
-        });
-
-        let project_rules_count = usage.project_rules_entry_ids.len();
-        let project_rules_row = (project_rules_count > 0).then(|| {
-            let workspace = self.workspace.clone();
-            let project_rules_entry_ids = usage.project_rules_entry_ids.clone();
-            rules_row(
-                "open-project-rules",
-                "Project rules",
-                format!(
-                    "{} {}",
-                    project_rules_count,
-                    pluralize("file", project_rules_count)
-                ),
-            )
-            .on_click(move |_, window, cx| {
-                workspace
-                    .update(cx, |workspace, cx| {
-                        let project = workspace.project().read(cx);
-                        let paths = project_rules_entry_ids
-                            .iter()
-                            .flat_map(|entry_id| project.path_for_entry(*entry_id, cx))
-                            .collect::<Vec<_>>();
-                        for path in paths {
-                            workspace
-                                .open_path(path, None, true, window, cx)
-                                .detach_and_log_err(cx);
-                        }
-                    })
-                    .log_err();
             })
+            .unwrap_or_default();
+        let bar = if segments.is_empty() || usage.max_tokens == 0 {
+            ProgressBar::new("context-usage-bar", usage.ratio.min(1.0), 1.0, cx)
+                .bg_color(colors.element_background)
+                .fg_color(bar_color)
+                .into_any_element()
+        } else {
+            // One continuous bar: the parts sit side by side with nearly square ends, the unused
+            // rest of the window is the last part, and only the bar's two ends are rounded.
+            // Rounding the container wouldn't do, since overflow clipping is rectangular.
+            let end_radius = px(3.);
+            h_flex()
+                .w_full()
+                .h(px(6.))
+                .gap(px(2.))
+                .children(segments.iter().enumerate().map(|(index, segment)| {
+                    div()
+                        .flex_none()
+                        .h_full()
+                        // Keeps a small part visible next to its legend row.
+                        .min_w(px(3.))
+                        .w(relative(segment.tokens as f32 / usage.max_tokens as f32))
+                        .rounded(px(1.))
+                        .when(index == 0, |this| this.rounded_l(end_radius))
+                        .bg(segment.color)
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .rounded(px(1.))
+                        .rounded_r(end_radius)
+                        .bg(colors.element_background),
+                )
+                .into_any_element()
+        };
+        let legend = (!segments.is_empty()).then(|| {
+            v_flex()
+                .w_full()
+                .gap_1p5()
+                .pt_1()
+                .children(segments.iter().map(|segment| {
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .justify_between()
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(div().size(px(12.)).rounded(px(3.)).bg(segment.color))
+                                .child(Label::new(segment.label)),
+                        )
+                        .child(
+                            Label::new(crate::humanize_token_count(segment.tokens))
+                                .color(Color::Muted),
+                        )
+                }))
         });
 
         Some(
@@ -1038,39 +1011,81 @@ impl ThreadView {
                                 .color(Color::Muted),
                         ),
                 )
-                .child(
-                    ProgressBar::new("context-usage-bar", usage.ratio.min(1.0), 1.0, cx)
-                        .bg_color(colors.element_background)
-                        .fg_color(bar_color),
-                )
-                .when_some(usage.split, |this, split| {
-                    this.child(detail_row("Input", split.input))
-                        .child(detail_row("Output", split.output))
-                })
-                .when_some(usage.cost_label, |this, cost_label| {
-                    this.child(detail_row("Cost", cost_label))
-                })
-                .children(global_rules_row)
-                .children(project_rules_row)
+                .child(bar)
+                .children(legend)
                 .into_any_element(),
         )
     }
 }
 
-struct SplitTokenUsage {
-    input: String,
-    output: String,
+struct ContextUsageSegment {
+    label: &'static str,
+    tokens: u64,
+    color: Hsla,
+}
+
+fn context_usage_segments(
+    breakdown: &agent::ContextBreakdown,
+    used_tokens: u64,
+    cx: &App,
+) -> Vec<ContextUsageSegment> {
+    let theme = KitTheme::global(cx);
+    let parts = [
+        (
+            "System prompt",
+            breakdown.system_prompt,
+            theme.muted_foreground,
+        ),
+        (
+            "Tool definitions",
+            breakdown.tool_definitions,
+            theme.magenta,
+        ),
+        ("Rules", breakdown.rules, theme.green),
+        ("Skills", breakdown.skills, theme.yellow),
+        (
+            "MCP & dynamic tools",
+            breakdown.mcp_tools,
+            theme.magenta_light,
+        ),
+        (
+            "Subagent definitions",
+            breakdown.subagent_definitions,
+            theme.blue_light,
+        ),
+        (
+            "Summarized conversation",
+            breakdown.summarized_conversation,
+            theme.red,
+        ),
+        ("Conversation", breakdown.conversation, theme.red_light),
+    ];
+    let estimated_total = parts.iter().map(|(_, tokens, _)| tokens).sum::<u64>();
+    if estimated_total == 0 {
+        return Vec::new();
+    }
+
+    // The parts are estimated from their size, so scale them to the count the model reported,
+    // which keeps the bar and the legend in step with the total above them.
+    parts
+        .into_iter()
+        .filter(|(_, tokens, _)| *tokens > 0)
+        .map(|(label, tokens, color)| ContextUsageSegment {
+            label,
+            tokens: (u128::from(tokens) * u128::from(used_tokens) / u128::from(estimated_total))
+                as u64,
+            color,
+        })
+        .collect()
 }
 
 struct ContextUsage {
     ratio: f32,
+    used_tokens: u64,
+    max_tokens: u64,
     percentage: String,
     used: String,
     max: String,
-    split: Option<SplitTokenUsage>,
-    cost_label: Option<String>,
-    global_rules_loaded: bool,
-    project_rules_entry_ids: Vec<ProjectEntryId>,
 }
 
 /// The composer's fill and edge: a card a step lighter than the thread, edged like GPUI Kit's
@@ -1284,6 +1299,7 @@ pub(super) struct PillButton {
     tooltip: Option<Box<dyn Fn(&mut Window, &mut App) -> AnyView>>,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     debug_selector: Option<SharedString>,
+    backdrop: Option<Hsla>,
 }
 
 impl PillButton {
@@ -1302,7 +1318,15 @@ impl PillButton {
             tooltip: None,
             on_click: None,
             debug_selector: None,
+            backdrop: None,
         }
+    }
+
+    /// Paints `color` behind the button, for one that sits over content: GPUI Kit's outline
+    /// variants are translucent, so whatever is behind would show through.
+    pub(super) fn backdrop(mut self, color: Hsla) -> Self {
+        self.backdrop = Some(color);
+        self
     }
 
     /// Names the button for tests to find.
@@ -1409,6 +1433,9 @@ impl RenderOnce for PillButton {
         div()
             .id(self.id)
             .flex_none()
+            .when_some(self.backdrop, |this, color| {
+                this.bg(color).rounded(height / 2.)
+            })
             .when_some(self.debug_selector, |this, selector| {
                 this.debug_selector(move || selector.to_string())
             })

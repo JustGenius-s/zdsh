@@ -62,6 +62,19 @@ pub struct MentionSet {
     thread_store: Option<Entity<ThreadStore>>,
     mentions: HashMap<CreaseId, (MentionUri, MentionTask)>,
     crease_entities: HashMap<CreaseId, Entity<LoadingContext>>,
+    images_as_attachments: bool,
+    image_attachments: Vec<ImageAttachment>,
+    next_image_attachment_id: usize,
+}
+
+/// An image attached to the message as a whole, shown as a thumbnail outside the text instead
+/// of as a mention inside it, so editing the text can't remove it. See
+/// [`MentionSet::with_images_as_attachments`].
+pub struct ImageAttachment {
+    pub id: usize,
+    pub name: SharedString,
+    pub image: Arc<Image>,
+    pub mention: MentionTask,
 }
 
 impl MentionSet {
@@ -71,7 +84,58 @@ impl MentionSet {
             thread_store,
             mentions: HashMap::default(),
             crease_entities: HashMap::default(),
+            images_as_attachments: false,
+            image_attachments: Vec::new(),
+            next_image_attachment_id: 0,
         }
+    }
+
+    /// Keeps pasted and picked images as attachments, read with [`Self::image_attachments`],
+    /// instead of inserting them into the editor as mentions.
+    pub fn with_images_as_attachments(mut self) -> Self {
+        self.images_as_attachments = true;
+        self
+    }
+
+    pub fn images_as_attachments(&self) -> bool {
+        self.images_as_attachments
+    }
+
+    pub fn image_attachments(&self) -> &[ImageAttachment] {
+        &self.image_attachments
+    }
+
+    pub fn add_image_attachment(
+        &mut self,
+        name: SharedString,
+        image: Arc<Image>,
+        mention: MentionTask,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.next_image_attachment_id;
+        self.next_image_attachment_id += 1;
+        self.image_attachments.push(ImageAttachment {
+            id,
+            name,
+            image,
+            mention: mention.clone(),
+        });
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = mention.await {
+                log::error!("failed to load image attachment: {error}");
+                this.update(cx, |this, cx| this.remove_image_attachment(id, cx))
+                    .log_err();
+            }
+        })
+        .detach();
+    }
+
+    pub fn remove_image_attachment(&mut self, id: usize, cx: &mut Context<Self>) {
+        self.image_attachments
+            .retain(|attachment| attachment.id != id);
+        cx.notify();
     }
 
     pub fn contents(
@@ -213,6 +277,7 @@ impl MentionSet {
 
     pub fn clear(&mut self) -> impl Iterator<Item = (CreaseId, (MentionUri, MentionTask))> {
         self.crease_entities.clear();
+        self.image_attachments.clear();
         self.mentions.drain()
     }
 
@@ -927,6 +992,32 @@ pub(crate) async fn insert_images_as_context(
     cx: &mut gpui::AsyncWindowContext,
 ) {
     if images.is_empty() {
+        return;
+    }
+
+    if mention_set.read_with(cx, |mention_set, _| mention_set.images_as_attachments()) {
+        for (image, name) in images {
+            let image = Arc::new(image);
+            let mention = cx
+                .spawn({
+                    let image = image.clone();
+                    async move |cx| {
+                        let image = cx
+                            .update(|_, cx| LanguageModelImage::from_image(image, cx))
+                            .map_err(|e| e.to_string())?
+                            .await
+                            .ok_or_else(|| "Failed to convert image".to_string())?;
+                        Ok(Mention::Image(MentionImage {
+                            data: image.source,
+                            format: LanguageModelImage::FORMAT,
+                        }))
+                    }
+                })
+                .shared();
+            mention_set.update(cx, |mention_set, cx| {
+                mention_set.add_image_attachment(name, image, mention, cx)
+            });
+        }
         return;
     }
 

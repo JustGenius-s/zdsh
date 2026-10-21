@@ -45,8 +45,10 @@ impl ThreadView {
         let jump_to_latest = (visibility > 0.).then(|| {
             div().opacity(visibility).child(
                 PillButton::new("jump-to-latest")
-                    .size(KitSize::Small)
+                    .size(KitSize::Medium)
                     .variant(ButtonVariant::Secondary)
+                    .outline()
+                    .backdrop(cx.theme().colors().surface_background)
                     .icon(IconName::ArrowDown)
                     .tooltip(Tooltip::text("Jump to Latest"))
                     // Stays rendered while fading out, but must not catch a click once the
@@ -133,8 +135,8 @@ impl ThreadView {
         )
         .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
         .flex_grow_1()
-        // A small button's height plus the gap the row keeps from the last entry.
-        .when(has_tool_row, |list| list.pb(rems(2.)))
+        // A medium button's height plus the gap the row keeps from the last entry.
+        .when(has_tool_row, |list| list.pb(rems(2.5)))
     }
 
     /// The prompt of the turn at the top of the transcript, once the prompt itself has scrolled

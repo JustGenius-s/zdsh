@@ -42,7 +42,7 @@ use markdown::{
     CodeBlockRenderer, CopyButtonVisibility, Markdown, MarkdownElement, MarkdownFont, MarkdownStyle,
 };
 use parking_lot::{Mutex, RwLock};
-use project::{AgentId, AgentServerStore, Project, ProjectEntryId, ProjectPath};
+use project::{AgentId, AgentServerStore, Project, ProjectPath};
 
 use crate::conversation_view::elicitation::{
     ElicitationCard, ElicitationCardHandlers, ElicitationFormState, should_render_elicitation,

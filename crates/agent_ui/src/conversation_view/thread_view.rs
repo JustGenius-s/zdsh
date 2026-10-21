@@ -21,7 +21,6 @@ use agent::{
     SandboxStatusKey, SandboxStatusRefresh, SkillLoadingIssue, SkillLoadingIssueKind,
     SkillLoadingIssuesUpdated, ThreadSandbox, VerifiedSandboxStatus,
 };
-use agent_settings::UserAgentsMd;
 use agent_skills::MAX_SKILL_DESCRIPTION_LEN;
 use cloud_api_types::{SubmitAgentThreadFeedbackBody, SubmitAgentThreadFeedbackCommentsBody};
 use editor::actions::OpenExcerpts;
@@ -565,10 +564,10 @@ pub struct ThreadView {
     pub last_token_limit_telemetry: Option<acp_thread::TokenUsageRatio>,
     thread_feedback: ThreadFeedbackState,
     pub list_state: ListState,
-    pub session_capabilities: SharedSessionCapabilities,
     /// Whether the last render showed the transcript as scrolled away from the latest entry, so
     /// the scroll handler only re-renders when the jump-to-latest overlay has to change.
     transcript_scrolled_up: bool,
+    pub session_capabilities: SharedSessionCapabilities,
     pub expanded_tool_call_raw_inputs: HashSet<acp_v2::ToolCallId>,
     collapsed_sandbox_authorization_details: HashSet<acp_v2::ToolCallId>,
     collapsed_sandbox_network_details: HashSet<acp_v2::ToolCallId>,
@@ -603,6 +602,9 @@ pub struct ThreadView {
     _add_menu_subscriptions: Vec<Subscription>,
     composer_bounds: Rc<Cell<Option<gpui::Bounds<Pixels>>>>,
     context_usage_expanded: bool,
+    /// Whether the docked composer puts its controls on a row below the input, as it does once
+    /// the input takes more than one line.
+    composer_stacked: bool,
     pub thinking_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub model_and_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub fast_mode_menu_handle: PopoverMenuHandle<ContextMenu>,
@@ -1026,6 +1028,7 @@ impl ThreadView {
             model_selector,
             profile_selector,
             list_state,
+            transcript_scrolled_up: false,
             session_capabilities,
             resumed_without_history,
             _subscriptions: subscriptions,
@@ -1035,7 +1038,6 @@ impl ThreadView {
             thread_error_markdown: None,
             token_limit_callout_dismissed: false,
             last_token_limit_telemetry: None,
-            transcript_scrolled_up: false,
             thread_feedback: Default::default(),
             expanded_tool_call_raw_inputs: HashSet::default(),
             collapsed_sandbox_authorization_details: HashSet::default(),
@@ -1064,6 +1066,7 @@ impl ThreadView {
             _add_menu_subscriptions: Vec::new(),
             composer_bounds: Rc::default(),
             context_usage_expanded: false,
+            composer_stacked: false,
             empty_thread_placeholder: placeholder,
             placeholder_shows_follow_up: None,
             thinking_effort_menu_handle: PopoverMenuHandle::default(),
@@ -1102,6 +1105,9 @@ impl ThreadView {
                 cx.defer(move |cx| {
                     let scroll_top = list_state.logical_scroll_top();
                     let _ = thread_view.update(cx, |this, cx| {
+                        if transcript::is_scrolled_up(&list_state) != this.transcript_scrolled_up {
+                            cx.notify();
+                        }
                         if let Some(thread) = this.as_native_thread(cx) {
                             thread.update(cx, |thread, _cx| {
                                 thread.set_ui_scroll_position(Some(scroll_top));
@@ -1113,9 +1119,6 @@ impl ThreadView {
             });
 
         if should_auto_submit {
-                        if transcript::is_scrolled_up(&list_state) != this.transcript_scrolled_up {
-                            cx.notify();
-                        }
             this.send(window, cx);
         }
         this
@@ -4129,12 +4132,6 @@ impl ThreadView {
                         ),
                 ),
         )
-    }
-
-    fn supports_split_token_display(&self, cx: &App) -> bool {
-        self.as_native_thread(cx)
-            .and_then(|thread| thread.read(cx).model())
-            .is_some_and(|model| model.supports_split_token_display())
     }
 
     fn fast_mode_available(&self, cx: &Context<Self>) -> bool {
@@ -8159,7 +8156,55 @@ impl Render for ThreadView {
         let list_state = self.list_state.clone();
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
         let in_composer_column = |alert: AlertCard| composer_column(alert, max_content_width);
-        let message_editor = self.render_message_editor(window, cx);
+
+        let mut above_composer: Vec<AnyElement> = Vec::new();
+        above_composer.extend(
+            self.render_multi_root_callout(cx)
+                .map(|alert| in_composer_column(alert).into_any_element()),
+        );
+        above_composer.extend(self.render_activity_bar(window, cx));
+        above_composer.extend(
+            self.render_recoverable_submissions(cx)
+                .map(IntoElement::into_any_element),
+        );
+        above_composer.extend(self.render_session_notices(cx));
+        if self.show_external_source_prompt_warning {
+            above_composer.push(
+                in_composer_column(self.render_external_source_prompt_warning(cx))
+                    .into_any_element(),
+            );
+        }
+        if self.show_codex_windows_warning {
+            above_composer
+                .push(in_composer_column(self.render_codex_windows_warning(cx)).into_any_element());
+        }
+        above_composer.extend(
+            self.render_skill_loading_issues(cx)
+                .into_iter()
+                .map(|alert| in_composer_column(alert).into_any_element()),
+        );
+        above_composer.extend(
+            self.render_thread_retry_status_callout(cx)
+                .map(|alert| in_composer_column(alert).into_any_element()),
+        );
+        above_composer.extend(
+            self.render_thread_error(window, cx)
+                .map(|alert| in_composer_column(alert).into_any_element()),
+        );
+        if !has_messages && let Some(version) = self.new_server_version_available.clone() {
+            above_composer.push(
+                self.render_new_version_callout(&version, cx)
+                    .into_any_element(),
+            );
+        }
+        above_composer.extend(
+            self.render_token_limit_callout(cx)
+                .map(|alert| in_composer_column(alert).into_any_element()),
+        );
+        above_composer.extend(self.render_request_elicitations(cx));
+
+        let (message_editor, changes_chips) =
+            self.render_message_editor(!above_composer.is_empty(), window, cx);
         let (centered_message_editor, docked_message_editor) = if has_messages {
             (None, Some(message_editor))
         } else {
@@ -8167,6 +8212,10 @@ impl Render for ThreadView {
         };
         let sticky_prompt = has_messages
             .then(|| self.render_sticky_prompt(cx))
+            .flatten();
+        let has_tool_row = changes_chips.is_some();
+        let transcript_bottom_overlay = has_messages
+            .then(|| self.render_transcript_bottom_overlay(changes_chips, window, cx))
             .flatten();
 
         let conversation = v_flex()
@@ -8179,13 +8228,6 @@ impl Render for ThreadView {
                 if has_messages {
                     this.flex_1()
                         .size_full()
-        let changes_chips = has_messages
-            .then(|| self.render_changes_chips(cx))
-            .flatten();
-        let has_tool_row = changes_chips.is_some();
-        let transcript_bottom_overlay = has_messages
-            .then(|| self.render_transcript_bottom_overlay(changes_chips, window, cx))
-            .flatten();
                         .relative()
                         .child(self.render_entries(has_tool_row, cx))
                         .when_some(sticky_prompt, |this, sticky_prompt| {
@@ -8208,6 +8250,7 @@ impl Render for ThreadView {
                                     ),
                             )
                         })
+                        .children(transcript_bottom_overlay)
                         // A conversation reads like a document whose right edge is usually
                         // empty, so the thumb floats instead of taking a gutter.
                         .custom_scrollbars(
@@ -8219,7 +8262,6 @@ impl Render for ThreadView {
                         )
                         .into_any()
                 } else {
-                        .children(transcript_bottom_overlay)
                     this.child(
                         v_flex()
                             .flex_1()
@@ -8530,42 +8572,7 @@ impl Render for ThreadView {
                 |this, bar| this.child(bar),
             )
             .child(conversation)
-            .children(self.render_multi_root_callout(cx).map(in_composer_column))
-            .children(self.render_activity_bar(window, cx))
-            .when_some(
-                self.render_recoverable_submissions(cx),
-                |this, submissions| this.child(submissions),
-            )
-            .when_some(self.render_session_notices(cx), |this, notices| {
-                this.child(notices)
-            })
-            .when(self.show_external_source_prompt_warning, |this| {
-                this.child(in_composer_column(
-                    self.render_external_source_prompt_warning(cx),
-                ))
-            })
-            .when(self.show_codex_windows_warning, |this| {
-                this.child(in_composer_column(self.render_codex_windows_warning(cx)))
-            })
-            .children(
-                self.render_skill_loading_issues(cx)
-                    .into_iter()
-                    .map(in_composer_column),
-            )
-            .children(
-                self.render_thread_retry_status_callout(cx)
-                    .map(in_composer_column),
-            )
-            .children(self.render_thread_error(window, cx).map(in_composer_column))
-            .when_some(
-                match has_messages {
-                    true => None,
-                    false => self.new_server_version_available.clone(),
-                },
-                |this, version| this.child(self.render_new_version_callout(&version, cx)),
-            )
-            .children(self.render_token_limit_callout(cx).map(in_composer_column))
-            .children(self.render_request_elicitations(cx))
+            .children(above_composer)
             .children(docked_message_editor)
     }
 }
