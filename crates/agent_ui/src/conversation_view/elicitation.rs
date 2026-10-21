@@ -1948,7 +1948,7 @@ impl<'a> ElicitationCard<'a> {
             .tab_group()
             .on_action(|_: &menu::SelectNext, window, cx| window.focus_next(cx))
             .on_action(|_: &menu::SelectPrevious, window, cx| window.focus_prev(cx))
-            .mx_5()
+            .mx_4()
             .my_1p5()
             .rounded_md()
             .border_1()

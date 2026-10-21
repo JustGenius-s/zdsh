@@ -127,6 +127,14 @@ pub struct MarkdownStyle {
     pub paragraph_line_height: DefiniteLength,
     /// Bottom margin of top-level lists only
     pub list_spacing: Pixels,
+    /// Bottom margin of each list item
+    pub list_item_spacing: DefiniteLength,
+    /// Indentation of each level of list
+    pub list_indent: DefiniteLength,
+    /// Bottom margin of paragraphs inside list items, which would otherwise split an item's
+    /// paragraphs as far apart as the paragraphs around the list. `None` uses
+    /// `paragraph_spacing`.
+    pub list_paragraph_spacing: Option<Pixels>,
     /// Horizontal (`x`) and vertical (`y`) padding of table cells
     pub table_cell_padding: Point<Pixels>,
     pub height_is_multiple_of_line_height: bool,
@@ -157,6 +165,9 @@ impl Default for MarkdownStyle {
             paragraph_spacing: px(8.),
             paragraph_line_height: rems(1.3).into(),
             list_spacing: px(0.),
+            list_item_spacing: rems(0.25).into(),
+            list_indent: rems(0.625).into(),
+            list_paragraph_spacing: None,
             table_cell_padding: point(px(4.), px(2.)),
             height_is_multiple_of_line_height: false,
             prevent_mouse_interaction: false,
@@ -1062,7 +1073,6 @@ impl Markdown {
         self.parse(cx);
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn parsed_markdown(&self) -> &ParsedMarkdown {
         &self.parsed_markdown
     }
@@ -2017,9 +2027,15 @@ impl MarkdownElement {
         text_align_override: Option<TextAlign>,
     ) {
         let align = text_align_override.unwrap_or(self.style.base_text_style.text_align);
+        let spacing = if builder.list_stack.is_empty() {
+            self.style.paragraph_spacing
+        } else {
+            self.style
+                .list_paragraph_spacing
+                .unwrap_or(self.style.paragraph_spacing)
+        };
         let mut paragraph = div().when(!self.style.height_is_multiple_of_line_height, |el| {
-            el.mb(self.style.paragraph_spacing)
-                .line_height(self.style.paragraph_line_height)
+            el.mb(spacing).line_height(self.style.paragraph_line_height)
         });
 
         paragraph = match align {
@@ -2259,7 +2275,7 @@ impl MarkdownElement {
         builder.push_div(
             div()
                 .when(!self.style.height_is_multiple_of_line_height, |el| {
-                    el.mb_1()
+                    el.mb(self.style.list_item_spacing)
                         .gap_1()
                         .line_height(self.style.paragraph_line_height)
                 })
@@ -2905,7 +2921,7 @@ impl Element for MarkdownElement {
                             let is_top_level = builder.list_stack.len() == 1;
                             builder.push_div(
                                 div()
-                                    .pl_2p5()
+                                    .pl(self.style.list_indent)
                                     .when(is_top_level, |this| this.mb(self.style.list_spacing)),
                                 range,
                                 markdown_end,

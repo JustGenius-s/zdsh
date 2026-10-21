@@ -1,6 +1,8 @@
 use std::{ops::Range, sync::Arc};
 
-use acp_thread::{AcpThread, AgentThreadEntry, AssistantMessageChunk, ToolCall};
+use acp_thread::{
+    AcpThread, AgentThreadEntry, AssistantMessageChunk, ToolCall, ToolCallContent, ToolCallStatus,
+};
 use agent::ThreadStore;
 use agent_client_protocol::schema::v2 as acp_v2;
 use agent_settings::AgentSettings;
@@ -41,6 +43,135 @@ fn reindex_after_removal(index: usize, removed: &Range<usize>) -> Option<usize> 
     }
 }
 
+/// Consecutive reads and searches, which the transcript folds into one "Explored" line.
+pub(crate) struct ExploreGroup {
+    /// The thread entries from the group's first tool call through its last.
+    pub(crate) entries: Range<usize>,
+    pub(crate) first_tool_call_id: acp_v2::ToolCallId,
+    pub(crate) files: usize,
+    pub(crate) searches: usize,
+    pub(crate) running: bool,
+}
+
+impl ExploreGroup {
+    /// The group the entry at `entry_ix` belongs to, when it's a read or search with at least one
+    /// more beside it. Entries that show nothing, such as an empty assistant message, don't
+    /// split a group.
+    pub(crate) fn containing(
+        entries: &[AgentThreadEntry],
+        entry_ix: usize,
+        cx: &App,
+    ) -> Option<Self> {
+        explore_tool_call(entries.get(entry_ix)?, cx)?;
+
+        let mut start = entry_ix;
+        for (ix, entry) in entries.iter().enumerate().take(entry_ix).rev() {
+            if explore_tool_call(entry, cx).is_some() {
+                start = ix;
+            } else if !shows_nothing(entry, cx) {
+                break;
+            }
+        }
+        let mut end = entry_ix + 1;
+        for (ix, entry) in entries.iter().enumerate().skip(entry_ix + 1) {
+            if explore_tool_call(entry, cx).is_some() {
+                end = ix + 1;
+            } else if !shows_nothing(entry, cx) {
+                break;
+            }
+        }
+
+        let members = entries
+            .get(start..end)?
+            .iter()
+            .filter_map(|entry| explore_tool_call(entry, cx))
+            .collect::<Vec<_>>();
+        if members.len() < 2 {
+            return None;
+        }
+        let first_tool_call_id = members.first()?.id.clone();
+        let files = members
+            .iter()
+            .filter(|tool_call| tool_call.kind() == &acp_v2::ToolKind::Read)
+            .count();
+        let running = members.iter().any(|tool_call| {
+            matches!(
+                tool_call.status(),
+                ToolCallStatus::Pending | ToolCallStatus::InProgress
+            )
+        });
+        Some(Self {
+            entries: start..end,
+            first_tool_call_id,
+            files,
+            searches: members.len() - files,
+            running,
+        })
+    }
+}
+
+fn explore_tool_call<'a>(entry: &'a AgentThreadEntry, cx: &App) -> Option<&'a ToolCall> {
+    let AgentThreadEntry::ToolCall(tool_call) = entry else {
+        return None;
+    };
+    let is_exploration = matches!(
+        tool_call.kind(),
+        acp_v2::ToolKind::Read | acp_v2::ToolKind::Search
+    );
+    let draws_a_card = tool_call.is_subagent()
+        || tool_call.content().iter().any(|content| {
+            matches!(
+                content,
+                ToolCallContent::Diff(_)
+                    | ToolCallContent::LegacyDiff { .. }
+                    | ToolCallContent::Terminal { .. }
+                    | ToolCallContent::DiffPatch { .. }
+            )
+        });
+    let has_settled_on_showing = match tool_call.status() {
+        ToolCallStatus::Pending
+        | ToolCallStatus::InProgress
+        | ToolCallStatus::Completed
+        | ToolCallStatus::Failed => true,
+        ToolCallStatus::Canceled => !is_hidden_canceled_tool_call(tool_call, cx),
+        ToolCallStatus::WaitingForConfirmation | ToolCallStatus::Rejected => false,
+    };
+    (is_exploration && !draws_a_card && has_settled_on_showing).then_some(tool_call)
+}
+
+fn shows_nothing(entry: &AgentThreadEntry, cx: &App) -> bool {
+    match entry {
+        AgentThreadEntry::AssistantMessage(message) => {
+            message.chunks.iter().all(|chunk| match chunk {
+                AssistantMessageChunk::Message { block, .. }
+                | AssistantMessageChunk::Thought { block, .. } => !block.visible_content(cx),
+            })
+        }
+        AgentThreadEntry::ToolCall(tool_call) => is_hidden_canceled_tool_call(tool_call, cx),
+        _ => false,
+    }
+}
+
+/// A tool call canceled before it produced anything, which the transcript leaves out, since it
+/// would only show as a "Canceled" line.
+pub(crate) fn is_hidden_canceled_tool_call(tool_call: &ToolCall, cx: &App) -> bool {
+    matches!(tool_call.status(), ToolCallStatus::Canceled)
+        && !tool_call.content().iter().any(|content| match content {
+            ToolCallContent::ContentBlock { block, .. } => block.visible_content(cx),
+            ToolCallContent::Diff(_)
+            | ToolCallContent::LegacyDiff { .. }
+            | ToolCallContent::Terminal { .. } => true,
+            ToolCallContent::DiffPatch { render, .. } => {
+                !render.files.is_empty()
+                    || render
+                        .fallback
+                        .as_ref()
+                        .is_some_and(|markdown| !markdown.read(cx).source().is_empty())
+            }
+            ToolCallContent::Other { markdown, .. } => !markdown.read(cx).source().is_empty(),
+        })
+}
+
 pub struct EntryViewState {
     workspace: WeakEntity<Workspace>,
     project: WeakEntity<Project>,
@@ -53,6 +184,7 @@ pub struct EntryViewState {
     user_toggled_thinking_blocks: HashSet<(usize, usize)>,
     expanded_compactions: HashSet<usize>,
     expanded_tool_calls: HashSet<acp_v2::ToolCallId>,
+    expanded_explore_groups: HashSet<acp_v2::ToolCallId>,
 }
 
 impl EntryViewState {
@@ -75,6 +207,7 @@ impl EntryViewState {
             user_toggled_thinking_blocks: HashSet::default(),
             expanded_compactions: HashSet::default(),
             expanded_tool_calls: HashSet::default(),
+            expanded_explore_groups: HashSet::default(),
         }
     }
 
@@ -92,6 +225,32 @@ impl EntryViewState {
 
     pub(crate) fn collapse_tool_call(&mut self, tool_call_id: &acp_v2::ToolCallId) {
         self.expanded_tool_calls.remove(tool_call_id);
+    }
+
+    pub(crate) fn is_explore_group_expanded(&self, group: &ExploreGroup) -> bool {
+        self.expanded_explore_groups
+            .contains(&group.first_tool_call_id)
+    }
+
+    pub(crate) fn toggle_explore_group_expansion(&mut self, group: &ExploreGroup) {
+        if !self
+            .expanded_explore_groups
+            .remove(&group.first_tool_call_id)
+        {
+            self.expanded_explore_groups
+                .insert(group.first_tool_call_id.clone());
+        }
+    }
+
+    /// Whether the entry at `entry_ix` is folded into the line of a collapsed explore group.
+    pub(crate) fn is_collapsed_into_explore_group(
+        &self,
+        entries: &[AgentThreadEntry],
+        entry_ix: usize,
+        cx: &App,
+    ) -> bool {
+        ExploreGroup::containing(entries, entry_ix, cx)
+            .is_some_and(|group| !self.is_explore_group_expanded(&group))
     }
 
     pub(crate) fn toggle_tool_call_expansion(&mut self, tool_call_id: &acp_v2::ToolCallId) {

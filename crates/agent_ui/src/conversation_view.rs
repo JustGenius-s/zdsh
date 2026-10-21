@@ -31,8 +31,8 @@ use gpui::{
     Action, Animation, AnimationExt, App, ClickEvent, ClipboardItem, CursorStyle, ElementId, Empty,
     Entity, EventEmitter, FocusHandle, Focusable, Hsla, ListOffset, ListState, ObjectFit,
     PlatformDisplay, ScrollHandle, SharedString, StyledText, Subscription, Task, TextRun,
-    TextStyle, WeakEntity, Window, WindowHandle, div, ease_in_out, img, linear_color_stop,
-    linear_gradient, list, pulsating_between,
+    TextStyle, WeakEntity, Window, WindowHandle, div, img, linear_color_stop, linear_gradient,
+    list, pulsating_between,
 };
 use language::{Buffer, Language};
 use language_model::{
@@ -62,9 +62,8 @@ use text::Anchor;
 use theme_settings::{AgentBufferFontSize, AgentUiFontSize};
 use ui::{
     Callout, CircularProgress, CommonAnimationExt, ContextMenu, ContextMenuEntry, CopyButton,
-    DecoratedIcon, DiffStat, Disclosure, Divider, DividerColor, IconDecoration, IconDecorationKind,
-    KeyBinding, PopoverMenu, PopoverMenuHandle, ScrollAxes, Scrollbars, TintColor, Tooltip,
-    WithScrollbar, prelude::*, right_click_menu,
+    Disclosure, Divider, KeyBinding, PopoverMenu, PopoverMenuHandle, ScrollAxes, Scrollbars,
+    TintColor, Tooltip, WithScrollbar, prelude::*, right_click_menu,
 };
 use util::{
     ResultExt, debug_panic, defer,

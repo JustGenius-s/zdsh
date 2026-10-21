@@ -476,36 +476,6 @@ impl MessageEditor {
         }
     }
 
-    /// Width for unwrapped plain text, including the editor's gutter and cursor space.
-    /// Rich context keeps the available width so its embedded controls can lay out normally.
-    pub(crate) fn preferred_width(&self, window: &Window, cx: &App) -> Option<Pixels> {
-        if !self.mention_set.read(cx).is_empty() {
-            return None;
-        }
-        let text = self.text(cx);
-        if text.contains('\t') {
-            return None;
-        }
-        let style = Self::text_style(cx);
-        let font_size = style.font_size.to_pixels(window.rem_size());
-        let text_system = window.text_system();
-        let font_id = text_system.resolve_font(&style.font());
-        let em_width = text_system.em_width(font_id, font_size).log_err()?;
-        let width = text.lines().fold(px(0.), |width, line| {
-            width.max(
-                text_system
-                    .shape_line(
-                        line.to_owned().into(),
-                        font_size,
-                        &[style.to_run(line.len())],
-                        None,
-                    )
-                    .width,
-            )
-        });
-        Some((width + 2. * em_width - text_system.descent(font_id, font_size)).ceil())
-    }
-
     pub fn new(
         workspace: WeakEntity<Workspace>,
         project: WeakEntity<Project>,

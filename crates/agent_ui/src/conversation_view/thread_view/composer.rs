@@ -9,8 +9,7 @@ use gpui::{AnyView, ListSizingBehavior, anchored, canvas, deferred, relative, un
 use gpui_kit::{
     base::Selectable as _,
     component::{
-        Disableable as _, Icon as KitIcon, IndexPath, Sizable as _, Size as KitSize,
-        Theme as KitTheme,
+        Disableable as _, Icon as KitIcon, IndexPath, Size as KitSize, Theme as KitTheme,
         button::{Button as KitButton, ButtonRounded, ButtonVariant, ButtonVariants as _},
         list::{List as KitList, ListDelegate, ListEvent, ListItem as KitListItem, ListState},
         menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
@@ -289,7 +288,7 @@ impl ThreadView {
             div()
                 .debug_selector(|| "discard-protected-draft".into())
                 .child(
-                    ComposerButton::new("discard-protected-draft")
+                    PillButton::new("discard-protected-draft")
                         .size(KitSize::Small)
                         .label("Discard draft")
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -304,7 +303,7 @@ impl ThreadView {
         });
 
         let expand_toggle = show_expand_toggle.then(|| {
-            ComposerButton::new("toggle-height")
+            PillButton::new("toggle-height")
                 .size(KitSize::Small)
                 .icon(expand_icon)
                 .tooltip(move |_window, cx| {
@@ -379,7 +378,7 @@ impl ThreadView {
         }
 
         if is_generating && is_editor_empty {
-            return ComposerButton::new("stop-generation")
+            return PillButton::new("stop-generation")
                 .variant(ButtonVariant::Primary)
                 .icon(IconName::Stop)
                 .tooltip(move |_window, cx| {
@@ -391,7 +390,7 @@ impl ThreadView {
 
         let can_send = !is_editor_empty || is_generating;
 
-        ComposerButton::new("send-message")
+        PillButton::new("send-message")
             .variant(ButtonVariant::Primary)
             .icon(IconName::ArrowUp)
             .disabled(!can_send)
@@ -485,7 +484,7 @@ impl ThreadView {
         div()
             .debug_selector(|| "composer-add-context".into())
             .child(
-                ComposerButton::new("add-context")
+                PillButton::new("add-context")
                     .variant(ButtonVariant::Secondary)
                     .icon(IconName::Plus)
                     .toggle_state(self.add_menu.is_some())
@@ -542,7 +541,7 @@ impl ThreadView {
                         .child(Icon::new(icon).size(IconSize::Small).color(color))
                         .child(Label::new(name).color(color))
                         .child(
-                            ComposerButton::new("composer-mode-remove")
+                            PillButton::new("composer-mode-remove")
                                 .size(KitSize::XSmall)
                                 .child(
                                     Icon::new(IconName::Close)
@@ -690,7 +689,7 @@ impl ThreadView {
             let stats = DiffStats::all_files(changed_buffers.iter().cloned(), cx);
             let file_count = changed_buffers.len();
 
-            ComposerButton::new("composer-changes")
+            PillButton::new("composer-changes")
                 .outline()
                 .size(KitSize::Small)
                 .toggle_state(self.edits_expanded)
@@ -896,7 +895,7 @@ impl ThreadView {
         let tooltip_label = format!("Context Usage: {}", usage.percentage);
 
         Some(
-            ComposerButton::new("context-usage-ring")
+            PillButton::new("context-usage-ring")
                 .size(KitSize::Small)
                 .toggle_state(self.context_usage_expanded)
                 .child(
@@ -1015,7 +1014,7 @@ impl ThreadView {
                         .justify_between()
                         .child(Label::new("Context Usage").color(Color::Muted))
                         .child(
-                            ComposerButton::new("hide-context-usage")
+                            PillButton::new("hide-context-usage")
                                 .size(KitSize::XSmall)
                                 .icon(IconName::Dash)
                                 .tooltip(Tooltip::text("Hide"))
@@ -1073,7 +1072,7 @@ struct ContextUsage {
 
 /// The composer's fill and edge: a card a step lighter than the thread, edged like GPUI Kit's
 /// inputs.
-fn composer_surface(cx: &App) -> (Hsla, Hsla) {
+pub(super) fn composer_surface(cx: &App) -> (Hsla, Hsla) {
     let theme = KitTheme::global(cx);
     (theme.sidebar, theme.input)
 }
@@ -1264,11 +1263,11 @@ fn agent_menu(
     )
 }
 
-/// A GPUI Kit button in the composer, pill shaped, with a tooltip of Zed's, since GPUI Kit's own
+/// A GPUI Kit button, pill shaped, with a tooltip of Zed's, since GPUI Kit's own
 /// tooltips need its window root, which Zed's windows don't have. It can trigger a
 /// [`PopoverMenu`].
 #[derive(IntoElement)]
-pub(super) struct ComposerButton {
+pub(super) struct PillButton {
     id: ElementId,
     variant: ButtonVariant,
     outline: bool,
@@ -1281,9 +1280,10 @@ pub(super) struct ComposerButton {
     disabled: bool,
     tooltip: Option<Box<dyn Fn(&mut Window, &mut App) -> AnyView>>,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
+    debug_selector: Option<SharedString>,
 }
 
-impl ComposerButton {
+impl PillButton {
     pub(super) fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
@@ -1298,7 +1298,14 @@ impl ComposerButton {
             disabled: false,
             tooltip: None,
             on_click: None,
+            debug_selector: None,
         }
+    }
+
+    /// Names the button for tests to find.
+    pub(super) fn debug_selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.debug_selector = Some(selector.into());
+        self
     }
 
     pub(super) fn variant(mut self, variant: ButtonVariant) -> Self {
@@ -1345,20 +1352,20 @@ impl ComposerButton {
     }
 }
 
-impl ParentElement for ComposerButton {
+impl ParentElement for PillButton {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
         self.children.extend(elements);
     }
 }
 
-impl Toggleable for ComposerButton {
+impl Toggleable for PillButton {
     fn toggle_state(mut self, selected: bool) -> Self {
         self.selected = selected;
         self
     }
 }
 
-impl Clickable for ComposerButton {
+impl Clickable for PillButton {
     fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Box::new(handler));
         self
@@ -1369,7 +1376,7 @@ impl Clickable for ComposerButton {
     }
 }
 
-impl RenderOnce for ComposerButton {
+impl RenderOnce for PillButton {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let height = match self.size {
             KitSize::Size(size) => size,
@@ -1399,6 +1406,9 @@ impl RenderOnce for ComposerButton {
         div()
             .id(self.id)
             .flex_none()
+            .when_some(self.debug_selector, |this, selector| {
+                this.debug_selector(move || selector.to_string())
+            })
             .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip))
             .child(button)
     }

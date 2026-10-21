@@ -24,7 +24,7 @@ On wide panes, history sits to the right of the conversation with a draggable di
 
 The conversation uses the toolbar background. In an empty conversation the composer is centered in the tab; once the conversation has messages, it docks at the bottom. It follows the configured content width and retains model, mode, thinking, context, and send controls.
 
-The `+` button in the composer picks a mode, starts a file mention, switches models, and turns MCP servers on or off. The default mode, Write, stays implicit. Picking another mode, such as Ask, shows it as a tag next to the `+` button; remove the tag to return to the default mode. User messages appear as right-aligned rounded bubbles. Plain-text bubbles fit their content up to 85% of the conversation width, then wrap; messages with attachments keep room for embedded controls. Editing, attachments, and checkpoint actions remain available.
+The `+` button in the composer picks a mode, starts a file mention, switches models, and turns MCP servers on or off. The default mode, Write, stays implicit. Picking another mode, such as Ask, shows it as a tag next to the `+` button; remove the tag to return to the default mode. User messages appear as full-width cards drawn like the composer. Editing, attachments, and checkpoint actions remain available. The agent's thinking shows as a single "Thinking" line while it streams and "Thought" afterwards; click it to read the reasoning. Tool calls that only look things up, such as reading files and searching, show as single lines you can click to see their input and output, and consecutive ones fold into one "Explored 3 files, 2 searches" line. Edits, commands, subagents, and tool calls waiting for permission show as cards. An edit's header shows how many lines it added and removed, a command's header shows its first line, and the buttons that answer a permission request sit at the bottom of the card. Errors and warnings about the conversation show as cards above the composer, with buttons to act on them, such as retrying or copying the error.
 
 Switching tabs keeps work running. Closing a conversation tab requests cancellation and releases its session. Saved conversations remain available through the agent's history support; DSH conversations are currently in memory and cannot be restored after closing. Central Agent tab positions are not restored when restarting zdsh.
 
@@ -102,7 +102,7 @@ You can also still interrupt the agent immediately if you want by either clickin
 
 ### Checkpoints {#checkpoints}
 
-Every time the model performs an edit, you should see a "Restore Checkpoint" button at the top of your message, allowing you to return your code base to the state it was in prior to that message.
+Every time the model performs an edit, hovering your message shows a "Restore Checkpoint" button on its top edge, allowing you to return your code base to the state it was in prior to that message.
 
 The checkpoint button appears even if you interrupt the thread midway through an edit, as this is likely a moment when you've identified that the agent is not heading in the right direction and you want to revert back.
 
@@ -118,7 +118,7 @@ Right-click on any agent response in the thread view to access a context menu wi
 
 ### Navigating the Thread {#navigating-the-thread}
 
-In long conversations, use the scroll arrow buttons at the bottom of the panel to jump to your most recent prompt or to the very beginning of the thread. You can also scroll the thread using arrow keys, Page Up/Down, Home/End, and Shift+Page Up/Down to jump between messages, when the thread pane is focused.
+In long conversations, use the scroll arrow buttons at the bottom of the panel to jump to your most recent prompt or to the very beginning of the thread. Once your prompt scrolls out of view, it stays pinned at the top of the thread while you read the agent's response; click it to scroll back to the prompt. You can also scroll the thread using arrow keys, Page Up/Down, Home/End, and Shift+Page Up/Down to jump between messages, when the thread pane is focused.
 
 When focus is in the message editor, you can also use {#kb agent::ScrollOutputPageUp}, {#kb agent::ScrollOutputPageDown}, {#kb agent::ScrollOutputToTop}, {#kb agent::ScrollOutputToBottom}, {#kb agent::ScrollOutputLineUp}, and {#kb agent::ScrollOutputLineDown} to navigate the thread, or {#kb agent::ScrollOutputToPreviousMessage} and {#kb agent::ScrollOutputToNextMessage} to jump between your prompts.
 
@@ -155,7 +155,7 @@ These notifications can be used together or individually, and you can use the `a
 
 Once the agent has made changes to your project, the panel will surface which files, how many of them, and how many lines have been edited.
 
-To see which files specifically have been edited, expand the accordion bar that shows up right above the message editor or click the `Review Changes` button ({#kb agent::OpenAgentDiff}), which opens a special multi-buffer tab with all changes.
+To see which files specifically have been edited, click the "Changes" button above the message editor, which lists them in a card over the composer, or click the `Review Changes` button ({#kb agent::OpenAgentDiff}), which opens a special multi-buffer tab with all changes.
 
 You can accept or reject each individual change hunk, or the whole set of changes made by the agent.
 

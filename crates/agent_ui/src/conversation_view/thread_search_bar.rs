@@ -361,6 +361,13 @@ impl ThreadSearchBar {
                         snapshot,
                     });
                 }
+                // A collapsed explore group shows a count in place of its tool calls.
+                AgentThreadEntry::ToolCall(_)
+                    if entry_view_state.is_collapsed_into_explore_group(
+                        thread.entries(),
+                        entry_ix,
+                        cx,
+                    ) => {}
                 _ => {
                     for markdown in collect_markdowns(entry_ix, entry, &entry_view_state, cx) {
                         let source = markdown.read(cx).source().clone();
