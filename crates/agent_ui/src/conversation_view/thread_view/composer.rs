@@ -10,18 +10,17 @@ use gpui_kit::{
     base::Selectable as _,
     component::{
         Disableable as _, Icon as KitIcon, IndexPath, Size as KitSize, Theme as KitTheme,
-        button::{
-            Button as KitButton, ButtonRounded, ButtonVariant, ButtonVariants as _, DropdownButton,
-        },
+        button::{Button as KitButton, ButtonRounded, ButtonVariant, DropdownButton},
         list::{List as KitList, ListDelegate, ListEvent, ListItem as KitListItem, ListState},
         menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
+        switch::Switch as KitSwitch,
         tag::Tag,
     },
 };
 use project::context_server_store::{ContextServerStatus, ContextServerStore};
 use settings::ContextServerSettingsContent;
 use std::sync::atomic::AtomicBool;
-use ui::{HighlightedLabel, ProgressBar, Switch};
+use ui::{HighlightedLabel, ProgressBar};
 
 const FOLLOW_UP_PLACEHOLDER: &str = "Send follow-up";
 const CURSOR_USAGE_DASHBOARD_URL: &str = "https://cursor.com/dashboard?tab=usage";
@@ -811,7 +810,7 @@ impl ThreadView {
                     .flex_none()
                     .gap_1()
                     .children(sandbox_status)
-                    .child(self.render_follow_toggle(cx))
+                    .children(self.render_follow_indicator(cx))
                     .children(self.render_cursor_usage_ring(cx))
                     .children(self.render_context_usage_ring(cx)),
             )
@@ -1736,6 +1735,7 @@ enum AddMenuView {
 #[derive(Clone)]
 enum AddMenuItem {
     Mode(AgentProfileId),
+    Follow,
     Files,
     Skill(AvailableSkill),
     Model,
@@ -1786,6 +1786,16 @@ impl AddMenuDelegate {
             .collect()
     }
 
+    fn follow_entry(&self) -> AddMenuEntry {
+        AddMenuEntry::new(AddMenuItem::Follow, "Follow Agent")
+    }
+
+    fn is_following(&self, cx: &App) -> bool {
+        self.thread_view
+            .upgrade()
+            .is_some_and(|thread_view| thread_view.read(cx).is_following(cx))
+    }
+
     fn skill_entries(&self) -> Vec<AddMenuEntry> {
         self.skills
             .iter()
@@ -1828,7 +1838,11 @@ impl AddMenuDelegate {
 
     fn browse_groups(&self, cx: &App) -> Vec<Vec<AddMenuEntry>> {
         match self.view {
-            AddMenuView::Root => vec![self.mode_entries(), self.root_entries()],
+            AddMenuView::Root => vec![
+                self.mode_entries(),
+                vec![self.follow_entry()],
+                self.root_entries(),
+            ],
             AddMenuView::McpServers => vec![
                 vec![AddMenuEntry::new(AddMenuItem::Back, "MCP")],
                 self.server_entries(cx),
@@ -1844,6 +1858,7 @@ impl AddMenuDelegate {
         match self.view {
             AddMenuView::Root => {
                 let mut entries = self.mode_entries();
+                entries.push(self.follow_entry());
                 entries.extend(self.root_entries());
                 entries.extend(self.skill_entries());
                 entries
@@ -1989,6 +2004,12 @@ impl AddMenuDelegate {
                         .into_any_element()
                 })
             }
+            AddMenuItem::Follow => Some(
+                KitSwitch::new("composer-follow-toggle")
+                    .checked(self.is_following(cx))
+                    .with_size(KitSize::Small)
+                    .into_any_element(),
+            ),
             AddMenuItem::Open(_) => Some(
                 Icon::new(IconName::ChevronRight)
                     .size(IconSize::Small)
@@ -2001,14 +2022,12 @@ impl AddMenuDelegate {
                     .as_ref()
                     .is_some_and(|store| store.read(cx).is_server_enabled(server_id, cx));
                 Some(
-                    Switch::new(
-                        SharedString::from(format!("composer-mcp-toggle-{}", server_id.0)),
-                        if is_enabled {
-                            ToggleState::Selected
-                        } else {
-                            ToggleState::Unselected
-                        },
-                    )
+                    KitSwitch::new(SharedString::from(format!(
+                        "composer-mcp-toggle-{}",
+                        server_id.0
+                    )))
+                    .checked(is_enabled)
+                    .with_size(KitSize::Small)
                     .into_any_element(),
                 )
             }
@@ -2019,6 +2038,7 @@ impl AddMenuDelegate {
     fn item_icon(&self, item: &AddMenuItem, cx: &App) -> (IconName, Color) {
         match item {
             AddMenuItem::Mode(profile_id) => profile_icon(profile_id),
+            AddMenuItem::Follow => (IconName::Crosshair, Color::Muted),
             AddMenuItem::Files => (IconName::Paperclip, Color::Muted),
             AddMenuItem::Skill(_) => (IconName::Sparkle, Color::Muted),
             AddMenuItem::Model => (IconName::Blocks, Color::Muted),
@@ -2149,6 +2169,15 @@ impl ListDelegate for AddMenuDelegate {
                     });
                 }
                 self.dismiss(window, cx);
+            }
+            AddMenuItem::Follow => {
+                self.thread_view
+                    .update(cx, |thread_view, cx| {
+                        thread_view.toggle_following(window, cx);
+                        cx.notify();
+                    })
+                    .log_err();
+                cx.notify();
             }
             AddMenuItem::Files => {
                 let message_editor = self.message_editor.clone();

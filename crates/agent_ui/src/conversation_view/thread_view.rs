@@ -37,8 +37,14 @@ use gpui::List;
 use gpui::Stateful;
 use gpui::TaskExt;
 use gpui_kit::component::{
-    Sizable as _, Size as KitSize, Theme as KitTheme, alert::AlertVariant, button::ButtonVariant,
-    clipboard::Clipboard as KitClipboard, shimmer::ShimmerText,
+    Side, Sizable as _, Size as KitSize, Theme as KitTheme,
+    alert::AlertVariant,
+    button::{Button as KitButton, ButtonRounded, ButtonVariant, ButtonVariants as _},
+    clipboard::Clipboard as KitClipboard,
+    menu::{PopupMenu, PopupMenuItem},
+    popover::Popover,
+    shimmer::ShimmerText,
+    switch::Switch as KitSwitch,
 };
 use heapless::Vec as ArrayVec;
 use itertools::Itertools;
@@ -49,7 +55,7 @@ use language_model::{
 use notifications::status_toast::StatusToast;
 use project::ResolvedPath;
 use settings::{update_settings_file, update_settings_file_with_completion};
-use ui::{ButtonLike, Checkbox, ListItemSpacing, SplitButton, SplitButtonStyle, Tab, ToggleState};
+use ui::{ButtonLike, Checkbox, SplitButton, SplitButtonStyle, Tab, ToggleState};
 use url::Url;
 use util::markdown::source_position_from_fragment;
 use workspace::{OpenOptions, SERIALIZATION_THROTTLE_TIME};
@@ -607,7 +613,8 @@ pub struct ThreadView {
     /// the input takes more than one line.
     composer_stacked: bool,
     pub thinking_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
-    pub model_and_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
+    model_menu: Option<Entity<PopupMenu>>,
+    _model_menu_subscription: Option<Subscription>,
     pub fast_mode_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub project: WeakEntity<Project>,
     /// Cache + worktree snapshot for resolving paths in markdown code spans.
@@ -1084,7 +1091,8 @@ impl ThreadView {
             empty_thread_placeholder: placeholder,
             placeholder_shows_follow_up: None,
             thinking_effort_menu_handle: PopoverMenuHandle::default(),
-            model_and_effort_menu_handle: PopoverMenuHandle::default(),
+            model_menu: None,
+            _model_menu_subscription: None,
             fast_mode_menu_handle: PopoverMenuHandle::default(),
             project,
             code_span_resolver,
@@ -4472,10 +4480,67 @@ impl ThreadView {
     /// shows the active model and effort; the menu exposes effort, model, and
     /// thinking as one panel instead of separate toolbar entries.
     fn render_model_and_effort_control(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(model_selector) = self.model_selector.clone() else {
+        if self.model_selector.is_none() {
             return self
                 .render_thinking_control(cx)
                 .unwrap_or_else(|| div().into_any_element());
+        }
+
+        let thinking_state = self.thinking_state(cx);
+        let effort_label = thinking_state.as_ref().and_then(|(model, _, effort)| {
+            let effort_levels = model.supported_effort_levels();
+            effort_levels
+                .iter()
+                .find(|level| effort.as_deref() == Some(level.value.as_ref()))
+                .or_else(|| effort_levels.iter().find(|level| level.is_default))
+                .map(|level| level.name.clone())
+        });
+        let model_name = thinking_state
+            .as_ref()
+            .map(|(model, _, _)| model.name().0)
+            .unwrap_or_else(|| SharedString::from("Select a Model"));
+        let trigger_label = match effort_label {
+            Some(effort_label) => format!("{model_name} {effort_label}"),
+            None => model_name.to_string(),
+        };
+
+        let menu = self.model_menu.clone();
+        Popover::new("model-effort-selector")
+            .appearance(false)
+            .overlay_closable(false)
+            .anchor(gpui::Anchor::BottomRight)
+            .offset(px(6.))
+            .open(menu.is_some())
+            .on_open_change(cx.listener(|this, open: &bool, window, cx| {
+                if *open {
+                    this.open_model_menu(window, cx);
+                } else {
+                    this.close_model_menu(cx);
+                }
+            }))
+            .trigger(
+                KitButton::new("model-effort-trigger")
+                    .with_variant(ButtonVariant::Ghost)
+                    .with_size(KitSize::Small)
+                    .rounded(ButtonRounded::Size(px(12.)))
+                    .label(trigger_label)
+                    .dropdown_caret(true),
+            )
+            .content(move |_, _, _| match &menu {
+                Some(menu) => menu.clone().into_any_element(),
+                None => div().into_any_element(),
+            })
+            .into_any_element()
+    }
+
+    /// The menu lives on the thread view rather than in its trigger so the model selector
+    /// shortcut can open it too.
+    fn open_model_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model_menu.is_some() {
+            return;
+        }
+        let Some(model_selector) = self.model_selector.clone() else {
+            return;
         };
 
         let thinking_state = self.thinking_state(cx);
@@ -4490,173 +4555,120 @@ impl ThreadView {
             .as_ref()
             .map(|(model, _, _)| model.supported_effort_levels())
             .unwrap_or_default();
-        let selected_effort = thinking_state
-            .as_ref()
-            .and_then(|(_, _, effort)| effort.clone());
-        let effort_label = effort_levels
-            .iter()
-            .find(|level| selected_effort.as_deref() == Some(level.value.as_ref()))
-            .or_else(|| effort_levels.iter().find(|level| level.is_default))
-            .map(|level| level.name.clone());
-        let model_name = thinking_state
-            .as_ref()
-            .map(|(model, _, _)| model.name().0)
-            .unwrap_or_else(|| SharedString::from("Select a Model"));
-
+        let selected_effort = thinking_state.and_then(|(_, _, effort)| effort);
+        let model_list = model_selector
+            .read(cx)
+            .available_models(cx)
+            .filter(|model_list| !model_list.is_empty());
+        let hidden_model_ids = model_selector.read(cx).hidden_model_ids(cx);
+        let selected_model_id = model_selector
+            .read(cx)
+            .active_model(cx)
+            .map(|model| model.id.clone());
+        let focus_handle = self.message_editor.focus_handle(cx);
         let weak_self = cx.weak_entity();
-        let model_name_for_menu = model_name.clone();
 
-        let trigger_label = match effort_label {
-            Some(effort_label) => format!("{model_name} {effort_label}"),
-            None => model_name.to_string(),
-        };
-        let trigger = composer::PillButton::new("model-effort-trigger")
-            .size(gpui_kit::component::Size::Small)
-            .label(trigger_label)
-            .dropdown_caret(true);
+        let menu = PopupMenu::build(window, cx, move |mut menu, window, cx| {
+            menu = menu
+                .action_context(focus_handle)
+                .check_side(Side::Right)
+                .min_w(px(200.));
 
-        let menu = PopoverMenu::new("model-effort-selector")
-            .trigger(trigger)
-            .menu({
-                move |window, cx| {
-                    let model_list = model_selector.read(cx).available_models(cx);
-                    let hidden_model_ids = model_selector.read(cx).hidden_model_ids(cx);
-                    let selected_model_id = model_selector
-                        .read(cx)
-                        .active_model(cx)
-                        .map(|model| model.id.clone());
-                    let effort_levels = effort_levels.clone();
-                    let selected_effort = selected_effort.clone();
-                    let model_name_for_menu = model_name_for_menu.clone();
-                    let model_selector = model_selector.clone();
-                    let weak_self = weak_self.clone();
+            if supports_disabling_thinking {
+                let weak_self = weak_self.clone();
+                menu = menu.item(
+                    PopupMenuItem::element(move |_, _| {
+                        h_flex()
+                            .flex_1()
+                            .gap_4()
+                            .justify_between()
+                            .child("Thinking")
+                            .child(
+                                KitSwitch::new("thinking-switch")
+                                    .checked(thinking_enabled)
+                                    .with_size(KitSize::Small),
+                            )
+                    })
+                    .on_click(move |_, _, cx| {
+                        weak_self
+                            .update(cx, |this, cx| this.toggle_thinking(cx))
+                            .log_err();
+                    }),
+                );
+            }
 
-                    Some(ContextMenu::build(window, cx, move |mut menu, _window, _cx| {
-                        menu = menu.spacing(ListItemSpacing::Sparse);
-                        let mut has_items = false;
+            if !effort_levels.is_empty() {
+                let weak_self = weak_self.clone();
+                let selected_effort = selected_effort.clone();
+                let effort_levels = effort_levels.clone();
+                menu = menu.submenu("Effort", window, cx, move |mut menu, _, _| {
+                    menu = menu.check_side(Side::Right);
+                    for level in &effort_levels {
+                        let weak_self = weak_self.clone();
+                        let value = level.value.to_string();
+                        menu = menu.item(
+                            PopupMenuItem::new(level.name.clone())
+                                .checked(selected_effort.as_deref() == Some(level.value.as_ref()))
+                                .on_click(move |_, _, cx| {
+                                    weak_self
+                                        .update(cx, |this, cx| {
+                                            this.select_thinking_effort(value.clone(), cx)
+                                        })
+                                        .log_err();
+                                }),
+                        );
+                    }
+                    menu
+                });
+            }
 
-                        if supports_disabling_thinking {
-                            has_items = true;
-                            menu.push_item(
-                                ContextMenuEntry::new("Thinking")
-                                    .toggleable(IconPosition::End, thinking_enabled)
-                                    .handler({
-                                        let weak_self = weak_self.clone();
-                                        move |_window, cx| {
-                                            if let Err(error) = weak_self
-                                                .update(cx, |this, cx| this.toggle_thinking(cx))
-                                            {
-                                                log::error!(
-                                                    "failed to toggle thinking mode: {error}"
-                                                );
-                                            }
-                                        }
-                                    }),
-                            );
-                        }
+            let has_models = model_list.is_some();
+            if let Some(model_list) = model_list.clone() {
+                let selected_model_id = selected_model_id.clone();
+                let hidden_model_ids = hidden_model_ids.clone();
+                let model_selector = model_selector.clone();
+                menu = menu.submenu("Model", window, cx, move |menu, _, _| {
+                    Self::push_model_items(
+                        menu.check_side(Side::Right)
+                            .max_h(px(420.))
+                            .scrollable(true),
+                        model_list.clone(),
+                        selected_model_id.as_ref(),
+                        &hidden_model_ids,
+                        model_selector.clone(),
+                    )
+                });
+            }
 
-                        if !effort_levels.is_empty() {
-                            has_items = true;
-                            let levels = effort_levels.clone();
-                            let selected = selected_effort.clone();
-                            let weak_self = weak_self.clone();
-                            menu = menu.submenu_with_value(
-                                "Effort",
-                                Self::selected_effort_label(&effort_levels, selected_effort.as_deref()),
-                                move |mut menu, _window, _cx| {
-                                    menu = menu.spacing(ListItemSpacing::Sparse);
-                                    for level in levels.clone() {
-                                        let is_selected =
-                                            selected.as_deref() == Some(level.value.as_ref());
-                                        let weak_self = weak_self.clone();
-                                        let value = level.value.clone();
-                                        menu.push_item(
-                                            ContextMenuEntry::new(level.name)
-                                                .toggleable(IconPosition::End, is_selected)
-                                                .handler(move |_window, cx| {
-                                                    if let Err(error) =
-                                                        weak_self.update(cx, |this, cx| {
-                                                            this.select_thinking_effort(
-                                                                value.to_string(),
-                                                                cx,
-                                                            )
-                                                        })
-                                                    {
-                                                        log::error!(
-                                                            "failed to select thinking effort: {error}"
-                                                        );
-                                                    }
-                                                }),
-                                        );
-                                    }
-                                    menu
-                                },
-                            );
-                        }
+            if !supports_disabling_thinking && effort_levels.is_empty() && !has_models {
+                menu = menu.item(PopupMenuItem::new("No models available").disabled(true));
+            }
+            menu
+        });
 
-                        if let Some(model_list) = model_list.clone() {
-                            if !model_list.is_empty() {
-                                has_items = true;
-                                let model_selector = model_selector.clone();
-                                let selected_model_id = selected_model_id.clone();
-                                let hidden_model_ids = hidden_model_ids.clone();
-                                menu = menu.submenu_with_value(
-                                    "Model",
-                                    model_name_for_menu,
-                                    move |mut menu, _window, _cx| {
-                                        menu = menu.spacing(ListItemSpacing::Sparse);
-                                        menu = Self::push_model_entries(
-                                            menu,
-                                            model_list.clone(),
-                                            selected_model_id.as_ref(),
-                                            &hidden_model_ids,
-                                            model_selector.clone(),
-                                        );
-                                        menu
-                                    },
-                                );
-                            }
-                        }
-
-                        if !has_items {
-                            menu.push_item(
-                                ContextMenuEntry::new("No models available").disabled(true),
-                            );
-                        }
-
-                        menu
-                    }))
-                }
-            })
-            .anchor(gpui::Anchor::BottomRight)
-            .with_handle(self.model_and_effort_menu_handle.clone())
-            .offset(gpui::Point {
-                x: px(0.0),
-                y: px(-6.0),
-            });
-
-        menu.into_any_element()
+        self._model_menu_subscription = Some(cx.subscribe_in(
+            &menu,
+            window,
+            |this, _, _: &gpui::DismissEvent, _, cx| this.close_model_menu(cx),
+        ));
+        menu.focus_handle(cx).focus(window, cx);
+        self.model_menu = Some(menu);
+        cx.notify();
     }
 
-    fn selected_effort_label(
-        effort_levels: &[LanguageModelEffortLevel],
-        selected_effort: Option<&str>,
-    ) -> SharedString {
-        effort_levels
-            .iter()
-            .find(|level| Some(level.value.as_ref()) == selected_effort)
-            .or_else(|| effort_levels.iter().find(|level| level.is_default))
-            .map(|level| level.name.clone())
-            .unwrap_or_else(|| SharedString::from("Default"))
+    fn close_model_menu(&mut self, cx: &mut Context<Self>) {
+        if self.model_menu.take().is_some() {
+            cx.notify();
+        }
     }
 
-    fn push_model_entries(
-        mut menu: ContextMenu,
+    fn push_model_items(
+        mut menu: PopupMenu,
         models: AgentModelList,
         selected_model_id: Option<&AgentModelId>,
         hidden_model_ids: &HashSet<AgentModelId>,
         model_selector: Entity<ModelSelectorPopover>,
-    ) -> ContextMenu {
+    ) -> PopupMenu {
         // The model in use stays listed even when hidden, so the checkmark never vanishes.
         let is_listed = |model: &AgentModelInfo| {
             !hidden_model_ids.contains(&model.id) || Some(&model.id) == selected_model_id
@@ -4664,7 +4676,7 @@ impl ThreadView {
         match models {
             AgentModelList::Flat(list) => {
                 for model in list.into_iter().filter(|model| is_listed(model)) {
-                    menu.push_item(Self::model_menu_entry(
+                    menu = menu.item(Self::model_menu_item(
                         model,
                         selected_model_id,
                         model_selector.clone(),
@@ -4678,9 +4690,9 @@ impl ThreadView {
                     if listed.is_empty() {
                         continue;
                     }
-                    menu = menu.header(group.0);
+                    menu = menu.label(group.0);
                     for model in listed {
-                        menu.push_item(Self::model_menu_entry(
+                        menu = menu.item(Self::model_menu_item(
                             model,
                             selected_model_id,
                             model_selector.clone(),
@@ -4688,25 +4700,26 @@ impl ThreadView {
                     }
                     if !hidden.is_empty() {
                         let label = SharedString::from(format!("{} hidden", hidden.len()));
-                        menu = menu.custom_entry(
-                            move |_window, _cx| {
-                                Label::new(label.clone())
-                                    .size(LabelSize::Small)
-                                    .color(Color::Muted)
-                                    .into_any_element()
-                            },
-                            Self::open_llm_providers_settings,
+                        menu = menu.item(
+                            PopupMenuItem::element(move |_, cx| {
+                                div()
+                                    .text_xs()
+                                    .text_color(KitTheme::global(cx).muted_foreground)
+                                    .child(label.clone())
+                            })
+                            .on_click(|_, window, cx| {
+                                Self::open_llm_providers_settings(window, cx)
+                            }),
                         );
                     }
                 }
             }
         }
 
-        menu = menu.separator();
-        menu.push_item(
-            ContextMenuEntry::new("Manage Models…").handler(Self::open_llm_providers_settings),
-        );
-        menu
+        menu.separator().item(
+            PopupMenuItem::new("Manage Models…")
+                .on_click(|_, window, cx| Self::open_llm_providers_settings(window, cx)),
+        )
     }
 
     fn open_llm_providers_settings(window: &mut Window, cx: &mut App) {
@@ -4719,18 +4732,18 @@ impl ThreadView {
         );
     }
 
-    fn model_menu_entry(
+    fn model_menu_item(
         model: AgentModelInfo,
         selected_model_id: Option<&AgentModelId>,
         model_selector: Entity<ModelSelectorPopover>,
-    ) -> ContextMenuEntry {
+    ) -> PopupMenuItem {
         let is_selected = selected_model_id == Some(&model.id);
         let disabled = model.disabled.is_some();
         let model_id = model.id.clone();
-        ContextMenuEntry::new(model.name)
-            .toggleable(IconPosition::End, is_selected)
+        PopupMenuItem::new(model.name)
+            .checked(is_selected)
             .disabled(disabled)
-            .handler(move |_window, cx| {
+            .on_click(move |_, _, cx| {
                 model_selector.update(cx, |selector, cx| {
                     selector.select_model(model_id.clone(), cx);
                 });
@@ -4957,42 +4970,30 @@ impl ThreadView {
             .anchor(gpui::Anchor::BottomLeft)
     }
 
-    fn render_follow_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let following = self.is_following(cx);
-
-        let tooltip_label = if following {
-            if self.agent_id.as_ref() == agent::ZED_AGENT_ID.as_ref() {
-                format!("Stop Following the {}", self.agent_id)
-            } else {
-                format!("Stop Following {}", self.agent_id)
-            }
+    /// Following is switched on from the add menu; the footer only shows that it's on, and
+    /// stops it on click.
+    fn render_follow_indicator(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.is_following(cx) {
+            return None;
+        }
+        let tooltip_label = if self.agent_id.as_ref() == agent::ZED_AGENT_ID.as_ref() {
+            format!("Stop Following the {}", self.agent_id)
         } else {
-            if self.agent_id.as_ref() == agent::ZED_AGENT_ID.as_ref() {
-                format!("Follow the {}", self.agent_id)
-            } else {
-                format!("Follow {}", self.agent_id)
-            }
+            format!("Stop Following {}", self.agent_id)
         };
 
-        composer::PillButton::new("follow-agent")
-            .size(gpui_kit::component::Size::Small)
-            .icon(IconName::Crosshair)
-            .toggle_state(following)
-            .tooltip(move |_window, cx| {
-                if following {
-                    Tooltip::for_action(tooltip_label.clone(), &Follow, cx)
-                } else {
-                    Tooltip::with_meta(
-                        tooltip_label.clone(),
-                        Some(&Follow),
-                        "Track the agent's location as it reads and edits files.",
-                        cx,
-                    )
-                }
-            })
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.toggle_following(window, cx);
-            }))
+        Some(
+            composer::PillButton::new("follow-agent")
+                .size(gpui_kit::component::Size::Small)
+                .icon(IconName::Crosshair)
+                .toggle_state(true)
+                .tooltip(move |_window, cx| Tooltip::for_action(tooltip_label.clone(), &Follow, cx))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.toggle_following(window, cx);
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )
     }
 }
 
@@ -8550,7 +8551,11 @@ impl Render for ThreadView {
                     }
                 }
 
-                this.model_and_effort_menu_handle.toggle(window, cx);
+                if this.model_menu.is_some() {
+                    this.close_model_menu(cx);
+                } else {
+                    this.open_model_menu(window, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &CycleFavoriteModels, window, cx| {
                 if this.thread.read(cx).status() != ThreadStatus::Idle {
