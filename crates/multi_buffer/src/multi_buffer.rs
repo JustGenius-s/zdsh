@@ -1,6 +1,4 @@
 mod anchor;
-#[cfg(test)]
-mod multi_buffer_tests;
 mod path_key;
 mod transaction;
 

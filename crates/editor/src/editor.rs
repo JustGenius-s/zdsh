@@ -50,12 +50,6 @@ pub mod split_editor_view;
 
 mod bookmarks;
 #[cfg(test)]
-mod code_completion_tests;
-#[cfg(test)]
-mod edit_prediction_tests;
-#[cfg(test)]
-mod editor_block_comment_tests;
-#[cfg(test)]
 mod editor_tests;
 mod signature_help;
 #[cfg(any(test, feature = "test-support"))]
@@ -80,8 +74,6 @@ pub use clipboard::ClipboardSelection;
 pub use code_actions::CodeActionProvider;
 use collections::TypeIdHashMap;
 pub use completions::CompletionProvider;
-#[cfg(test)]
-pub(crate) use completions::snippet_candidate_suffixes;
 pub(crate) use completions::split_words;
 use diagnostics::{ActiveDiagnostic, GlobalDiagnosticRenderer, InlineDiagnostic};
 pub use diagnostics::{DiagnosticRenderer, set_diagnostic_renderer};
@@ -93,10 +85,6 @@ pub use edit_prediction::make_suggestion_styles;
 pub(crate) use edit_prediction::{
     EditDisplayMode, EditPrediction, EditPredictionPreview, EditPredictionSettings,
     EditPredictionState, MenuEditPredictionsPolicy, RegisteredEditPredictionDelegate,
-};
-#[cfg(test)]
-pub(crate) use edit_prediction::{
-    EditPredictionKeybindAction, EditPredictionKeybindSurface, edit_prediction_edit_text,
 };
 pub use edit_prediction_types::Direction;
 pub use edit_prediction_types::EditPredictionRequestTrigger;

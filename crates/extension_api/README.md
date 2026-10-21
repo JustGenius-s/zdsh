@@ -78,4 +78,4 @@ Here is the compatibility of the `zed_extension_api` with versions of Zed:
 
 ## ZDSH Agent tools
 
-The optional `agent-tools` Cargo feature adds the versioned `zdsh:agent@0.1.0` interface to the same extension component. Implement `Extension::run_agent_tool` and declare `agent_tools` in `extension.toml`. Existing Zed exports and historical WIT definitions are unchanged. This feature requires the ZDSH development host and is not supported by upstream Zed. See [Agent tool extensions](../../docs/src/extensions/agent-tools.md).
+The optional `agent-tools` Cargo feature adds the versioned `zdsh:agent@0.1.0` interface to the same extension component. Implement `Extension::run_agent_tool` and declare `agent_tools` in `extension.toml`. Existing Zed exports and historical WIT definitions are unchanged. This feature requires the ZDSH development host and is not supported by upstream Zed. See [Agent tool extensions](../../docs/zdsh.md#extension-agent-tools).

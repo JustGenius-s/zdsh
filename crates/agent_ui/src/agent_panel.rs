@@ -1,21 +1,11 @@
-use std::{
-    cell::Cell,
-    fmt,
-    path::PathBuf,
-    rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
+use std::{cell::Cell, fmt, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 use acp_thread::{AcpThread, AcpThreadEvent, MentionUri, line_range_suffix};
 use agent::{ContextServerRegistry, SharedThread, ThreadStore};
 use agent_client_protocol::schema::v2 as acp_v2;
 use agent_servers::AgentServer;
 use collections::HashSet;
-use db::kvp::{Dismissable, KeyValueStore};
+use db::kvp::KeyValueStore;
 use project::agent_server_store::AllAgentServersSettings;
 use project::{AgentId, ProjectItem};
 use serde::{Deserialize, Serialize};
@@ -49,20 +39,17 @@ use crate::{
 use crate::{
     AgentDiffPane, ConversationView, CopyThreadToClipboard, Follow, LoadThreadFromClipboard,
     NewTerminalThread, NewThread, OpenActiveThreadAsMarkdown, OpenAgentDiff, ResetFastModeWarnings,
-    ResetTrialEndUpsell, ResetTrialUpsell, ShowAllSidebarThreadMetadata, ShowThreadMetadata,
+    ShowAllSidebarThreadMetadata, ShowThreadMetadata,
     conversation_view::{
         AcpThreadViewEvent, RootThreadUpdated, ThreadView, reset_fast_mode_warnings,
     },
-    ui::{AgentNotification, AgentNotificationEvent, EndTrialUpsell},
+    ui::{AgentNotification, AgentNotificationEvent},
 };
 use agent_settings::AgentSettings;
-use ai_onboarding::AgentPanelOnboarding;
 use anyhow::{Context as _, Result, anyhow};
 #[cfg(feature = "audio")]
 use audio::{Audio, Sound};
 use chrono::{DateTime, Utc};
-use client::UserStore;
-use cloud_api_types::Plan;
 use collections::HashMap;
 use editor::{Editor, MultiBuffer};
 use extension_host::ExtensionStore;
@@ -469,19 +456,6 @@ pub fn init(cx: &mut App) {
                 .register_action(|_workspace, _: &ResetOnboarding, window, cx| {
                     window.dispatch_action(workspace::RestoreBanner.boxed_clone(), cx);
                     window.refresh();
-                })
-                .register_action(|workspace, _: &ResetTrialUpsell, _window, cx| {
-                    if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
-                        panel.update(cx, |panel, _| {
-                            panel
-                                .new_user_onboarding_upsell_dismissed
-                                .store(false, Ordering::Release);
-                        });
-                    }
-                    OnboardingUpsell::set_dismissed(false, cx);
-                })
-                .register_action(|_workspace, _: &ResetTrialEndUpsell, _window, cx| {
-                    TrialEndUpsell::set_dismissed(false, cx);
                 })
                 .register_action(|_workspace, _: &ResetFastModeWarnings, _window, cx| {
                     reset_fast_mode_warnings(cx);
@@ -1119,7 +1093,6 @@ pub struct AgentPanel {
     workspace: WeakEntity<Workspace>,
     /// Workspace id is used as a database key
     workspace_id: Option<WorkspaceId>,
-    user_store: Entity<UserStore>,
     project: Entity<Project>,
     fs: Arc<dyn Fs>,
     language_registry: Arc<LanguageRegistry>,
@@ -1141,8 +1114,6 @@ pub struct AgentPanel {
     zoomed: bool,
     pending_serialization: Option<Task<Result<()>>>,
     persist_selected_agent_task: Task<()>,
-    new_user_onboarding: Entity<AgentPanelOnboarding>,
-    new_user_onboarding_upsell_dismissed: AtomicBool,
     selected_agent: Agent,
     _thread_view_subscription: Option<Subscription>,
     _active_thread_focus_subscription: Option<Subscription>,
@@ -1462,10 +1433,8 @@ impl AgentPanel {
 
     pub(crate) fn new(workspace: &Workspace, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let fs = workspace.app_state().fs.clone();
-        let user_store = workspace.app_state().user_store.clone();
         let project = workspace.project();
         let language_registry = project.read(cx).languages().clone();
-        let client = workspace.client().clone();
         let workspace_id = workspace.database_id();
         let workspace = workspace.weak_handle();
 
@@ -1475,22 +1444,6 @@ impl AgentPanel {
         let thread_store = ThreadStore::global(cx);
 
         let base_view = BaseView::Uninitialized;
-
-        let weak_panel = cx.entity().downgrade();
-        let onboarding = cx.new(|cx| {
-            AgentPanelOnboarding::new(
-                user_store.clone(),
-                client,
-                move |_window, cx| {
-                    weak_panel
-                        .update(cx, |panel, cx| {
-                            panel.dismiss_ai_onboarding(cx);
-                        })
-                        .ok();
-                },
-                cx,
-            )
-        });
 
         // Subscribe to extension events to sync agent servers when extensions change
         let extension_subscription = ExtensionStore::try_global(cx).map(|store| {
@@ -1541,7 +1494,6 @@ impl AgentPanel {
             base_view,
             last_created_entry_kind: AgentPanelEntryKind::Thread,
             workspace,
-            user_store,
             project: project.clone(),
             fs: fs.clone(),
             language_registry,
@@ -1560,12 +1512,10 @@ impl AgentPanel {
             _project_subscription,
             zoomed: false,
             pending_serialization: None,
-            new_user_onboarding: onboarding,
             thread_store,
             selected_agent: Agent::default(),
             _thread_view_subscription: None,
             _active_thread_focus_subscription: None,
-            new_user_onboarding_upsell_dismissed: AtomicBool::new(OnboardingUpsell::dismissed(cx)),
             _base_view_observation: None,
             _draft_editor_observation: None,
             _active_draft_reclaim_observation: None,
@@ -5440,136 +5390,6 @@ impl AgentPanel {
         })
     }
 
-    fn should_render_trial_end_upsell(&self, cx: &mut Context<Self>) -> bool {
-        if !client::Client::global(cx).accounts_enabled() {
-            return false;
-        }
-        if TrialEndUpsell::dismissed(cx) {
-            return false;
-        }
-
-        match &self.base_view {
-            BaseView::AgentThread { .. } => {
-                if LanguageModelRegistry::global(cx)
-                    .read(cx)
-                    .default_model()
-                    .is_some_and(|model| model.provider_id != language_model::ZED_CLOUD_PROVIDER_ID)
-                {
-                    return false;
-                }
-            }
-            BaseView::Terminal { .. } | BaseView::Uninitialized => {
-                return false;
-            }
-        }
-
-        let plan = self.user_store.read(cx).plan();
-        let has_previous_trial = self.user_store.read(cx).trial_started_at().is_some();
-
-        plan.is_some_and(|plan| plan == Plan::ZedFree) && has_previous_trial
-    }
-
-    fn dismiss_ai_onboarding(&mut self, cx: &mut Context<Self>) {
-        self.new_user_onboarding_upsell_dismissed
-            .store(true, Ordering::Release);
-        OnboardingUpsell::set_dismissed(true, cx);
-        cx.notify();
-    }
-
-    fn should_render_new_user_onboarding(&mut self, cx: &mut Context<Self>) -> bool {
-        if !client::Client::global(cx).accounts_enabled() {
-            return false;
-        }
-        if self
-            .new_user_onboarding_upsell_dismissed
-            .load(Ordering::Acquire)
-        {
-            return false;
-        }
-
-        let user_store = self.user_store.read(cx);
-
-        if user_store.plan().is_some_and(|plan| plan == Plan::ZedPro)
-            && user_store
-                .subscription_period()
-                .and_then(|period| period.0.checked_add_days(chrono::Days::new(1)))
-                .is_some_and(|date| date < chrono::Utc::now())
-        {
-            if !self
-                .new_user_onboarding_upsell_dismissed
-                .load(Ordering::Acquire)
-            {
-                self.dismiss_ai_onboarding(cx);
-            }
-            return false;
-        }
-
-        let has_configured_non_zed_providers = LanguageModelRegistry::read_global(cx)
-            .visible_providers()
-            .iter()
-            .any(|provider| {
-                provider.is_authenticated(cx)
-                    && provider.id() != language_model::ZED_CLOUD_PROVIDER_ID
-            });
-
-        match &self.base_view {
-            BaseView::Uninitialized | BaseView::Terminal { .. } => false,
-            BaseView::AgentThread { conversation_view } => {
-                if conversation_view.read(cx).as_native_thread(cx).is_some() {
-                    let history_is_empty = ThreadStore::global(cx).read(cx).is_empty();
-                    history_is_empty || !has_configured_non_zed_providers
-                } else {
-                    false
-                }
-            }
-        }
-    }
-
-    fn render_new_user_onboarding(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<impl IntoElement> {
-        if !self.should_render_new_user_onboarding(cx) {
-            return None;
-        }
-
-        Some(
-            div()
-                .bg(cx.theme().colors().editor_background)
-                .child(self.new_user_onboarding.clone()),
-        )
-    }
-
-    fn render_trial_end_upsell(
-        &self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<impl IntoElement> {
-        if !self.should_render_trial_end_upsell(cx) {
-            return None;
-        }
-
-        Some(
-            v_flex()
-                .absolute()
-                .inset_0()
-                .size_full()
-                .bg(cx.theme().colors().panel_background)
-                .opacity(0.85)
-                .block_mouse_except_scroll()
-                .child(EndTrialUpsell::new(Arc::new({
-                    let this = cx.entity();
-                    move |_, cx| {
-                        this.update(cx, |_this, cx| {
-                            TrialEndUpsell::set_dismissed(true, cx);
-                            cx.notify();
-                        });
-                    }
-                }))),
-        )
-    }
-
     pub(crate) fn render_drag_target(
         &self,
         conversation: Option<Entity<ConversationView>>,
@@ -5805,7 +5625,7 @@ impl AgentPanel {
 }
 
 impl Render for AgentPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // WARNING: Changes to this element hierarchy can have
         // non-obvious implications to the layout of children.
         //
@@ -5853,7 +5673,6 @@ impl Render for AgentPanel {
                     })
                 }
             }))
-            .children(self.render_new_user_onboarding(window, cx))
             .map(|parent| match self.visible_surface() {
                 VisibleSurface::Uninitialized if !self.has_open_project(cx) => {
                     parent.child(self.render_no_project_state(cx))
@@ -5890,8 +5709,7 @@ impl Render for AgentPanel {
                         .child(terminal_content)
                         .child(self.render_drag_target(None, cx))
                 }
-            })
-            .children(self.render_trial_end_upsell(window, cx));
+            });
 
         match self.visible_font_size() {
             WhichFontSize::AgentFont => {
@@ -5905,18 +5723,6 @@ impl Render for AgentPanel {
             _ => content.into_any(),
         }
     }
-}
-
-struct OnboardingUpsell;
-
-impl Dismissable for OnboardingUpsell {
-    const KEY: &'static str = "dismissed-trial-upsell";
-}
-
-struct TrialEndUpsell;
-
-impl Dismissable for TrialEndUpsell {
-    const KEY: &'static str = "dismissed-trial-end-upsell";
 }
 
 /// Test-only helper methods
@@ -12586,103 +12392,6 @@ mod tests {
                 vec![PathBuf::from("/plain_dir")],
                 "plain_dir should be classified as a non-git path \
                  (not matched to nested_repo inside it)"
-            );
-        });
-    }
-    #[gpui::test]
-    async fn test_vim_search_does_not_steal_focus_from_agent_panel(cx: &mut TestAppContext) {
-        init_test(cx);
-        cx.update(|cx| {
-            agent::ThreadStore::init_global(cx);
-            language_model::LanguageModelRegistry::test(cx);
-            vim::init(cx);
-            search::init(cx);
-
-            // Enable vim mode
-            settings::SettingsStore::update_global(cx, |store, cx| {
-                store.update_user_settings(cx, |s| s.vim_mode = Some(true));
-            });
-
-            // Load vim keybindings
-            let mut vim_key_bindings =
-                settings::KeymapFile::load_asset_allow_partial_failure("keymaps/vim.json", cx)
-                    .unwrap();
-            for key_binding in &mut vim_key_bindings {
-                key_binding.set_meta(settings::KeybindSource::Vim.meta());
-            }
-            cx.bind_keys(vim_key_bindings);
-        });
-
-        // Create a project with a file so we have a buffer in the center pane.
-        let fs = FakeFs::new(cx.executor());
-        fs.insert_tree("/project", json!({ "file.txt": "hello world" }))
-            .await;
-        let project = Project::test(fs.clone(), [Path::new("/project")], cx).await;
-
-        let multi_workspace =
-            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = multi_workspace
-            .read_with(cx, |mw, _cx| mw.workspace().clone())
-            .unwrap();
-        let mut cx = VisualTestContext::from_window(multi_workspace.into(), cx);
-
-        // Open a file in the center pane.
-        workspace
-            .update_in(&mut cx, |workspace, window, cx| {
-                workspace.open_paths(
-                    vec![PathBuf::from("/project/file.txt")],
-                    workspace::OpenOptions::default(),
-                    None,
-                    window,
-                    cx,
-                )
-            })
-            .await;
-        cx.run_until_parked();
-
-        // Add a BufferSearchBar to the center pane's toolbar, as a real
-        // workspace would have.
-        workspace.update_in(&mut cx, |workspace, window, cx| {
-            workspace.active_pane().update(cx, |pane, cx| {
-                pane.toolbar().update(cx, |toolbar, cx| {
-                    let search_bar = cx.new(|cx| search::BufferSearchBar::new(None, window, cx));
-                    toolbar.add_item(search_bar, window, cx);
-                });
-            });
-        });
-
-        // Create the agent panel and add it to the workspace.
-        let panel = workspace.update_in(&mut cx, |workspace, window, cx| {
-            let panel = cx.new(|cx| AgentPanel::new(workspace, window, cx));
-            workspace.add_panel(panel.clone(), window, cx);
-            panel
-        });
-
-        // Open a thread so the panel has an active editor.
-        open_thread_with_connection(&panel, StubAgentConnection::new(), &mut cx);
-
-        // Focus the agent panel.
-        workspace.update_in(&mut cx, |workspace, window, cx| {
-            workspace.focus_panel::<AgentPanel>(window, cx);
-        });
-        cx.run_until_parked();
-
-        // Verify the agent panel has focus.
-        workspace.update_in(&mut cx, |_, window, cx| {
-            assert!(
-                panel.read(cx).focus_handle(cx).contains_focused(window, cx),
-                "Agent panel should be focused before pressing '/'"
-            );
-        });
-
-        // Press '/' — the vim search keybinding.
-        cx.simulate_keystrokes("/");
-
-        // Focus should remain on the agent panel.
-        workspace.update_in(&mut cx, |_, window, cx| {
-            assert!(
-                panel.read(cx).focus_handle(cx).contains_focused(window, cx),
-                "Focus should remain on the agent panel after pressing '/'"
             );
         });
     }

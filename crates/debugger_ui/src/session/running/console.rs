@@ -129,11 +129,6 @@ impl Console {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn editor(&self) -> &Entity<Editor> {
-        &self.console
-    }
-
     fn is_running(&self, cx: &Context<Self>) -> bool {
         self.session.read(cx).is_started()
     }

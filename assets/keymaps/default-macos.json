@@ -38,8 +38,6 @@
       "cmd-h": "zed::Hide",
       "alt-cmd-h": "zed::HideOthers",
       "cmd-m": "zed::Minimize",
-      "ctrl-cmd-z": "edit_prediction::RatePredictions",
-      "ctrl-cmd-i": "edit_prediction::ToggleMenu",
       "ctrl-cmd-l": "lsp_tool::ToggleMenu",
       "ctrl-cmd-c": "editor::DisplayCursorNames",
       "ctrl-cmd-s": "workspace::ToggleWorktreeSecurity",
@@ -214,8 +212,6 @@
     "context": "Editor && jupyter",
     "use_key_equivalents": true,
     "bindings": {
-      "ctrl-shift-enter": "repl::Run",
-      "ctrl-alt-enter": "repl::RunInPlace",
     },
   },
   {
@@ -694,7 +690,6 @@
     "context": "Workspace",
     "use_key_equivalents": true,
     "bindings": {
-      "alt-/": "which_key::ShowPendingBindings",
       // Move focus between the major regions of the window (editor, open
       // panels, status bar). Accessibility navigation; mirrors VS Code's
       // "Focus Next/Previous Part". `cmd-f6` mirrors `f6` so region navigation
@@ -986,7 +981,6 @@
     "bindings": {
       "ctrl-alt-cmd-f": "workspace::FollowNextCollaborator",
       // TODO: Move this to a dock open action
-      "cmd-shift-c": "collab_panel::ToggleFocus",
       // Only available in debug builds: opens an element inspector for development.
       "cmd-alt-i": "dev::ToggleInspector",
       // Cycles the frame-time debug overlay between hidden, frame-time-only, and detailed modes.
@@ -1253,7 +1247,6 @@
     "context": "CollabPanel && not_editing",
     "use_key_equivalents": true,
     "bindings": {
-      "ctrl-backspace": "collab_panel::Remove",
       "space": "menu::Confirm",
     },
   },
@@ -1261,24 +1254,18 @@
     "context": "CollabPanel",
     "use_key_equivalents": true,
     "bindings": {
-      "alt-up": "collab_panel::MoveChannelUp",
-      "alt-down": "collab_panel::MoveChannelDown",
-      "alt-enter": "collab_panel::OpenSelectedChannelNotes",
-      "shift-enter": "collab_panel::ToggleSelectedChannelFavorite",
     },
   },
   {
     "context": "(CollabPanel && editing) > Editor",
     "use_key_equivalents": true,
     "bindings": {
-      "space": "collab_panel::InsertSpace",
     },
   },
   {
     "context": "ChannelModal",
     "use_key_equivalents": true,
     "bindings": {
-      "tab": "channel_modal::ToggleMode",
     },
   },
   {
@@ -1317,7 +1304,6 @@
     "context": "ChannelModal > Picker > Editor",
     "use_key_equivalents": true,
     "bindings": {
-      "tab": "channel_modal::ToggleMode",
     },
   },
   {
@@ -1440,20 +1426,12 @@
     "context": "RatePredictionsModal",
     "use_key_equivalents": true,
     "bindings": {
-      "cmd-shift-enter": "zeta::ThumbsUpActivePrediction",
-      "cmd-shift-backspace": "zeta::ThumbsDownActivePrediction",
-      "shift-down": "zeta::NextEdit",
-      "shift-up": "zeta::PreviousEdit",
-      "right": "zeta::PreviewPrediction",
     },
   },
   {
     "context": "RatePredictionsModal > Editor",
     "use_key_equivalents": true,
     "bindings": {
-      "escape": "zeta::FocusPredictions",
-      "cmd-shift-enter": "zeta::ThumbsUpActivePrediction",
-      "cmd-shift-backspace": "zeta::ThumbsDownActivePrediction",
     },
   },
   {
@@ -1573,8 +1551,6 @@
       "cmd-+": ["zed::IncreaseUiFontSize", { "persist": false }],
       "cmd--": ["zed::DecreaseUiFontSize", { "persist": false }],
       "cmd-0": ["zed::ResetUiFontSize", { "persist": false }],
-      "cmd-enter": "onboarding::Finish",
-      "alt-shift-a": "onboarding::OpenAccount",
     },
   },
   {
@@ -1658,13 +1634,6 @@
       "pagedown": "settings_editor::FocusNextRootNavEntry",
       "home": "settings_editor::FocusFirstNavEntry",
       "end": "settings_editor::FocusLastNavEntry",
-    },
-  },
-  {
-    "context": "EditPredictionContext > Editor",
-    "bindings": {
-      "alt-left": "dev::EditPredictionContextGoBack",
-      "alt-right": "dev::EditPredictionContextGoForward",
     },
   },
   {

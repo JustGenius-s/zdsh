@@ -20,24 +20,19 @@ use anyhow::{Context as _, Result};
 use clap::Parser;
 use cli::FORCE_CLI_MODE_ENV_VAR_NAME;
 use client::{Client, ProxySettings, RefreshLlmTokenListener, UserStore, parse_zed_link};
-use collab_ui::channel_view::ChannelView;
 use collections::HashMap;
-use crashes::InitCrashHandler;
 use db::kvp::{GlobalKeyValueStore, KeyValueStore};
 use editor::Editor;
 use extension::ExtensionHostProxy;
 use fs::{Fs, RealFs};
-use futures::{FutureExt, StreamExt, channel::oneshot, future};
+use futures::{FutureExt, StreamExt, channel::oneshot};
 use git::GitHostingProviderRegistry;
 use git_ui::clone::clone_and_open;
-use gpui::{
-    App, AppContext, Application, AsyncApp, QuitMode, Task, TaskExt, UpdateGlobal as _, block_on,
-};
+use gpui::{App, AppContext, Application, AsyncApp, QuitMode, Task, TaskExt, UpdateGlobal as _};
 use gpui_platform;
 
 use gpui_tokio::Tokio;
 use language::LanguageRegistry;
-use onboarding::{FIRST_OPEN, show_onboarding_view};
 use project_panel::ProjectPanel;
 use prompt_store::PromptBuilder;
 use remote::RemoteConnectionOptions;
@@ -51,7 +46,6 @@ use recent_projects::{RemoteSettings, open_remote_project};
 use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
 use session::{AppSession, Session};
 use settings::{BaseKeymap, Settings, SettingsStore, watch_config_file};
-use smol::future::poll_once;
 use std::{
     cell::RefCell,
     env,
@@ -68,17 +62,15 @@ use util::{ResultExt, maybe};
 use uuid::Uuid;
 use workspace::{
     AppState, MultiWorkspace, SerializedWorkspaceLocation, SessionWorkspace, Toast,
-    WorkspaceSettings, WorkspaceStore,
-    notifications::{NotificationId, NotifyResultExt},
-    restore_multiworkspace,
+    WorkspaceSettings, WorkspaceStore, notifications::NotificationId, restore_multiworkspace,
 };
 use zed::{
     OpenListener, OpenRequest, RawOpenRequest, app_menus, build_window_options,
-    derive_paths_with_position, edit_prediction_registry, handle_cli_connection,
-    handle_keymap_file_changes, initialize_workspace, open_paths_with_positions,
+    derive_paths_with_position, handle_cli_connection, handle_keymap_file_changes,
+    initialize_workspace, open_paths_with_positions,
 };
 
-use crate::zed::{CrashHandler, OpenRequestKind, eager_load_active_theme_and_icon_theme};
+use crate::zed::{OpenRequestKind, eager_load_active_theme_and_icon_theme};
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
@@ -219,12 +211,6 @@ fn main() {
         return;
     }
 
-    // `zed --crash-handler` Makes zed operate in minidump crash handler mode
-    if let Some(socket) = &args.crash_handler {
-        crashes::crash_server(socket.as_path(), paths::logs_dir().clone());
-        return;
-    }
-
     #[cfg(target_os = "windows")]
     if args.record_etw_trace {
         let Some(etw_socket) = args.etw_socket else {
@@ -353,8 +339,6 @@ fn main() {
         session_id.clone(),
         KeyValueStore::from_app_db(&app_db),
     ));
-    let background_executor = app.background_executor();
-
     let (open_listener, mut open_rx) = OpenListener::new();
 
     let failed_single_instance_check = if *zed_env_vars::ZED_STATELESS
@@ -383,42 +367,7 @@ fn main() {
         return;
     }
 
-    let should_install_crash_handler =
-        client::telemetry::should_install_crash_handler(*release_channel::RELEASE_CHANNEL);
-
-    let crash_handler = if should_install_crash_handler {
-        Some(
-            app.background_executor().spawn(crashes::init(
-                InitCrashHandler {
-                    session_id,
-                    // strip the build and channel information from the version string, we send them separately
-                    zed_version: semver::Version::new(
-                        app_version.major,
-                        app_version.minor,
-                        app_version.patch,
-                    )
-                    .to_string(),
-                    binary: "zed".to_string(),
-                    release_channel: release_channel::RELEASE_CHANNEL_NAME.clone(),
-                    commit_sha: app_commit_sha
-                        .as_ref()
-                        .map(|sha| sha.full())
-                        .unwrap_or_else(|| "no sha".to_owned()),
-                },
-                {
-                    let background_executor1 = app.background_executor();
-                    move |task| {
-                        background_executor1.spawn(task).detach();
-                    }
-                },
-                |pid| paths::temp_dir().join(format!("zed-crash-handler-{pid}")),
-                move |duration| background_executor.timer(duration),
-            )),
-        )
-    } else {
-        crashes::force_backtrace();
-        None
-    };
+    force_backtrace();
 
     let git_hosting_provider_registry = Arc::new(GitHostingProviderRegistry::new());
     let git_binary_path =
@@ -604,24 +553,6 @@ fn main() {
             session.id().to_owned(),
             cx,
         );
-        cx.subscribe(&user_store, {
-            let telemetry = telemetry.clone();
-            move |_, evt: &client::user::Event, cx| match evt {
-                client::user::Event::PrivateUserInfoUpdated => {
-                    if let Some(crash_client) = cx.try_global::<CrashHandler>() {
-                        crashes::set_user_info(
-                            &crash_client.0,
-                            crashes::UserInfo {
-                                metrics_id: telemetry.metrics_id().map(|s| s.to_string()),
-                                is_staff: telemetry.is_staff(),
-                            },
-                        );
-                    }
-                }
-                _ => {}
-            }
-        })
-        .detach();
 
         // We should rename these in the future to `first app open`, `first app open for release channel`, and `app open`
         if let (Some(system_id), Some(installation_id)) = (&system_id, &installation_id) {
@@ -655,8 +586,7 @@ fn main() {
         watcher_debug::init(app_state.clone(), cx);
         auto_update::init(client.clone(), cx);
         dap_adapters::init(cx);
-        auto_update_ui::init(cx);
-        reliability::init(client.clone(), app_state.workspace_store.clone(), cx);
+        reliability::init(app_state.workspace_store.clone(), cx);
         extension_host::init(
             extension_host_proxy.clone(),
             app_state.fs.clone(),
@@ -675,20 +605,6 @@ fn main() {
             cx.background_executor().clone(),
         );
         command_palette::init(cx);
-        let copilot_chat_configuration = copilot_chat::CopilotChatConfiguration {
-            enterprise_uri: settings::CopilotSettings::get_global(cx)
-                .enterprise_uri
-                .clone(),
-        };
-        let credentials_provider = zed_credentials_provider::global(cx);
-        copilot_chat::init(
-            app_state.client.http_client(),
-            credentials_provider,
-            copilot_chat_configuration,
-            cx,
-        );
-
-        copilot_ui::init(&app_state, cx);
         language_model::init(cx);
         RefreshLlmTokenListener::register(
             app_state.client.clone(),
@@ -699,11 +615,9 @@ fn main() {
         acp_tools::init(cx);
         zed::telemetry_log::init(cx);
         zed::remote_debug::init(cx);
-        edit_prediction_ui::init(cx);
         web_search::init(cx);
         web_search_providers::init(app_state.client.clone(), app_state.user_store.clone(), cx);
         snippet_provider::init(cx);
-        edit_prediction_registry::init(app_state.client.clone(), app_state.user_store.clone(), cx);
         let prompt_builder = PromptBuilder::load(app_state.fs.clone(), stdout_is_a_pty(), cx);
         project::AgentRegistryStore::init_global(
             cx,
@@ -719,7 +633,6 @@ fn main() {
         );
         zed::watch_user_agents_md(app_state.fs.clone(), cx);
 
-        repl::init(app_state.fs.clone(), cx);
         recent_projects::init(cx);
         dev_container::init(cx);
 
@@ -729,7 +642,6 @@ fn main() {
 
         editor::init(cx);
         image_viewer::init(cx);
-        repl::notebook::init(cx);
         diagnostics::init(cx);
 
         audio::init(cx);
@@ -747,7 +659,6 @@ fn main() {
         outline_panel::init(cx);
         tasks_ui::init(cx);
         snippets_ui::init(cx);
-        channel::init(&app_state.client.clone(), app_state.user_store.clone(), cx);
         search::init(cx);
         lsp_locations::init(cx);
         cx.set_global(workspace::PaneSearchBarCallbacks {
@@ -759,9 +670,7 @@ fn main() {
             },
             wrap_div_with_search_actions: search::buffer_search::register_pane_search_actions,
         });
-        vim::init(cx);
         terminal_view::init(cx);
-        journal::init(app_state.clone(), cx);
         encoding_selector::init(cx);
         language_selector::init(cx);
         line_ending_selector::init(cx);
@@ -770,23 +679,17 @@ fn main() {
         theme_selector::init(cx);
         settings_profile_selector::init(cx);
         language_tools::init(cx);
-        call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-        notifications::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-        collab_ui::init(&app_state, cx);
+        title_bar::init(cx);
         git_ui::init(cx);
-        feedback::init(cx);
         markdown_preview::init(cx);
         tabular_data_preview::init(cx);
         svg_preview::init(cx);
-        onboarding::init(cx);
         settings_ui::init(cx);
         keymap_editor::init(cx);
         extensions_ui::init(cx);
-        edit_prediction::init(cx);
         inspector_ui::init(app_state.clone(), cx);
         json_schema_store::init(cx);
         miniprofiler_ui::init(*STARTUP_TIME.get().unwrap(), cx);
-        which_key::init(cx);
         #[cfg(target_os = "windows")]
         etw_tracing::init(cx);
 
@@ -853,24 +756,6 @@ fn main() {
 
         let menus = app_menus(cx);
         cx.set_menus(menus);
-
-        if let Some(mut crash_handler) = crash_handler {
-            let crash_handler2 = block_on(poll_once(&mut crash_handler));
-            match crash_handler2 {
-                Some(crash_handler) => {
-                    cx.set_global(CrashHandler(crash_handler));
-                }
-                None => {
-                    cx.spawn(async move |cx| {
-                        let client1 = crash_handler.await;
-                        cx.update(|cx| {
-                            cx.set_global(CrashHandler(client1));
-                        });
-                    })
-                    .detach();
-                }
-            }
-        }
 
         initialize_workspace(app_state.clone(), cx);
 
@@ -1301,54 +1186,11 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
 
     if !request.open_channel_notes.is_empty() || request.join_channel.is_some() {
         cx.spawn(async move |cx| {
-            let result = maybe!(async {
+            let result: Result<()> = maybe!(async {
                 if let Some(task) = task {
                     task.await?;
                 }
-                let client = app_state.client.clone();
-                anyhow::ensure!(
-                    client.accounts_enabled(),
-                    "Zed collaboration links are not supported in zdsh."
-                );
-                // we continue even if connection fails as join_channel/ open channel notes will
-                // show a visible error message.
-                client.connect(true, cx).await.into_response().log_err();
-
-                if let Some(channel_id) = request.join_channel {
-                    cx.update(|cx| {
-                        workspace::join_channel(
-                            client::ChannelId(channel_id),
-                            app_state.clone(),
-                            None,
-                            None,
-                            cx,
-                        )
-                    })
-                    .await?;
-                }
-
-                let workspace_window =
-                    workspace::get_any_active_multi_workspace(app_state, cx.clone()).await?;
-
-                let workspace = workspace_window.read_with(cx, |mw, _| mw.workspace().clone())?;
-                let weak_workspace = workspace.downgrade();
-
-                let mut promises = Vec::new();
-                for (channel_id, heading) in request.open_channel_notes {
-                    promises.push(cx.update_window(workspace_window.into(), |_, window, cx| {
-                        ChannelView::open(
-                            client::ChannelId(channel_id),
-                            heading,
-                            workspace.clone(),
-                            window,
-                            cx,
-                        )
-                    })?)
-                }
-                for result in future::join_all(promises).await {
-                    result.notify_workspace_async_err(weak_workspace.clone(), cx);
-                }
-                anyhow::Ok(())
+                anyhow::bail!("Zed collaboration links are not supported in zdsh.")
             })
             .await;
             if let Err(err) = result {
@@ -1407,7 +1249,6 @@ pub(crate) async fn restore_or_create_workspace(
     app_state: Arc<AppState>,
     cx: &mut AsyncApp,
 ) -> Result<()> {
-    let kvp = cx.update(|cx| KeyValueStore::global(cx));
     if let Some(multi_workspaces) = restorable_workspaces(cx, &app_state).await {
         let mut error_count = 0;
         for multi_workspace in multi_workspaces {
@@ -1537,8 +1378,6 @@ pub(crate) async fn restore_or_create_workspace(
             })
             .await?;
         }
-    } else if matches!(kvp.read_kvp(FIRST_OPEN), Ok(None)) {
-        cx.update(|cx| show_onboarding_view(app_state, cx)).await?;
     } else {
         cx.update(|cx| {
             workspace::open_new(
@@ -1560,6 +1399,18 @@ pub(crate) async fn restore_or_create_workspace(
     }
 
     Ok(())
+}
+
+/// Prints a backtrace on panic, and exits so that macOS doesn't show its crash dialog.
+fn force_backtrace() {
+    let old_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        unsafe { env::set_var("RUST_BACKTRACE", "1") };
+        old_hook(info);
+        if cfg!(target_os = "macos") {
+            process::exit(1);
+        }
+    }));
 }
 
 async fn restorable_workspaces(
@@ -1727,11 +1578,6 @@ struct Args {
     /// clipboard`
     #[arg(long)]
     system_specs: bool,
-
-    /// Used for recording minidumps on crashes by having Zed run a separate
-    /// process communicating over a socket.
-    #[arg(long, hide = true)]
-    crash_handler: Option<PathBuf>,
 
     /// Run zed in the foreground, only used on Windows, to match the behavior on macOS.
     #[arg(long)]

@@ -8,7 +8,6 @@ pub mod api_compatible;
 pub mod bedrock;
 pub mod cloud;
 pub mod codebuddy;
-pub mod copilot_chat;
 pub mod cursor;
 pub mod deepseek;
 pub mod google;

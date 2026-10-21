@@ -1,0 +1,103 @@
+# zdsh
+
+How zdsh behaves differently from Zed.
+
+## Agent tabs
+
+Each Agent conversation opens in a central editor tab. The project file tree can stay open beside it. This applies to the Zed Agent and external ACP agents; terminal entries open in separate central terminal tabs.
+
+Use the New Thread action, the **New Agent Tab** button in the top-right pane toolbar, or thread history to open a conversation. New Thread always creates an Agent conversation. The pane toolbar stays visible when focus moves elsewhere and when all tabs are closed; each toolbar opens new tabs in its own pane. Opening an already open conversation activates its tab. Drag tabs to reorder them or move them into a split pane to work beside code. Each conversation has one tab; splitting does not duplicate the conversation.
+
+The tab displays its title and connection, generation, approval, or error status. Its toolbar uses the same row height, padding, theme background, and separator colors as file and Git toolbars and provides the agent picker and chat options. Toolbar sizing follows the global UI font size independently of the Agent conversation font size. Files can still be dragged into the conversation as context.
+
+Use the double speech bubble button in the conversation toolbar to open **Thread History** inside the tab. The list retains project grouping, search, archive, and restore actions. It shares the existing history data across tabs. Only one tab presents the list at a time; opening it in another tab moves the list there. File tabs and the project file tree keep their full layout.
+
+On wide panes, history sits to the right of the conversation with a draggable divider. On narrow panes, it overlays the right side of the conversation; click outside it or use the toolbar button to close it. The existing Toggle Threads Sidebar and Focus Sidebar shortcuts target this tab-local history. From a file tab, they open a conversation tab first. History starts collapsed after restarting zdsh.
+
+The conversation uses the toolbar background. In an empty conversation the composer is centered in the tab; once the conversation has messages, it docks at the bottom. It follows the configured content width and retains model, mode, thinking, context, and send controls.
+
+The `+` button in the composer picks a mode, starts a file mention, switches models, and turns MCP servers on or off. The default mode, Write, stays implicit. Picking another mode, such as Ask, shows it as a tag next to the `+` button; remove the tag to return to the default mode. User messages appear as full-width cards drawn like the composer. Editing, attachments, and checkpoint actions remain available. The agent's thinking shows as a single "Thinking" line while it streams and "Thought" afterwards, with how long it took, such as "Thought 16s"; click it to read the reasoning. Reading a file shows as a single line with the file's name; click it to open the file. Other tool calls that only look things up, such as searching, show as single lines you can click to see their input and output. Edits, commands, subagents, and tool calls waiting for permission show as cards. An edit's header shows how many lines it added and removed, a command's header shows its first line, and the buttons that answer a permission request sit at the bottom of the card. Consecutive tool calls, with the thinking between them, fold into one line that sums them up, such as "Edited 2 files, explored 3 files, ran 1 command +12 −4"; click it to see each one. Subagents and tool calls waiting for permission stay in view. Once a turn is done, everything the agent did before its last reply folds into a "Worked for 2m 15s" line above the reply. The turn you just watched stays open until you send the next message, and turns from earlier or from a reopened conversation start folded. Errors and warnings about the conversation show as cards above the composer, with buttons to act on them, such as retrying or copying the error.
+
+Switching tabs keeps work running. Closing a conversation tab requests cancellation and releases its session. Saved conversations remain available through the agent's history support. Central Agent tab positions are not restored when restarting zdsh.
+
+While a thread is still empty, the agent selector above the message editor switches it to **Zed Agent** or any installed external agent. Once the thread has messages, its agent stays fixed. To open a terminal, use **New Terminal** from the pane toolbar's `+` menu. The agent selector only lists agents.
+
+## Accounts
+
+zdsh runs without a Zed account. Configure a provider in the Settings Editor to use the Zed Agent with your own API access, provider subscription, or local model. External agents retain their own authorization flows.
+
+Zed-hosted models, Zed cloud search, subscriptions, contacts, channels, calls, and shared editing are unavailable. The desktop does not restore Zed login sessions or read or delete existing Zed account credentials. The titlebar menu still provides settings, themes, and extensions.
+
+Existing explicit Zed-hosted model selections require you to choose another model; zdsh does not replace them with a different paid provider. SSH, local development tools, extension downloads, and telemetry are independent of Zed account access.
+
+## Profiles
+
+- `Minimal`: uses no project tools. Zed switches to it in restricted workspaces, so it isn't offered as a mode in the Agent Panel.
+
+A profile can add its own text to the Zed Agent's system prompt. `prompt_prefix` is placed right after the agent's opening description, which suits a persona or a role for the profile. `prompt_suffix` is placed at the end of the prompt, after your `AGENTS.md` and project rules.
+
+```json
+{
+  "agent": {
+    "profiles": {
+      "reviewer": {
+        "name": "Reviewer",
+        "tools": { "read_file": true, "grep": true },
+        "prompt_prefix": "You are reviewing changes, not making them. Report problems with file and line references.",
+        "prompt_suffix": "End every answer with a one-line verdict."
+      }
+    }
+  }
+}
+```
+
+A profile you create from another one copies its prompts.
+
+## Tool results and safeguards
+
+The Zed Agent adjusts what the model sees from its tools. The tool cards in the conversation always show each tool's complete output.
+
+- **Oversized results**: when a single tool result has more than about 50 KB of text, the model receives its start and end with a note about the omitted middle, and is told to call the tool again with narrower arguments if it needs that part.
+- **Repeated calls**: when the model sends the same call, with the same arguments, in 3, 5 and 8 responses in a row, the result carries a reminder to check the previous result and change approach. Calls made side by side in one response don't count against each other, and a new message from you starts over.
+- **Overwriting files**: `write_file` won't replace an existing file the agent hasn't read, created or edited in the conversation, or one that changed on disk since. The agent is asked to read the file first. Targeted edits with `edit_file` only apply where the text they replace still matches the file.
+
+## Extension Agent tools
+
+zdsh development builds accept Agent tools from the existing extension installer. A package can provide both editor features and Agent tools through one `extension.toml` and one Wasm component. Upstream Zed does not implement this optional interface.
+
+Enable `features = ["agent-tools"]` on the local `zed_extension_api` dependency. Declare tools in the existing manifest:
+
+```toml
+[agent_tools.echo]
+description = "Return the supplied message."
+[agent_tools.echo.input_schema]
+type = "object"
+required = ["message"]
+additionalProperties = false
+[agent_tools.echo.input_schema.properties.message]
+type = "string"
+```
+
+Implement `Extension::run_agent_tool(&mut self, name: String, arguments: serde_json::Value) -> Result<serde_json::Value, String>`. The name passed to the extension is the local manifest key; the model sees `<extension-id>_<tool-name>`. Model-facing names must fit 64 ASCII letters, digits, underscores or hyphens and must not collide with another installed tool. Input schemas must describe objects; external schema retrieval is disabled. Invalid schemas and missing Wasm exports produce extension-load errors.
+
+Build with `wasm32-wasip2` and install using **zed: install dev extension**.
+
+Extension tools are available to the Zed Agent. Use a tool-capable model and the Write mode, or a profile that enables the tool. A profile's `tools` entry for the model-facing name (for example `"my-extension_echo": true`) enables or disables a tool explicitly; without an entry, `enable_all_context_servers` decides, as it does for MCP tools. Extension tools are not offered in restricted workspaces. A tool whose name matches a built-in Zed Agent tool is skipped.
+
+The tool list is read again for each model request, so newly installed or updated tools appear without starting a new chat. Approval follows the Agent's tool permissions under the ID `extension:<extension-id>:<tool-name>`, where `<tool-name>` is the manifest key. MCP and extension tools only support the tool-level option. Choosing "Always for … extension tool" in the prompt saves that ID's `default`. The tool receives validated JSON arguments; its result, or its error, is returned to the model and shown in the tool card.
+
+Call `zed_extension_api::agent_tools::is_cancelled()` during long operations. Cancellation is cooperative: release resources before returning. Unloading revokes new calls, requests cancellation and waits for admitted calls before completing the reload. A call that started before a reload never runs the replacement code; later requests use the reloaded tools. A tool that ignores cancellation can block unloading or normal application shutdown.
+
+The optional WIT interface is `zdsh:agent@0.1.0`; historical Zed WIT definitions are preserved. Existing extensions without this interface continue to load. This interface does not expose arbitrary GPUI state, project buffers, terminal access, Cordis service injection or waterfall middleware. Existing extension capabilities still govern host operations; external processes require their own confinement policy.
+
+## Terminal tabs
+
+All standalone terminals open as central tabs beside your files. Choose **New Terminal** from the tab bar's **+** menu or use `workspace::NewTerminal`. **Open in Terminal** uses the selected folder or the selected file's parent directory. Task execution, debugger terminals, and external-agent login commands also open central tabs.
+
+Use `terminal::Focus` to focus the most recent terminal, creating one if necessary. Existing bindings for `workspace::NewCenterTerminal` remain supported. Replace custom bindings for `terminal_panel::Toggle` or `terminal_panel::ToggleFocus` with `terminal::Focus`.
+
+Use `workspace::NewTerminal` to create additional terminal tabs. Move or split them with the same tab and pane controls used for files.
+
+Terminal tabs restore through the workspace layout. Existing terminal-panel sessions are imported as central tabs, preserving working directories and custom titles; panel splits become tabs. Running processes and command output are not restored.
+
+The terminal panel and its settings controls are removed. Legacy `terminal.button`, `dock`, `starts_open`, `flexible`, `default_width`, `default_height`, and `show_count_badge` values are accepted but have no effect. Tasks use `reveal_target: "center"`; legacy `"dock"` values are accepted as an alias. `reveal: "never"` keeps the current tab active, while `"no_focus"` displays the terminal without taking keyboard focus.

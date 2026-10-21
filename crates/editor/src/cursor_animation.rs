@@ -407,11 +407,6 @@ impl CursorAnimationStates {
         self.newest_selection_id = None;
         self.newest_state = None;
     }
-
-    #[cfg(test)]
-    pub(crate) fn has_active_animation(&self) -> bool {
-        self.states.values().any(|state| state.active)
-    }
 }
 
 impl Default for CursorAnimationState {

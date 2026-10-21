@@ -1,6 +1,4 @@
 use action_log::DiffStats;
-#[cfg(test)]
-use agent_ui::TerminalId;
 use agent_ui::{
     terminal_thread_metadata_store::TerminalThreadMetadata, thread_metadata_store::ThreadMetadata,
 };
@@ -164,22 +162,6 @@ impl ThreadSwitcherEntry {
             Self::Terminal(_) => DiffStats::default(),
         }
     }
-
-    #[cfg(test)]
-    pub fn thread_id(&self) -> Option<agent_ui::ThreadId> {
-        match self {
-            Self::Thread(entry) => Some(entry.metadata.thread_id),
-            Self::Terminal(_) => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn terminal_id(&self) -> Option<TerminalId> {
-        match self {
-            Self::Thread(_) => None,
-            Self::Terminal(entry) => Some(entry.metadata.terminal_id),
-        }
-    }
 }
 
 pub(super) enum ThreadSwitcherEvent {
@@ -237,16 +219,6 @@ impl ThreadSwitcher {
 
     pub fn selected_entry(&self) -> Option<&ThreadSwitcherEntry> {
         self.entries.get(self.selected_index)
-    }
-
-    #[cfg(test)]
-    pub fn entries(&self) -> &[ThreadSwitcherEntry] {
-        &self.entries
-    }
-
-    #[cfg(test)]
-    pub fn selected_index(&self) -> usize {
-        self.selected_index
     }
 
     pub fn cycle_selection(&mut self, cx: &mut Context<Self>) {

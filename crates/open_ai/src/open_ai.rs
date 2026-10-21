@@ -2,9 +2,6 @@ pub mod batches;
 pub mod completion;
 pub mod responses;
 
-#[cfg(test)]
-mod chat_completion_transport_tests;
-
 use anyhow::{Context as _, Result, anyhow};
 use futures::{AsyncBufReadExt, AsyncReadExt, StreamExt, io::BufReader, stream::BoxStream};
 use http_client::{

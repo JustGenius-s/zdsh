@@ -146,36 +146,6 @@ impl StackFrameList {
         this
     }
 
-    #[cfg(test)]
-    pub(crate) fn entries(&self) -> &Vec<StackFrameEntry> {
-        &self.entries
-    }
-
-    #[cfg(test)]
-    pub(crate) fn flatten_entries(
-        &self,
-        show_collapsed: bool,
-        show_labels: bool,
-    ) -> Vec<dap::StackFrame> {
-        self.entries
-            .iter()
-            .enumerate()
-            .filter(|(ix, _)| {
-                self.list_filter == StackFrameFilter::All
-                    || self
-                        .filter_entries_indices
-                        .binary_search_by_key(&ix, |ix| ix)
-                        .is_ok()
-            })
-            .flat_map(|(_, frame)| match frame {
-                StackFrameEntry::Normal(frame) => vec![frame.clone()],
-                StackFrameEntry::Label(frame) if show_labels => vec![frame.clone()],
-                StackFrameEntry::Collapsed(frames) if show_collapsed => frames.clone(),
-                _ => vec![],
-            })
-            .collect::<Vec<_>>()
-    }
-
     fn stack_frames(&self, cx: &mut App) -> Result<Vec<StackFrame>> {
         if let Ok(Some(thread_id)) = self.state.read_with(cx, |state, _| state.thread_id) {
             self.session
@@ -183,33 +153,6 @@ impl StackFrameList {
         } else {
             Ok(Vec::default())
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn dap_stack_frames(&self, cx: &mut App) -> Vec<dap::StackFrame> {
-        match self.list_filter {
-            StackFrameFilter::All => self
-                .stack_frames(cx)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|stack_frame| stack_frame.dap)
-                .collect(),
-            StackFrameFilter::OnlyUserFrames => self
-                .filter_entries_indices
-                .iter()
-                .map(|ix| match &self.entries[*ix] {
-                    StackFrameEntry::Label(label) => label,
-                    StackFrameEntry::Collapsed(_) => panic!("Collapsed tabs should not be visible"),
-                    StackFrameEntry::Normal(frame) => frame,
-                })
-                .cloned()
-                .collect(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn list_filter(&self) -> StackFrameFilter {
-        self.list_filter
     }
 
     pub fn opened_stack_frame_id(&self) -> Option<StackFrameId> {

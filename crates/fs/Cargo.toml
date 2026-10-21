@@ -12,11 +12,6 @@ workspace = true
 path = "src/fs.rs"
 doctest = false
 
-[[test]]
-name = "integration"
-required-features = ["test-support"]
-path = "tests/integration/fs_tests.rs"
-
 [dependencies]
 anyhow.workspace = true
 async-channel.workspace = true

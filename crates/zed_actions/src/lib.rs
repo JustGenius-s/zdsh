@@ -429,22 +429,6 @@ pub mod project_panel {
         ]
     );
 }
-pub mod feedback {
-    use gpui::actions;
-
-    actions!(
-        feedback,
-        [
-            /// Opens email client to send feedback to Zed support.
-            EmailZed,
-            /// Opens the bug report form.
-            FileBugReport,
-            /// Opens the feature request form.
-            RequestFeature
-        ]
-    );
-}
-
 pub mod theme {
     use gpui::actions;
 

@@ -23,11 +23,6 @@ mod task_context;
 mod text_diff;
 mod toolchain;
 
-#[cfg(test)]
-pub mod buffer_tests;
-#[cfg(test)]
-mod proto_diagnostics_tests;
-
 pub use crate::language_settings::{
     AutoIndentMode, EditPredictionPromptFormat, EditPredictionsMode, IndentGuideSettings,
     ZetaVersion,

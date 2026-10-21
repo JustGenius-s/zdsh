@@ -34,8 +34,6 @@
       "ctrl-alt-,": "zed::OpenSettingsFile",
       "ctrl-q": "zed::Quit",
       "f4": "debugger::Start",
-      "ctrl-alt-z": "edit_prediction::RatePredictions",
-      "ctrl-alt-shift-i": "edit_prediction::ToggleMenu",
       "ctrl-alt-l": "lsp_tool::ToggleMenu",
       "ctrl-alt-shift-s": "workspace::ToggleWorktreeSecurity",
     },
@@ -180,8 +178,6 @@
   {
     "context": "Editor && jupyter",
     "bindings": {
-      "ctrl-shift-enter": "repl::Run",
-      "ctrl-alt-enter": "repl::RunInPlace",
     },
   },
   {
@@ -632,7 +628,6 @@
   {
     "context": "Workspace",
     "bindings": {
-      "alt-/": "which_key::ShowPendingBindings",
       // Move focus between the major regions of the window (editor, open
       // panels, status bar). Accessibility navigation; mirrors VS Code's
       // "Focus Next/Previous Part". `ctrl-f6` mirrors `f6` so region navigation
@@ -942,7 +937,6 @@
   {
     "context": "!Terminal",
     "bindings": {
-      "ctrl-shift-c": "collab_panel::ToggleFocus",
     },
   },
   {
@@ -1207,29 +1201,22 @@
   {
     "context": "CollabPanel && not_editing",
     "bindings": {
-      "ctrl-backspace": "collab_panel::Remove",
       "space": "menu::Confirm",
     },
   },
   {
     "context": "CollabPanel",
     "bindings": {
-      "alt-up": "collab_panel::MoveChannelUp",
-      "alt-down": "collab_panel::MoveChannelDown",
-      "alt-enter": "collab_panel::OpenSelectedChannelNotes",
-      "shift-enter": "collab_panel::ToggleSelectedChannelFavorite",
     },
   },
   {
     "context": "(CollabPanel && editing) > Editor",
     "bindings": {
-      "space": "collab_panel::InsertSpace",
     },
   },
   {
     "context": "ChannelModal",
     "bindings": {
-      "tab": "channel_modal::ToggleMode",
     },
   },
   {
@@ -1263,7 +1250,6 @@
   {
     "context": "ChannelModal > Picker > Editor",
     "bindings": {
-      "tab": "channel_modal::ToggleMode",
     },
   },
   {
@@ -1484,8 +1470,6 @@
       "ctrl-+": ["zed::IncreaseUiFontSize", { "persist": false }],
       "ctrl--": ["zed::DecreaseUiFontSize", { "persist": false }],
       "ctrl-0": ["zed::ResetUiFontSize", { "persist": false }],
-      "ctrl-enter": "onboarding::Finish",
-      "alt-shift-a": "onboarding::OpenAccount",
     },
   },
   {
@@ -1568,13 +1552,6 @@
       "pagedown": "settings_editor::FocusNextRootNavEntry",
       "home": "settings_editor::FocusFirstNavEntry",
       "end": "settings_editor::FocusLastNavEntry",
-    },
-  },
-  {
-    "context": "EditPredictionContext > Editor",
-    "bindings": {
-      "alt-left": "dev::EditPredictionContextGoBack",
-      "alt-right": "dev::EditPredictionContextGoForward",
     },
   },
   {

@@ -665,16 +665,6 @@ impl BufferDiagnosticsEditor {
             false => DiagnosticSeverity::Error,
         }
     }
-
-    #[cfg(test)]
-    pub fn editor(&self) -> &Entity<Editor> {
-        &self.editor
-    }
-
-    #[cfg(test)]
-    pub fn summary(&self) -> &DiagnosticSummary {
-        &self.summary
-    }
 }
 
 impl Focusable for BufferDiagnosticsEditor {

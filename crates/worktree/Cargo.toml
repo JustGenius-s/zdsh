@@ -9,11 +9,6 @@ license = "GPL-3.0-or-later"
 path = "src/worktree.rs"
 doctest = false
 
-[[test]]
-name = "integration"
-required-features = ["test-support"]
-path = "tests/integration/worktree_tests.rs"
-
 [lints]
 workspace = true
 

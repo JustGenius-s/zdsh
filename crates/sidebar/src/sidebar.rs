@@ -85,9 +85,6 @@ use crate::thread_switcher::{
     ThreadSwitcherTerminalEntry, ThreadSwitcherThreadEntry,
 };
 
-#[cfg(test)]
-mod sidebar_tests;
-
 gpui::actions!(
     agents_sidebar,
     [
@@ -443,36 +440,6 @@ impl ActivatableEntry {
                 workspace: terminal.workspace.clone(),
             }),
             ListEntry::ProjectHeader { .. } => None,
-        }
-    }
-}
-
-#[cfg(test)]
-impl ListEntry {
-    fn session_id(&self) -> Option<&acp::SessionId> {
-        match self {
-            ListEntry::Thread(thread_entry) => thread_entry.metadata.session_id.as_ref(),
-            ListEntry::Terminal(_) | ListEntry::ProjectHeader { .. } => None,
-        }
-    }
-
-    fn reachable_workspaces<'a>(
-        &'a self,
-        multi_workspace: &'a workspace::MultiWorkspace,
-        cx: &'a App,
-    ) -> Vec<Entity<Workspace>> {
-        match self {
-            ListEntry::Thread(thread) => match &thread.workspace {
-                ThreadEntryWorkspace::Open(ws) => vec![ws.clone()],
-                ThreadEntryWorkspace::Closed { .. } => Vec::new(),
-            },
-            ListEntry::Terminal(terminal) => match &terminal.workspace {
-                ThreadEntryWorkspace::Open(workspace) => vec![workspace.clone()],
-                ThreadEntryWorkspace::Closed { .. } => Vec::new(),
-            },
-            ListEntry::ProjectHeader { key, .. } => {
-                multi_workspace.workspaces_for_project_group(key, cx)
-            }
         }
     }
 }

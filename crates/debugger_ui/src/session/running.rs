@@ -1704,11 +1704,6 @@ impl RunningState {
         &self.console
     }
 
-    #[cfg(test)]
-    pub(crate) fn module_list(&self) -> &Entity<ModuleList> {
-        &self.module_list
-    }
-
     pub(crate) fn activate_item(
         &mut self,
         item: DebuggerPaneItem,
@@ -1732,11 +1727,6 @@ impl RunningState {
         pane.update(cx, |this, cx| {
             this.activate_item(variable_list_position, true, true, window, cx);
         });
-    }
-
-    #[cfg(test)]
-    pub(crate) fn variable_list(&self) -> &Entity<VariableList> {
-        &self.variable_list
     }
 
     pub fn capabilities(&self, cx: &App) -> Capabilities {

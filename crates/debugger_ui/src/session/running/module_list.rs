@@ -162,12 +162,6 @@ impl ModuleList {
             .into_any()
     }
 
-    #[cfg(test)]
-    pub(crate) fn modules(&self, cx: &mut Context<Self>) -> Vec<dap::Module> {
-        self.session
-            .update(cx, |session, cx| session.modules(cx).to_vec())
-    }
-
     fn confirm(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.selected_ix else { return };
         let Some(entry) = self.entries.get(ix) else {

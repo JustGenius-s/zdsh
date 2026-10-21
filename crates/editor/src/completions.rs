@@ -1133,11 +1133,6 @@ impl Editor {
             None
         }
     }
-
-    #[cfg(test)]
-    pub(super) fn disable_word_completions(&mut self) {
-        self.word_completions_enabled = false;
-    }
 }
 
 pub trait CompletionProvider {

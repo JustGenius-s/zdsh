@@ -13,8 +13,8 @@ use crate::{
 use anyhow::{Context as _, Result, anyhow};
 use collections::IndexMap;
 use dap::adapters::DebugAdapterName;
-use dap::{DapRegistry, StartDebuggingRequestArguments};
 use dap::client::SessionId;
+use dap::{DapRegistry, StartDebuggingRequestArguments};
 use editor::Editor;
 use feature_flags::{FeatureFlag, FeatureFlagAppExt as _, PresenceFlag, register_feature_flag};
 use gpui::{
@@ -131,11 +131,6 @@ impl DebugPanel {
         active_pane.update(cx, |pane, cx| {
             pane.focus_active_item(window, cx);
         });
-    }
-
-    #[cfg(test)]
-    pub(crate) fn sessions(&self) -> impl Iterator<Item = Entity<DebugSession>> {
-        self.sessions_with_children.keys().cloned()
     }
 
     pub fn active_session(&self) -> Option<Entity<DebugSession>> {

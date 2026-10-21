@@ -94,21 +94,6 @@ impl RunnableData {
             .get(&buffer_id)
             .is_some_and(|(cached_version, _)| !version.changed_since(cached_version))
     }
-
-    #[cfg(test)]
-    pub fn insert(
-        &mut self,
-        buffer_id: BufferId,
-        buffer_row: BufferRow,
-        version: Global,
-        tasks: RunnableTasks,
-    ) {
-        self.runnables
-            .entry(buffer_id)
-            .or_insert_with(|| (version, BTreeMap::default()))
-            .1
-            .insert(buffer_row, tasks);
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

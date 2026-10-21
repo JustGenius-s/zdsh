@@ -415,28 +415,3 @@ fn get_processes_for_project(project: &Entity<Project>, cx: &mut App) -> Task<Ar
         Task::ready(processes)
     }
 }
-
-#[cfg(test)]
-pub(crate) fn set_candidates(
-    modal: &AttachModal,
-    candidates: Arc<[Candidate]>,
-    window: &mut Window,
-    cx: &mut Context<AttachModal>,
-) {
-    modal.picker.update(cx, |picker, cx| {
-        picker.delegate.candidates = candidates;
-        picker.refresh(window, cx);
-    });
-}
-
-#[cfg(test)]
-pub(crate) fn process_names(modal: &AttachModal, cx: &mut Context<AttachModal>) -> Vec<String> {
-    modal.picker.read_with(cx, |picker, _| {
-        picker
-            .delegate
-            .matches
-            .iter()
-            .map(|hit| hit.string.clone())
-            .collect::<Vec<_>>()
-    })
-}

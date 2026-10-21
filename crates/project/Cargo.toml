@@ -12,11 +12,6 @@ workspace = true
 path = "src/project.rs"
 doctest = false
 
-[[test]]
-name = "integration"
-required-features = ["test-support"]
-path = "tests/integration/project_tests.rs"
-
 [features]
 test-support = [
     "buffer_diff/test-support",

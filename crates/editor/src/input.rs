@@ -2290,11 +2290,6 @@ impl Editor {
         self.linked_edit_ranges = linked_editing_ranges::LinkedEditingRanges(map);
         Some(())
     }
-
-    #[cfg(test)]
-    pub(super) fn set_auto_replace_emoji_shortcode(&mut self, auto_replace: bool) {
-        self.auto_replace_emoji_shortcode = auto_replace;
-    }
 }
 
 pub(super) fn is_list_prefix_row(

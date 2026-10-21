@@ -30,4 +30,3 @@ util.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 
 [target.'cfg(not(any(all(target_os = "windows", target_env = "gnu"), target_os = "freebsd")))'.dependencies]
-libwebrtc.workspace = true

@@ -1,8 +1,6 @@
 mod header;
 mod mouse;
 
-#[cfg(test)]
-pub(crate) use header::StickyHeader;
 pub use header::file_status_label_color;
 pub(crate) use header::{header_jump_data, render_buffer_header};
 
