@@ -31,7 +31,7 @@ use gpui_kit::{
     assets::IconName as KitIconName,
     base::{POPUP_PRIORITY, Selectable as _},
     component::{
-        Icon as KitIcon, Sizable as _,
+        Icon as KitIcon, Sizable as _, Size as KitSize,
         button::{Button, ButtonVariants as _},
         menu::{PopupMenu, PopupMenuItem},
         tab::{Tab, TabBar},
@@ -66,9 +66,21 @@ use util::{
     serde::default_true, truncate_and_remove_front,
 };
 
-/// The height of GPUI Kit's segmented tabs at their default size, which empty tab bar space
+/// Only macOS's title bar, which the center's tab bar shares, is tall enough for large segmented
+/// tabs, whose selected tab leaves more room above and below its label.
+const SEGMENTED_TAB_SIZE: KitSize = if cfg!(target_os = "macos") {
+    KitSize::Large
+} else {
+    KitSize::Medium
+};
+
+/// The height of GPUI Kit's segmented tabs at `SEGMENTED_TAB_SIZE`, which empty tab bar space
 /// matches so it stays a drop target of the same size.
-const SEGMENTED_TAB_HEIGHT: Pixels = px(32.);
+const SEGMENTED_TAB_HEIGHT: Pixels = if cfg!(target_os = "macos") {
+    px(36.)
+} else {
+    px(32.)
+};
 
 /// A selected entry in e.g. project panel.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -3714,6 +3726,7 @@ impl Pane {
     fn segmented_tab_bar(id: &'static str, selected_index: Option<usize>) -> TabBar {
         TabBar::new(id)
             .segmented()
+            .with_size(SEGMENTED_TAB_SIZE)
             .when_some(selected_index, |tab_bar, selected_index| {
                 tab_bar.selected_index(selected_index)
             })

@@ -10,7 +10,10 @@ use project::DisableAiSettings;
 use settings::Settings;
 use smallvec::SmallVec;
 use std::mem;
-use ui::{prelude::*, utils::platform_title_bar_height};
+use ui::{
+    prelude::*,
+    utils::{TRAFFIC_LIGHT_LEFT_INSET, platform_title_bar_height},
+};
 use workspace::{MultiWorkspace, SidebarRenderState, SidebarSide};
 
 use crate::{
@@ -197,6 +200,10 @@ impl Render for PlatformTitleBar {
             })
             // In fullscreen GPUI Kit pads the bar's content itself.
             .when(is_fullscreen, |title_bar| title_bar.pl_0())
+            // GPUI Kit's 80px padding leaves room for traffic lights 9px in from the edge.
+            .when(cfg!(target_os = "macos") && !is_fullscreen, |title_bar| {
+                title_bar.pl(px(80. - 9. + TRAFFIC_LIGHT_LEFT_INSET))
+            })
             .map(|title_bar| match decorations {
                 Decorations::Server => title_bar,
                 Decorations::Client { tiling, .. } => title_bar

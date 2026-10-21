@@ -394,7 +394,7 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
             title: None,
             appears_transparent: true,
             // Centered in the 44px title bar.
-            traffic_light_position: Some(point(px(9.0), px(14.0))),
+            traffic_light_position: Some(point(px(ui::utils::TRAFFIC_LIGHT_LEFT_INSET), px(14.0))),
         }),
         window_bounds: None,
         focus: false,
