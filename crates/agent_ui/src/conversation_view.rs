@@ -291,29 +291,6 @@ impl ProfileProvider for Entity<agent::Thread> {
     }
 }
 
-impl ProfileProvider for Entity<dsh_zed::SessionControls> {
-    fn profile_id(&self, cx: &App) -> AgentProfileId {
-        self.read(cx).profile(cx)
-    }
-    fn set_profile(&self, profile: AgentProfileId, cx: &mut App) {
-        self.update(cx, |controls, cx| controls.set_profile(profile, cx));
-    }
-    fn profiles_supported(&self, cx: &App) -> bool {
-        self.read(cx)
-            .model()
-            .is_some_and(|model| model.supports_tools)
-    }
-    fn model_selected(&self, cx: &App) -> bool {
-        self.read(cx).model().is_some()
-    }
-    fn is_restricted(&self, cx: &App) -> bool {
-        self.read(cx).is_restricted(cx)
-    }
-    fn profile_downgraded(&self, cx: &App) -> bool {
-        self.read(cx).profile_downgraded(cx)
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct Conversation {
     threads: HashMap<acp_v2::SessionId, Entity<AcpThread>>,
@@ -1647,11 +1624,7 @@ impl ConversationView {
             .clone()
             .downcast::<agent::NativeAgentConnection>()
             .and_then(|connection| connection.thread(&session_id, cx))
-            .map(|thread| Arc::new(thread) as Arc<dyn ProfileProvider>)
-            .or_else(|| {
-                dsh_zed::session_controls(connection.clone(), &session_id)
-                    .map(|controls| Arc::new(controls) as Arc<dyn ProfileProvider>)
-            });
+            .map(|thread| Arc::new(thread) as Arc<dyn ProfileProvider>);
         let profile_selector = profile_provider.map(|provider| {
             cx.new(|cx| {
                 ProfileSelector::new(<dyn Fs>::global(cx), provider, self.focus_handle(cx), cx)
@@ -1662,13 +1635,7 @@ impl ConversationView {
             .agent_server_store
             .read(cx)
             .agent_display_name(&agent_id.clone())
-            .unwrap_or_else(|| {
-                if agent_id.0.as_ref() == dsh_zed::DSH_AGENT_ID {
-                    "DSH".into()
-                } else {
-                    agent_id.0.clone()
-                }
-            });
+            .unwrap_or_else(|| agent_id.0.clone());
 
         let agent_icon = self.agent.logo();
         let agent_icon_from_external_svg = self
@@ -2288,9 +2255,6 @@ impl ConversationView {
     }
 
     fn schedule_draft_prompt_persist(&mut self, cx: &mut Context<Self>) {
-        if self.agent_key() == &Agent::Dsh {
-            return;
-        }
         let thread_id = self.thread_id;
         self.draft_prompt_persist_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()

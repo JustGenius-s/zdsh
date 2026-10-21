@@ -22,8 +22,6 @@ Other platforms are not yet available:
 
 zdsh starts from Zed's source tree. The application crate and binary are currently named `zed`.
 
-The DSH Rust port lives in `crates/dsh_runtime`, `crates/dsh_agent`, and `crates/dsh_zed`. See [DSH architecture](./docs/src/development/dsh.md) for component responsibilities and integration scope.
-
 Install Xcode with the macOS components, select its developer directory, and install CMake with `brew install cmake`. The repository's `rust-toolchain.toml` selects the Rust version, development components, and cross-compilation targets; install them with `rustup show` from the repository root. Check that `xcrun metal --version` succeeds before building; see the [macOS build guide](./docs/src/development/macos.md) for Metal toolchain setup.
 
 Run these commands from the repository root:

@@ -1001,13 +1001,6 @@ impl ThreadView {
             }));
         }));
 
-        if let Some(controls) = dsh_zed::session_controls(
-            thread.read(cx).connection().clone(),
-            thread.read(cx).session_id(),
-        ) {
-            subscriptions.push(cx.observe(&controls, |_, _, cx| cx.notify()));
-        }
-
         let current_submission = thread.read(cx).latest_submission_id();
         let mut this = Self {
             root_thread_id,
@@ -4396,28 +4389,14 @@ impl ThreadView {
         Some((provider_id, model_id, confirmation))
     }
 
-    fn dsh_controls(&self, cx: &App) -> Option<Entity<dsh_zed::SessionControls>> {
-        let thread = self.thread.read(cx);
-        dsh_zed::session_controls(thread.connection().clone(), thread.session_id())
-    }
-
     fn thinking_state(&self, cx: &App) -> Option<(LanguageModel, bool, Option<String>)> {
-        if let Some(thread) = self.as_native_thread(cx) {
-            let thread = thread.read(cx);
-            Some((
-                thread.model()?.clone(),
-                thread.thinking_enabled(),
-                thread.thinking_effort().cloned(),
-            ))
-        } else {
-            let controls = self.dsh_controls(cx)?;
-            let controls = controls.read(cx);
-            Some((
-                controls.model()?.clone(),
-                controls.thinking_enabled(),
-                controls.thinking_effort().cloned(),
-            ))
-        }
+        let thread = self.as_native_thread(cx)?;
+        let thread = thread.read(cx);
+        Some((
+            thread.model()?.clone(),
+            thread.thinking_enabled(),
+            thread.thinking_effort().cloned(),
+        ))
     }
 
     fn persist_native_thinking_selection(thread: &Entity<agent::Thread>, cx: &App) {
@@ -4459,10 +4438,6 @@ impl ThreadView {
         if let Some(thread) = self.as_native_thread(cx) {
             thread.update(cx, |thread, cx| thread.set_thinking_enabled(!enabled, cx));
             Self::persist_native_thinking_selection(&thread, cx);
-        } else if let Some(controls) = self.dsh_controls(cx) {
-            controls.update(cx, |controls, cx| {
-                controls.set_thinking_enabled(!enabled, cx)
-            });
         }
     }
 
@@ -4472,10 +4447,6 @@ impl ThreadView {
                 thread.set_thinking_effort(Some(effort), cx)
             });
             Self::persist_native_thinking_selection(&thread, cx);
-        } else if let Some(controls) = self.dsh_controls(cx) {
-            controls.update(cx, |controls, cx| {
-                controls.set_thinking_effort(Some(effort), cx)
-            });
         }
     }
 

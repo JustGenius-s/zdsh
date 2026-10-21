@@ -48,8 +48,8 @@ use crate::{
 };
 use crate::{
     AgentDiffPane, ConversationView, CopyThreadToClipboard, Follow, LoadThreadFromClipboard,
-    NewTerminalThread, NewThread, OpenActiveThreadAsMarkdown, OpenAgentDiff, ResetFastModeWarnings, ResetTrialEndUpsell, ResetTrialUpsell, ShowAllSidebarThreadMetadata,
-    ShowThreadMetadata,
+    NewTerminalThread, NewThread, OpenActiveThreadAsMarkdown, OpenAgentDiff, ResetFastModeWarnings,
+    ResetTrialEndUpsell, ResetTrialUpsell, ShowAllSidebarThreadMetadata, ShowThreadMetadata,
     conversation_view::{
         AcpThreadViewEvent, RootThreadUpdated, ThreadView, reset_fast_mode_warnings,
     },
@@ -1218,12 +1218,9 @@ impl AgentPanel {
                 })
         };
 
-        let last_active_thread =
-            last_active_thread.filter(|thread| thread.agent_type != Agent::Dsh);
         let new_draft_thread_id = self
             .draft_thread
             .as_ref()
-            .filter(|draft| draft.read(cx).agent_key() != &Agent::Dsh)
             .map(|draft| draft.read(cx).thread_id);
 
         let kvp = KeyValueStore::global(cx);
@@ -1954,14 +1951,6 @@ impl AgentPanel {
             icon: AgentChoiceIcon::Builtin(IconName::ZedAgent),
             disabled: false,
         }];
-        if !is_via_collab {
-            choices.push(AgentChoice {
-                agent: Agent::Dsh,
-                label: Agent::Dsh.label(),
-                icon: AgentChoiceIcon::Builtin(IconName::Sparkle),
-                disabled: false,
-            });
-        }
 
         let agent_server_store = self.project.read(cx).agent_server_store().read(cx);
         let registry_store = project::AgentRegistryStore::try_global(cx);

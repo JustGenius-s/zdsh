@@ -476,7 +476,6 @@ dependencies = [
  "component",
  "context_server",
  "db",
- "dsh_zed",
  "editor",
  "eval_utils",
  "extension",
@@ -5436,54 +5435,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "415b6ec780d34dcf624666747194393603d0373b7141eef01d12ee58881507d9"
 dependencies = [
  "phf 0.11.3",
-]
-
-[[package]]
-name = "dsh_agent"
-version = "0.1.0"
-dependencies = [
- "dsh_runtime",
- "futures 0.3.34",
- "serde",
- "serde_json",
- "thiserror 2.0.17",
- "tokio",
-]
-
-[[package]]
-name = "dsh_runtime"
-version = "0.1.0"
-dependencies = [
- "tokio",
-]
-
-[[package]]
-name = "dsh_zed"
-version = "0.1.0"
-dependencies = [
- "acp_thread",
- "action_log",
- "agent-client-protocol",
- "agent_servers",
- "agent_settings",
- "anyhow",
- "collections",
- "dsh_agent",
- "dsh_runtime",
- "extension",
- "futures 0.3.34",
- "gpui-pre",
- "gpui_tokio",
- "language_model",
- "log",
- "project",
- "serde_json",
- "settings",
- "tokio",
- "ui",
- "util",
- "uuid",
- "watch",
 ]
 
 [[package]]
@@ -24257,7 +24208,6 @@ dependencies = [
  "debugger_ui",
  "dev_container",
  "diagnostics",
- "dsh_zed",
  "edit_prediction",
  "edit_prediction_ui",
  "editor",

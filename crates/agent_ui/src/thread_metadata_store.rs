@@ -669,18 +669,12 @@ impl ThreadMetadataStore {
                 };
 
                 this.update(cx, |this, cx| {
-                    let ephemeral: Vec<_> = this
-                        .threads
-                        .values()
-                        .filter(|thread| thread.agent_id.as_ref() == dsh_zed::DSH_AGENT_ID)
-                        .cloned()
-                        .collect();
                     this.threads.clear();
                     this.threads_by_paths.clear();
                     this.threads_by_main_paths.clear();
                     this.threads_by_session.clear();
 
-                    for row in rows.into_iter().chain(ephemeral) {
+                    for row in rows {
                         this.cache_thread_metadata(row);
                     }
 
@@ -765,10 +759,6 @@ impl ThreadMetadataStore {
         }
 
         self.cache_thread_metadata(metadata.clone());
-        // DSH has no session loader; a durable sidebar row would be unopenable.
-        if metadata.agent_id.as_ref() == dsh_zed::DSH_AGENT_ID {
-            return;
-        }
         self.pending_thread_ops_tx
             .try_send(DbOperation::Upsert(metadata))
             .log_err();
@@ -1202,13 +1192,10 @@ impl ThreadMetadataStore {
 
             cx.on_release({
                 let weak_store = weak_store.clone();
-                move |view, cx| {
+                move |_view, cx| {
                     weak_store
-                        .update(cx, |store, cx| {
+                        .update(cx, |store, _cx| {
                             store.conversation_subscriptions.remove(&entity_id);
-                            if view.agent_key() == &crate::Agent::Dsh {
-                                store.delete(view.thread_id, cx);
-                            }
                         })
                         .ok();
                 }

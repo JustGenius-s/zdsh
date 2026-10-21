@@ -12,7 +12,7 @@ Open it with {#action agent::NewThread} from [the Command Palette](../command-pa
 
 ## Agent tabs in zdsh
 
-In zdsh, each Agent conversation opens in a central editor tab. The project file tree can stay open beside it. This applies to the Zed Agent, DSH, and external ACP agents; terminal entries open in separate central terminal tabs.
+In zdsh, each Agent conversation opens in a central editor tab. The project file tree can stay open beside it. This applies to the Zed Agent and external ACP agents; terminal entries open in separate central terminal tabs.
 
 Use the New Thread action, the **New Agent Tab** button in the top-right pane toolbar, or thread history to open a conversation. New Thread always creates an Agent conversation. The pane toolbar stays visible when focus moves elsewhere and when all tabs are closed; each toolbar opens new tabs in its own pane. Opening an already open conversation activates its tab. Drag tabs to reorder them or move them into a split pane to work beside code. Each conversation has one tab; splitting does not duplicate the conversation.
 
@@ -26,12 +26,12 @@ The conversation uses the toolbar background. In an empty conversation the compo
 
 The `+` button in the composer picks a mode, starts a file mention, switches models, and turns MCP servers on or off. The default mode, Write, stays implicit. Picking another mode, such as Ask, shows it as a tag next to the `+` button; remove the tag to return to the default mode. User messages appear as full-width cards drawn like the composer. Editing, attachments, and checkpoint actions remain available. The agent's thinking shows as a single "Thinking" line while it streams and "Thought" afterwards, with how long it took, such as "Thought 16s"; click it to read the reasoning. Reading a file shows as a single line with the file's name; click it to open the file. Other tool calls that only look things up, such as searching, show as single lines you can click to see their input and output. Edits, commands, subagents, and tool calls waiting for permission show as cards. An edit's header shows how many lines it added and removed, a command's header shows its first line, and the buttons that answer a permission request sit at the bottom of the card. Consecutive tool calls, with the thinking between them, fold into one line that sums them up, such as "Edited 2 files, explored 3 files, ran 1 command +12 −4"; click it to see each one. Subagents and tool calls waiting for permission stay in view. Once a turn is done, everything the agent did before its last reply folds into a "Worked for 2m 15s" line above the reply. The turn you just watched stays open until you send the next message, and turns from earlier or from a reopened conversation start folded. Errors and warnings about the conversation show as cards above the composer, with buttons to act on them, such as retrying or copying the error.
 
-Switching tabs keeps work running. Closing a conversation tab requests cancellation and releases its session. Saved conversations remain available through the agent's history support; DSH conversations are currently in memory and cannot be restored after closing. Central Agent tab positions are not restored when restarting zdsh.
+Switching tabs keeps work running. Closing a conversation tab requests cancellation and releases its session. Saved conversations remain available through the agent's history support. Central Agent tab positions are not restored when restarting zdsh.
 
 ## Accounts in zdsh {#zdsh-accounts}
 
 zdsh runs without a Zed account. Configure a provider in the Settings Editor to use
-DSH or Zed Agent with your own API access, provider subscription, or local model.
+the Zed Agent with your own API access, provider subscription, or local model.
 External agents and Copilot retain their own authorization flows.
 
 Zed-hosted models, Zed cloud search, Zed cloud edit predictions, subscriptions,
