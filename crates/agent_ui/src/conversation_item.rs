@@ -10,7 +10,7 @@ use settings::Settings;
 use theme_settings::ThemeSettings;
 use ui::{prelude::*, utils::WithRemSize};
 use util::ResultExt;
-use workspace::item::{Item, ItemEvent, TabContentParams};
+use workspace::item::{Item, ItemEvent, TabCategory, TabContentParams};
 use zed_actions::{
     DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize,
     agent::{LogoutAgent, ReauthenticateAgent},
@@ -162,6 +162,10 @@ impl Item for ConversationItem {
     fn tab_content_text(&self, _: usize, cx: &App) -> SharedString {
         let view = self.conversation.read(cx);
         view.title_override(cx).unwrap_or_else(|| view.title(cx))
+    }
+
+    fn tab_category(&self, _: &App) -> TabCategory {
+        TabCategory::Agent
     }
     fn tab_content(&self, params: TabContentParams, _: &Window, cx: &App) -> AnyElement {
         h_flex()

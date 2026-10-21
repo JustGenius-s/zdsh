@@ -167,6 +167,26 @@ pub enum ItemBufferKind {
     None,
 }
 
+/// Which group an open tab belongs to in the persistent tab sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TabCategory {
+    Agent,
+    Terminal,
+    File,
+    Action,
+}
+
+impl TabCategory {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Agent => "Agent",
+            Self::Terminal => "Terminal",
+            Self::File => "File",
+            Self::Action => "Action",
+        }
+    }
+}
+
 pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     type Event;
 
@@ -194,6 +214,17 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
 
     fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
         None
+    }
+
+    /// Group for the persistent tab sidebar.
+    ///
+    /// A singleton buffer is a file. Agent and terminal views override this;
+    /// every other item stays with the actions until it opts into a group.
+    fn tab_category(&self, cx: &App) -> TabCategory {
+        match self.buffer_kind(cx) {
+            ItemBufferKind::Singleton => TabCategory::File,
+            ItemBufferKind::Multibuffer | ItemBufferKind::None => TabCategory::Action,
+        }
     }
 
     /// Returns the tab tooltip text.
@@ -491,6 +522,7 @@ pub trait ItemHandle: 'static + Send {
     fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString;
     fn suggested_filename(&self, cx: &App) -> SharedString;
     fn tab_icon(&self, window: &Window, cx: &App) -> Option<Icon>;
+    fn tab_category(&self, cx: &App) -> TabCategory;
     fn tab_tooltip_text(&self, cx: &App) -> Option<SharedString>;
     fn tab_tooltip_content(&self, cx: &App) -> Option<TabTooltipContent>;
     fn telemetry_event_text(&self, cx: &App) -> Option<&'static str>;
@@ -646,6 +678,10 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn tab_icon(&self, window: &Window, cx: &App) -> Option<Icon> {
         self.read(cx).tab_icon(window, cx)
+    }
+
+    fn tab_category(&self, cx: &App) -> TabCategory {
+        self.read(cx).tab_category(cx)
     }
 
     fn tab_tooltip_content(&self, cx: &App) -> Option<TabTooltipContent> {

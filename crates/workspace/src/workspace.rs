@@ -19,6 +19,7 @@ mod rail;
 pub mod searchable;
 pub mod security_modal;
 pub mod shared_screen;
+mod tab_sidebar;
 pub use shared_screen::SharedScreen;
 pub mod focus_follows_mouse;
 mod status_bar;
@@ -76,7 +77,7 @@ use gpui::{
 pub use history_manager::*;
 pub use item::{
     FollowableItem, FollowableItemHandle, Item, ItemHandle, ItemSettings, PreviewTabsSettings,
-    ProjectItem, SerializableItem, SerializableItemHandle, WeakItemHandle,
+    ProjectItem, SerializableItem, SerializableItemHandle, TabCategory, WeakItemHandle,
 };
 use itertools::Itertools;
 use language::{Buffer, LanguageRegistry, Rope, language_settings::all_language_settings};
@@ -6108,6 +6109,7 @@ impl Workspace {
                 cx.emit(Event::ItemAdded {
                     item: item.boxed_clone(),
                 });
+                cx.notify();
             }
             pane::Event::Split { direction, mode } => {
                 match mode {
@@ -6151,6 +6153,7 @@ impl Workspace {
                 } else if *local {
                     self.set_active_pane(pane, window, cx);
                 }
+                cx.notify();
             }
             pane::Event::UserSavedItem { item, save_intent } => {
                 cx.emit(Event::UserSavedItem {
@@ -6163,8 +6166,8 @@ impl Workspace {
             pane::Event::ChangeItemTitle => {
                 if *pane == self.active_pane {
                     self.active_item_path_changed(false, window, cx);
-                    cx.notify();
                 }
+                cx.notify();
                 serialize_workspace = false;
             }
             pane::Event::RemovedItem { item } => {
@@ -6178,6 +6181,7 @@ impl Workspace {
                 cx.emit(Event::ItemRemoved {
                     item_id: item.item_id(),
                 });
+                cx.notify();
             }
             pane::Event::Focus => {
                 window.invalidate_character_coordinates();
@@ -10177,7 +10181,8 @@ impl Render for Workspace {
                                         colors.title_bar_background,
                                         colors.border,
                                     )),
-                            ),
+                            )
+                            .child(self.render_tab_sidebar(window, cx)),
                     )
                     .child(self.toast_layer.clone()),
             )

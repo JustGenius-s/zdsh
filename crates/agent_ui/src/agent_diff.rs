@@ -33,7 +33,7 @@ use util::{ResultExt, truncate_and_trailoff};
 use workspace::{
     Item, ItemHandle, ItemNavHistory, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
     Workspace,
-    item::{ItemEvent, SaveOptions, TabContentParams, TabTooltipContent},
+    item::{ItemEvent, SaveOptions, TabCategory, TabContentParams, TabTooltipContent},
     searchable::SearchableItemHandle,
 };
 use zed_actions::assistant::ToggleFocus;
@@ -512,6 +512,10 @@ impl Item for AgentDiffPane {
 
     fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
         Some(Icon::new(IconName::ZedAssistant).color(Color::Muted))
+    }
+
+    fn tab_category(&self, _: &App) -> TabCategory {
+        TabCategory::Agent
     }
 
     fn to_item_events(event: &EditorEvent, f: &mut dyn FnMut(ItemEvent)) {
