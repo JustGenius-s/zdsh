@@ -566,6 +566,9 @@ pub struct ThreadView {
     thread_feedback: ThreadFeedbackState,
     pub list_state: ListState,
     pub session_capabilities: SharedSessionCapabilities,
+    /// Whether the last render showed the transcript as scrolled away from the latest entry, so
+    /// the scroll handler only re-renders when the jump-to-latest overlay has to change.
+    transcript_scrolled_up: bool,
     pub expanded_tool_call_raw_inputs: HashSet<acp_v2::ToolCallId>,
     collapsed_sandbox_authorization_details: HashSet<acp_v2::ToolCallId>,
     collapsed_sandbox_network_details: HashSet<acp_v2::ToolCallId>,
@@ -1032,6 +1035,7 @@ impl ThreadView {
             thread_error_markdown: None,
             token_limit_callout_dismissed: false,
             last_token_limit_telemetry: None,
+            transcript_scrolled_up: false,
             thread_feedback: Default::default(),
             expanded_tool_call_raw_inputs: HashSet::default(),
             collapsed_sandbox_authorization_details: HashSet::default(),
@@ -1109,6 +1113,9 @@ impl ThreadView {
             });
 
         if should_auto_submit {
+                        if transcript::is_scrolled_up(&list_state) != this.transcript_scrolled_up {
+                            cx.notify();
+                        }
             this.send(window, cx);
         }
         this
@@ -8172,8 +8179,15 @@ impl Render for ThreadView {
                 if has_messages {
                     this.flex_1()
                         .size_full()
+        let changes_chips = has_messages
+            .then(|| self.render_changes_chips(cx))
+            .flatten();
+        let has_tool_row = changes_chips.is_some();
+        let transcript_bottom_overlay = has_messages
+            .then(|| self.render_transcript_bottom_overlay(changes_chips, window, cx))
+            .flatten();
                         .relative()
-                        .child(self.render_entries(cx))
+                        .child(self.render_entries(has_tool_row, cx))
                         .when_some(sticky_prompt, |this, sticky_prompt| {
                             this.child(
                                 h_flex()
@@ -8205,6 +8219,7 @@ impl Render for ThreadView {
                         )
                         .into_any()
                 } else {
+                        .children(transcript_bottom_overlay)
                     this.child(
                         v_flex()
                             .flex_1()

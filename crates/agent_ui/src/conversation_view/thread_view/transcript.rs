@@ -3,15 +3,107 @@ use super::tool_calls::markdown_line;
 use super::*;
 use crate::entry_view_state::{ActivityGroup, TurnFold, is_hidden_canceled_tool_call};
 use gpui::{AnyView, FontWeight, TextStyleRefinement, transparent_white};
+use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::{
     Colorize as _, Icon as KitIcon, Size as KitSize, Theme as KitTheme, alert::AlertVariant,
     shimmer::ShimmerText,
 };
 use markdown::HeadingLevelStyles;
+use std::time::Duration;
 use theme_settings::ThemeSettings;
 
+const JUMP_TO_LATEST_TRANSITION: Duration = Duration::from_millis(200);
+
+/// Whether the reader has scrolled away from the latest entry, mirroring GPUI Kit's
+/// `MessageScrollerState::is_scrolled_up`.
+pub(super) fn is_scrolled_up(list_state: &ListState) -> bool {
+    list_state.max_offset_for_scrollbar().y > px(0.)
+        && !list_state.is_following_tail()
+        && !list_state.is_scrolled_to_end().unwrap_or(false)
+}
+
 impl ThreadView {
-    pub(super) fn render_entries(&mut self, cx: &mut Context<Self>) -> List {
+    /// The tool row that floats over the transcript's bottom edge, right above the composer: the
+    /// changes chips, plus the jump-to-latest button and the bottom fade from GPUI Kit's
+    /// `MessageScroller`, which the transcript can't use directly because it hides the
+    /// `ListState` this view drives.
+    pub(super) fn render_transcript_bottom_overlay(
+        &mut self,
+        changes_chips: Option<AnyElement>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let scrolled_up = is_scrolled_up(&self.list_state);
+        self.transcript_scrolled_up = scrolled_up;
+        let visibility = transition(
+            ElementId::from(("thread-jump-to-latest", cx.entity_id())),
+            if scrolled_up { 1. } else { 0. },
+            Transition::new(JUMP_TO_LATEST_TRANSITION),
+            window,
+            cx,
+        );
+        let jump_to_latest = (visibility > 0.).then(|| {
+            div().opacity(visibility).child(
+                PillButton::new("jump-to-latest")
+                    .size(KitSize::Small)
+                    .variant(ButtonVariant::Secondary)
+                    .icon(IconName::ArrowDown)
+                    .tooltip(Tooltip::text("Jump to Latest"))
+                    // Stays rendered while fading out, but must not catch a click once the
+                    // reader is already back at the bottom.
+                    .disabled(!scrolled_up)
+                    .on_click(cx.listener(|this, _, _, cx| this.scroll_to_end(cx))),
+            )
+        });
+        if changes_chips.is_none() && jump_to_latest.is_none() {
+            return None;
+        }
+
+        // The row itself has no background, so the transcript scrolls on behind it. At the live
+        // edge nothing is behind it, so the fade only shows while scrolled up, where it dissolves
+        // the transcript into the thread's surface, which the composer below shares.
+        let surface_bg = cx.theme().colors().surface_background;
+        let max_content_width = AgentSettings::get_global(cx).max_content_width;
+        Some(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .when(visibility > 0., |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(rems(3.))
+                            .opacity(visibility)
+                            .bg(linear_gradient(
+                                180.,
+                                linear_color_stop(surface_bg.opacity(0.), 0.),
+                                linear_color_stop(surface_bg, 1.),
+                            )),
+                    )
+                })
+                .child(
+                    h_flex().w_full().px_4().justify_center().child(
+                        h_flex()
+                            .w_full()
+                            .min_w_0()
+                            .when_some(max_content_width, |this, max_width| this.max_w(max_width))
+                            .gap_1p5()
+                            .children(changes_chips)
+                            .children(jump_to_latest),
+                    ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// `has_tool_row` reserves room below the last entry for the floating tool row, so that row
+    /// only covers the transcript once the reader scrolls up.
+    pub(super) fn render_entries(&mut self, has_tool_row: bool, cx: &mut Context<Self>) -> List {
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
         let centered_container = move |content: AnyElement| {
             h_flex().w_full().justify_center().child(
@@ -41,6 +133,8 @@ impl ThreadView {
         )
         .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
         .flex_grow_1()
+        // A small button's height plus the gap the row keeps from the last entry.
+        .when(has_tool_row, |list| list.pb(rems(2.)))
     }
 
     /// The prompt of the turn at the top of the transcript, once the prompt itself has scrolled

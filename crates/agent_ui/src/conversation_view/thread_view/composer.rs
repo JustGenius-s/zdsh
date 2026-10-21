@@ -97,7 +97,10 @@ impl ThreadView {
         let agent_selector = is_empty_thread
             .then(|| self.render_agent_selector(cx))
             .flatten();
-        let changes_chips = self.render_changes_chips(cx);
+        // Once the thread has a transcript, the chips float over its bottom edge instead.
+        let changes_chips = is_empty_thread
+            .then(|| self.render_changes_chips(cx))
+            .flatten();
         let composer = if is_empty_thread {
             div()
                 .relative()
@@ -662,7 +665,7 @@ impl ThreadView {
         })
     }
 
-    fn render_changes_chips(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_changes_chips(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let thread = self.thread.read(cx);
         if thread.parent_session_id().is_some() {
             return None;
@@ -690,8 +693,10 @@ impl ThreadView {
             let file_count = changed_buffers.len();
 
             PillButton::new("composer-changes")
-                .outline()
+                .variant(ButtonVariant::Secondary)
                 .size(KitSize::Small)
+            // Filled rather than outlined: the chips float over the transcript, whose text would
+            // otherwise show through them.
                 .toggle_state(self.edits_expanded)
                 .child(Label::new("Changes"))
                 .child(Label::new(format!("+{}", stats.lines_added)).color(Color::Success))
@@ -714,8 +719,7 @@ impl ThreadView {
 
         let commit_chip = has_uncommitted_changes.then(|| {
             KitButton::new("composer-commit")
-                .ghost()
-                .outline()
+                .secondary()
                 .small()
                 .rounded(ButtonRounded::Size(px(12.)))
                 .label("Commit")
@@ -730,7 +734,6 @@ impl ThreadView {
 
         Some(
             h_flex()
-                .w_full()
                 .gap_1p5()
                 .children(changes_chip)
                 .children(commit_chip)
