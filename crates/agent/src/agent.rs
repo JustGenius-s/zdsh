@@ -10,6 +10,7 @@ mod tests;
 mod thread;
 mod thread_store;
 mod tool_permissions;
+mod tool_result_policy;
 mod tools;
 
 use context_server::ContextServerId;

@@ -1125,7 +1125,11 @@ async fn test_tool_authorization(cx: &mut TestAppContext) {
                 tool_use_id: "tool_id_4".into(),
                 tool_name: ToolRequiringPermission::NAME.into(),
                 is_error: false,
-                content: vec!["Allowed".into()],
+                // The third response in a row to make this same call.
+                content: vec![
+                    "Allowed".into(),
+                    crate::tool_result_policy::FIRST_REPEAT_REMINDER.into()
+                ],
                 output: Some("Allowed".into())
             }
         )]

@@ -5,7 +5,7 @@ use crate::{
     GoToDefinitionTool, GrepTool, ListAgentsAndModelsTool, ListDirectoryTool, MovePathTool,
     ProjectSnapshot, ReadFileTool, RenameTool, SandboxedTerminalTool, SpawnAgentTool,
     SystemPromptTemplate, Template, Templates, TerminalTool, ToolPermissionDecision, WebSearchTool,
-    WriteFileTool, decide_permission_from_settings,
+    WriteFileTool, decide_permission_from_settings, tool_result_policy,
 };
 use acp_thread::{AgentModelId, ClientUserMessageId, MentionUri, ProcessOutput};
 use action_log::ActionLog;
@@ -3535,7 +3535,10 @@ impl Thread {
         );
         this.update(cx, |this, cx| {
             // A cancelled turn can finish its tools after a successor has started.
-            if &this.prompt_id == prompt_id {
+            let in_pending_message = &this.prompt_id == prompt_id;
+            let mut tool_result = tool_result;
+            this.apply_tool_result_policy(owning_message_ix, in_pending_message, &mut tool_result);
+            if in_pending_message {
                 this.pending_message()
                     .tool_results
                     .insert(tool_result.tool_use_id.clone(), tool_result);
@@ -3577,6 +3580,56 @@ impl Thread {
             cx.notify();
         })?;
         Ok(())
+    }
+
+    /// Prepares a finished tool result for the model. Its call is in the pending
+    /// message, or else in the message at `owning_message_ix`.
+    fn apply_tool_result_policy(
+        &self,
+        owning_message_ix: usize,
+        in_pending_message: bool,
+        tool_result: &mut LanguageModelToolResult,
+    ) {
+        fn tool_uses(
+            message: &AgentMessage,
+        ) -> impl Iterator<Item = &LanguageModelToolUse> + use<'_> {
+            message
+                .content
+                .iter()
+                .rev()
+                .filter_map(|content| match content {
+                    AgentMessageContent::ToolUse(tool_use) => Some(tool_use),
+                    _ => None,
+                })
+        }
+
+        let owning_message = if in_pending_message {
+            self.pending_message.as_ref()
+        } else {
+            self.messages
+                .get(owning_message_ix)
+                .and_then(|message| message.as_agent_message())
+        };
+        let call = owning_message
+            .into_iter()
+            .flat_map(tool_uses)
+            .find(|tool_use| tool_use.id == tool_result.tool_use_id);
+        let call = call.map(|call| {
+            // Responses since the last user message, newest first.
+            let earlier_responses = self
+                .messages
+                .iter()
+                .take(owning_message_ix)
+                .rev()
+                .take_while(|message| !matches!(message.as_ref(), Message::User(_)))
+                .filter_map(|message| message.as_agent_message())
+                .map(|message| tool_uses(message).collect());
+            (
+                call,
+                tool_result_policy::consecutive_identical_calls(call, earlier_responses),
+            )
+        });
+        tool_result_policy::apply(tool_result, call);
     }
 
     fn handle_completion_error(
