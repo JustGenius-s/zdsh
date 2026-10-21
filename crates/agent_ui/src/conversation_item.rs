@@ -3,7 +3,9 @@ use crate::{
     thread_metadata_store::ThreadMetadataStore,
 };
 use acp_thread::ThreadStatus;
-use gpui::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, Subscription, WeakEntity};
+use gpui::{
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Subscription, WeakEntity, Window,
+};
 use settings::Settings;
 use theme_settings::ThemeSettings;
 use ui::{prelude::*, utils::WithRemSize};
@@ -194,6 +196,18 @@ impl Item for ConversationItem {
     }
     fn show_toolbar(&self) -> bool {
         false
+    }
+
+    fn handle_drop(
+        &self,
+        _active_pane: &workspace::Pane,
+        dropped: &dyn std::any::Any,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        self.conversation.update(cx, |conversation, cx| {
+            conversation.handle_path_drop(dropped, window, cx)
+        })
     }
 }
 

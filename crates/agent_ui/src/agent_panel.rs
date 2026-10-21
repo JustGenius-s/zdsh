@@ -5654,24 +5654,11 @@ impl AgentPanel {
             return;
         };
         let conversation_view = conversation_view.clone();
-        let tasks = paths
-            .paths()
-            .iter()
-            .map(|path| Workspace::project_path_for_path(self.project.clone(), path, false, cx))
-            .collect::<Vec<_>>();
+        let paths = paths.clone();
         cx.spawn_in(window, async move |_this, cx| {
-            let mut paths = vec![];
-            let mut added_worktrees = vec![];
-            let opened_paths = futures::future::join_all(tasks).await;
-            for entry in opened_paths {
-                if let Some((worktree, project_path)) = entry.log_err() {
-                    added_worktrees.push(worktree);
-                    paths.push(project_path);
-                }
-            }
             conversation_view
                 .update_in(cx, |conversation_view, window, cx| {
-                    conversation_view.insert_dragged_files(paths, added_worktrees, window, cx);
+                    conversation_view.insert_external_paths(&paths, window, cx);
                 })
                 .log_err();
         })

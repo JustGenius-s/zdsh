@@ -29,10 +29,10 @@ use fs::Fs;
 use futures::FutureExt as _;
 use gpui::{
     Action, Animation, AnimationExt, App, ClickEvent, ClipboardItem, CursorStyle, ElementId, Empty,
-    Entity, EventEmitter, FocusHandle, Focusable, Hsla, ListOffset, ListState, ObjectFit,
-    PlatformDisplay, ScrollHandle, SharedString, StyledText, Subscription, Task, TextRun,
-    TextStyle, WeakEntity, Window, WindowHandle, div, img, linear_color_stop, linear_gradient,
-    list, pulsating_between,
+    Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, Hsla, ListOffset, ListState,
+    ObjectFit, PlatformDisplay, ScrollHandle, SharedString, StyledText, Subscription, Task,
+    TextRun, TextStyle, WeakEntity, Window, WindowHandle, div, img, linear_color_stop,
+    linear_gradient, list, pulsating_between,
 };
 use language::{Buffer, Language};
 use language_model::{
@@ -73,7 +73,8 @@ use util::{
     time::duration_alt_display,
 };
 use workspace::{
-    CollaboratorId, MultiWorkspace, NewTerminal, PathList, Workspace, path_link::sanitize_path_text,
+    CollaboratorId, DraggedSelection, MultiWorkspace, NewTerminal, PathList, Workspace,
+    path_link::sanitize_path_text,
 };
 use zed_actions::agent::{Chat, ToggleModelSelector};
 
@@ -3574,6 +3575,63 @@ impl ConversationView {
                 })
             });
         }
+    }
+
+    /// Handles files and directories dropped on the conversation from the Project Panel or
+    /// the operating system, inserting them into the composer as mentions.
+    pub(crate) fn handle_path_drop(
+        &mut self,
+        dropped: &dyn std::any::Any,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if let Some(selection) = dropped.downcast_ref::<DraggedSelection>() {
+            let paths = selection
+                .items()
+                .filter_map(|item| self.project.read(cx).path_for_entry(item.entry_id, cx))
+                .collect::<Vec<_>>();
+            self.insert_dragged_files(paths, Vec::new(), window, cx);
+            true
+        } else if let Some(paths) = dropped.downcast_ref::<ExternalPaths>() {
+            if !self.project.read(cx).is_local() {
+                return false;
+            }
+            self.insert_external_paths(paths, window, cx);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Resolves paths dropped from outside the project into project paths and inserts them into
+    /// the composer as mentions, adding worktrees for paths outside the project.
+    pub(crate) fn insert_external_paths(
+        &mut self,
+        paths: &ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let project = self.project.clone();
+        let tasks = paths
+            .paths()
+            .iter()
+            .map(|path| Workspace::project_path_for_path(project.clone(), path, false, cx))
+            .collect::<Vec<_>>();
+        cx.spawn_in(window, async move |this, cx| {
+            let mut project_paths = Vec::new();
+            let mut added_worktrees = Vec::new();
+            for entry in futures::future::join_all(tasks).await {
+                if let Some((worktree, project_path)) = entry.log_err() {
+                    added_worktrees.push(worktree);
+                    project_paths.push(project_path);
+                }
+            }
+            this.update_in(cx, |this, window, cx| {
+                this.insert_dragged_files(project_paths, added_worktrees, window, cx);
+            })
+            .log_err();
+        })
+        .detach();
     }
 
     pub(crate) fn has_pending_selections(&self) -> bool {
