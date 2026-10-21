@@ -700,6 +700,70 @@ impl From<&OpenSettingsAtTarget> for SettingsFileTarget {
     }
 }
 
+/// A setting, or a link to a page of settings, that the settings editor's search covers.
+pub struct SearchableSetting {
+    pub title: SharedString,
+    pub description: SharedString,
+    pub page: &'static str,
+    pub section: &'static str,
+    /// Opens the settings editor at this item.
+    pub action: Box<dyn Action>,
+}
+
+/// Every item the settings editor's search covers, in the order the editor shows them.
+pub fn searchable_settings(cx: &App) -> Vec<SearchableSetting> {
+    let mut settings = Vec::new();
+    for page in page_data::settings_data(cx) {
+        let mut section = "";
+        for item in page.items.iter() {
+            let (title, description, json_path) = match item {
+                SettingsPageItem::SectionHeader(header) => {
+                    section = header;
+                    continue;
+                }
+                SettingsPageItem::SettingItem(item)
+                | SettingsPageItem::DynamicItem(DynamicItem {
+                    discriminant: item, ..
+                }) => (
+                    SharedString::from(item.title),
+                    SharedString::from(item.description),
+                    item.field
+                        .json_path()
+                        .map(|path| path.trim_end_matches('$')),
+                ),
+                SettingsPageItem::SubPageLink(link) => (
+                    link.title.clone(),
+                    link.description.clone().unwrap_or_default(),
+                    link.json_path,
+                ),
+                SettingsPageItem::ActionLink(link) => (
+                    link.title.clone(),
+                    link.description.clone().unwrap_or_default(),
+                    None,
+                ),
+            };
+            let action: Box<dyn Action> = match json_path {
+                Some(path) => Box::new(OpenSettingsAt {
+                    path: path.to_string(),
+                    target: None,
+                }),
+                None => Box::new(OpenSettingsPage {
+                    page: page.title.to_string(),
+                    target: None,
+                }),
+            };
+            settings.push(SearchableSetting {
+                title,
+                description,
+                page: page.title,
+                section,
+                action,
+            });
+        }
+    }
+    settings
+}
+
 pub fn open_settings_editor(
     path: Option<&str>,
     target_worktree_id: Option<WorktreeId>,

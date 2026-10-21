@@ -668,7 +668,7 @@ fn main() {
         );
 
         // GPUI Kit owns theme management, so it has to exist before the theme settings load.
-        gpui_kit::init(cx);
+        zed::init_gpui_kit(cx);
         theme_settings::init(theme::LoadThemes::All(Box::new(Assets)), cx);
         eager_load_active_theme_and_icon_theme(fs.clone(), cx);
         theme_extension::init(
@@ -742,6 +742,7 @@ fn main() {
 
         go_to_line::init(cx);
         file_finder::init(cx);
+        unified_search::init(cx);
         tab_switcher::init(cx);
         outline::init(cx);
         call_hierarchy::init(cx);

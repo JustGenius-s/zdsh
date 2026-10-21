@@ -14,7 +14,6 @@ use agent_client_protocol::schema::v2 as acp;
 use agent_settings::AgentSettings;
 use chrono::{DateTime, Datelike as _, Local, NaiveDate, TimeDelta, Utc};
 use collections::HashMap;
-use editor::Editor;
 use fs::Fs;
 use fuzzy::{StringMatch, StringMatchCandidate};
 use gpui::{
@@ -44,7 +43,6 @@ use workspace::{
     WorkspaceDb, WorkspaceId,
 };
 
-use zed_actions::agents_sidebar::FocusSidebarFilter;
 use zed_actions::editor::{MoveDown, MoveUp};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -146,7 +144,6 @@ pub struct ThreadsArchiveView {
     selection: Option<usize>,
     hovered_index: Option<usize>,
     preserve_selection_on_next_update: bool,
-    filter_editor: Entity<Editor>,
     _subscriptions: Vec<gpui::Subscription>,
     _refresh_history_task: Task<()>,
     workspace: WeakEntity<Workspace>,
@@ -168,32 +165,6 @@ impl ThreadsArchiveView {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
-
-        let filter_editor = cx.new(|cx| {
-            let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("Search all threads…", window, cx);
-            editor
-        });
-
-        let filter_editor_subscription =
-            cx.subscribe(&filter_editor, |this: &mut Self, _, event, cx| {
-                if let editor::EditorEvent::BufferEdited = event {
-                    this.update_items(cx);
-                }
-            });
-
-        let filter_focus_handle = filter_editor.read(cx).focus_handle(cx);
-        cx.on_focus_in(
-            &filter_focus_handle,
-            window,
-            |this: &mut Self, _window, cx| {
-                if this.selection.is_some() {
-                    this.selection = None;
-                    cx.notify();
-                }
-            },
-        )
-        .detach();
 
         let thread_metadata_store_subscription = cx.observe(
             &ThreadMetadataStore::global(cx),
@@ -217,11 +188,7 @@ impl ThreadsArchiveView {
             selection: None,
             hovered_index: None,
             preserve_selection_on_next_update: false,
-            filter_editor,
-            _subscriptions: vec![
-                filter_editor_subscription,
-                thread_metadata_store_subscription,
-            ],
+            _subscriptions: vec![thread_metadata_store_subscription],
             _refresh_history_task: Task::ready(()),
             workspace,
             agent_connection_store,
@@ -256,18 +223,6 @@ impl ThreadsArchiveView {
         cx.notify();
     }
 
-    pub fn focus_filter_editor(&self, window: &mut Window, cx: &mut App) {
-        let handle = self.filter_editor.read(cx).focus_handle(cx);
-        handle.focus(window, cx);
-    }
-
-    pub fn is_filter_editor_focused(&self, window: &Window, cx: &App) -> bool {
-        self.filter_editor
-            .read(cx)
-            .focus_handle(cx)
-            .is_focused(window)
-    }
-
     fn update_items(&mut self, cx: &mut Context<Self>) {
         let store = ThreadMetadataStore::global(cx).read(cx);
 
@@ -292,40 +247,12 @@ impl ThreadsArchiveView {
             .cloned()
             .collect::<Vec<_>>();
 
-        let query = self.filter_editor.read(cx).text(cx).to_lowercase();
         let today = Local::now().naive_local().date();
 
         let mut items = Vec::with_capacity(sessions.len() + 5);
         let mut current_bucket: Option<TimeBucket> = None;
 
         for session in sessions {
-            let highlight_positions = if !query.is_empty() {
-                let title = session
-                    .title
-                    .as_ref()
-                    .map(|t| t.as_ref())
-                    .unwrap_or(DEFAULT_THREAD_TITLE);
-                if let Some(positions) = fuzzy_match_positions(&query, title) {
-                    positions
-                } else {
-                    // If title didn't match, also try matching the project name
-                    // (the basename of any of the thread's worktree paths), so
-                    // typing a project name surfaces its threads here too.
-                    let worktree_matched = session.folder_paths().paths().iter().any(|p| {
-                        p.as_path()
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .is_some_and(|name| fuzzy_match_positions(&query, name).is_some())
-                    });
-                    if !worktree_matched {
-                        continue;
-                    }
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            };
-
             let entry_bucket = {
                 let entry_date = session
                     .created_at
@@ -343,7 +270,7 @@ impl ThreadsArchiveView {
 
             items.push(ArchiveListItem::Entry {
                 thread: session,
-                highlight_positions,
+                highlight_positions: Vec::new(),
             });
         }
 
@@ -412,12 +339,6 @@ impl ThreadsArchiveView {
         });
     }
 
-    fn reset_filter_editor_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.filter_editor.update(cx, |editor, cx| {
-            editor.set_text("", window, cx);
-        });
-    }
-
     fn archive_thread(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) {
         self.preserve_selection_on_next_update = true;
         ThreadMetadataStore::global(cx).update(cx, |store, cx| store.archive(thread_id, None, cx));
@@ -458,7 +379,6 @@ impl ThreadsArchiveView {
 
         self.mark_restoring(&thread.thread_id, cx);
         self.selection = None;
-        self.reset_filter_editor_text(window, cx);
         cx.emit(ThreadsArchiveViewEvent::Activate { thread });
     }
 
@@ -540,7 +460,7 @@ impl ThreadsArchiveView {
         }
     }
 
-    fn select_previous(&mut self, _: &SelectPrevious, window: &mut Window, cx: &mut Context<Self>) {
+    fn select_previous(&mut self, _: &SelectPrevious, _: &mut Window, cx: &mut Context<Self>) {
         match self.selection {
             Some(ix) => {
                 if let Some(prev) = (ix > 0)
@@ -551,7 +471,6 @@ impl ThreadsArchiveView {
                     self.list_state.scroll_to_reveal_item(prev);
                 } else {
                     self.selection = None;
-                    self.focus_filter_editor(window, cx);
                 }
                 cx.notify();
             }
@@ -858,7 +777,6 @@ impl ThreadsArchiveView {
     }
 
     fn render_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_query = !self.filter_editor.read(cx).text(cx).is_empty();
         let sidebar_on_left = matches!(
             AgentSettings::get_global(cx).sidebar_side(),
             settings::SidebarSide::Left
@@ -870,8 +788,6 @@ impl ThreadsArchiveView {
         let right_window_controls =
             !cfg!(target_os = "macos") && not_fullscreen && sidebar_on_right;
         let header_height = platform_title_bar_height(window);
-        let show_focus_keybinding =
-            self.selection.is_some() && !self.filter_editor.focus_handle(cx).is_focused(window);
 
         h_flex()
             .h(header_height)
@@ -905,32 +821,12 @@ impl ThreadsArchiveView {
                 this.child(Divider::vertical().color(ui::DividerColor::Border))
             })
             .child(
-                h_flex()
-                    .ml_1()
-                    .min_w_0()
-                    .w_full()
-                    .gap_1()
-                    .child(
-                        Icon::new(IconName::MagnifyingGlass)
-                            .size(IconSize::Small)
-                            .color(Color::Muted),
-                    )
-                    .child(self.filter_editor.clone()),
+                h_flex().ml_1().min_w_0().w_full().gap_1().child(
+                    Label::new("Archived")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                ),
             )
-            .when(show_focus_keybinding, |this| {
-                this.child(KeyBinding::for_action(&FocusSidebarFilter, cx))
-            })
-            .when(has_query, |this| {
-                this.child(
-                    IconButton::new("clear-filter", IconName::Close)
-                        .icon_size(IconSize::Small)
-                        .tooltip(Tooltip::text("Clear Search"))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.reset_filter_editor_text(window, cx);
-                            this.update_items(cx);
-                        })),
-                )
-            })
             .when(right_window_controls, |this| {
                 this.children(Self::render_right_window_controls(window, cx))
             })
@@ -1072,14 +968,8 @@ impl Focusable for ThreadsArchiveView {
 impl Render for ThreadsArchiveView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_empty = self.items.is_empty();
-        let has_query = !self.filter_editor.read(cx).text(cx).is_empty();
-
         let content = if is_empty {
-            let message = if has_query {
-                "No threads match your search."
-            } else {
-                "No threads yet."
-            };
+            let message = "No threads yet.";
 
             v_flex()
                 .flex_1()
@@ -1125,7 +1015,7 @@ impl Render for ThreadsArchiveView {
             .on_action(cx.listener(Self::archive_selected_thread))
             .size_full()
             .child(self.render_header(window, cx))
-            .when(!has_query, |this| this.child(self.render_toolbar(cx)))
+            .child(self.render_toolbar(cx))
             .child(content)
     }
 }
@@ -1242,7 +1132,6 @@ impl ProjectPickerDelegate {
     fn update_working_directories_and_unarchive(
         &mut self,
         paths: PathList,
-        window: &mut Window,
         cx: &mut Context<Picker<Self>>,
     ) {
         self.thread.worktree_paths =
@@ -1254,7 +1143,6 @@ impl ProjectPickerDelegate {
         self.archive_view
             .update(cx, |view, cx| {
                 view.selection = None;
-                view.reset_filter_editor_text(window, cx);
                 cx.emit(ThreadsArchiveViewEvent::Activate {
                     thread: self.thread.clone(),
                 });
@@ -1295,9 +1183,9 @@ impl ProjectPickerDelegate {
 
             let work_dirs = PathList::new(&paths);
 
-            this.update_in(cx, |this, window, cx| {
+            this.update(cx, |this, cx| {
                 this.delegate
-                    .update_working_directories_and_unarchive(work_dirs, window, cx);
+                    .update_working_directories_and_unarchive(work_dirs, cx);
                 cx.emit(DismissEvent);
             })
             .log_err();
@@ -1499,7 +1387,7 @@ impl PickerDelegate for ProjectPickerDelegate {
         Task::ready(())
     }
 
-    fn confirm(&mut self, _secondary: bool, window: &mut Window, cx: &mut Context<Picker<Self>>) {
+    fn confirm(&mut self, _secondary: bool, _: &mut Window, cx: &mut Context<Picker<Self>>) {
         let candidate_id = match self.filtered_entries.get(self.selected_index) {
             Some(ProjectPickerEntry::Workspace(hit)) => hit.candidate_id,
             _ => return,
@@ -1508,7 +1396,7 @@ impl PickerDelegate for ProjectPickerDelegate {
             return;
         };
 
-        self.update_working_directories_and_unarchive(workspace.paths.clone(), window, cx);
+        self.update_working_directories_and_unarchive(workspace.paths.clone(), cx);
         cx.emit(DismissEvent);
     }
 

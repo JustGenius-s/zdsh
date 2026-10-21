@@ -30,7 +30,10 @@ util::fs_embed! {
 const KIT_ICONS_PREFIX: &str = "kit/";
 
 // GPUI Kit embeds only its components' icons, so the others Zed uses are embedded here.
-gpui_kit::assets::icon_assets!(ExtraKitIcons, [Columns2, Sparkles]);
+gpui_kit::assets::icon_assets!(
+    ExtraKitIcons,
+    [Columns2, Sparkles, Regex, TextSearch, WholeWord]
+);
 
 /// The path of GPUI Kit's `icon`, which loads GPUI Kit's drawing even where Zed has an icon of
 /// the same name.

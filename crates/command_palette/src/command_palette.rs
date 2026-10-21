@@ -74,6 +74,60 @@ pub fn normalize_action_query(input: &str) -> String {
     result
 }
 
+/// An action the command palette lists, under the name it shows.
+pub struct PaletteCommand {
+    pub name: SharedString,
+    pub action: Box<dyn Action>,
+}
+
+/// The actions the command palette lists for the focused element, named as it names them.
+///
+/// Call this before moving focus away from the element whose actions should be listed.
+pub fn palette_commands(accounts_enabled: bool, window: &Window, cx: &App) -> Vec<PaletteCommand> {
+    let filter = CommandPaletteFilter::try_global(cx);
+    window
+        .available_actions(cx)
+        .into_iter()
+        .filter_map(|action| {
+            if (!accounts_enabled && client::is_account_action(action.name()))
+                || filter.is_some_and(|filter| filter.is_hidden(&*action))
+            {
+                return None;
+            }
+
+            Some(PaletteCommand {
+                name: SharedString::from(humanize_action_name(action.name())),
+                action,
+            })
+        })
+        .collect()
+}
+
+/// How many times each command, by name, was run from the command palette.
+///
+/// Empty when the `use_command_history` setting is off.
+pub fn command_invocation_counts(cx: &App) -> HashMap<SharedString, u16> {
+    if !CommandPaletteSettings::get_global(cx).use_command_history {
+        return HashMap::new();
+    }
+
+    CommandPaletteDB::global(cx)
+        .list_commands_used()
+        .log_err()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|command| (SharedString::from(command.command_name), command.invocations))
+        .collect()
+}
+
+/// Records that a command was run after searching for `query`, which ranks it higher in the
+/// command palette's history.
+pub fn record_command_invocation(name: SharedString, query: String, cx: &App) {
+    let db = CommandPaletteDB::global(cx);
+    cx.background_spawn(async move { db.write_command_invocation(name.to_string(), query).await })
+        .detach_and_log_err(cx);
+}
+
 impl CommandPalette {
     fn register(
         workspace: &mut Workspace,
@@ -117,26 +171,16 @@ impl CommandPalette {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let filter = CommandPaletteFilter::try_global(cx);
         let accounts_enabled = entity
             .read_with(cx, |workspace, _| workspace.client().accounts_enabled())
             .unwrap_or(false);
 
-        let commands = window
-            .available_actions(cx)
+        let commands = palette_commands(accounts_enabled, window, cx)
             .into_iter()
-            .filter_map(|action| {
-                if (!accounts_enabled && client::is_account_action(action.name()))
-                    || filter.is_some_and(|filter| filter.is_hidden(&*action))
-                {
-                    return None;
-                }
-
-                Some(Command {
-                    name: SharedString::from(humanize_action_name(action.name())),
-                    action,
-                    usage: None,
-                })
+            .map(|command| Command {
+                name: command.name,
+                action: command.action,
+                usage: None,
             })
             .collect();
 

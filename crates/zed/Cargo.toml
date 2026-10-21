@@ -220,6 +220,7 @@ toolchain_selector.workspace = true
 tracing.workspace = true
 ui.workspace = true
 ui_prompt.workspace = true
+unified_search.workspace = true
 url.workspace = true
 urlencoding.workspace = true
 util.workspace = true

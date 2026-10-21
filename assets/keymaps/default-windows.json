@@ -643,7 +643,7 @@
       // Change the default action on `menu::Confirm` by setting the parameter
       // "ctrl-alt-o": ["projects::OpenRecent", { "create_new_window": true }],
       "f11": "zed::ToggleFullScreen",
-      "ctrl-r": "projects::OpenRecent",
+      "ctrl-r": ["unified_search::Toggle", { "tab": "projects" }],
       // Change to open path modal for existing remote connection by setting the parameter
       // "ctrl-shift-alt-o": ["projects::OpenRemote", { "from_existing_connection": true }],
       "ctrl-shift-alt-o": ["projects::OpenRemote", { "from_existing_connection": false }],
@@ -678,7 +678,7 @@
       "shift-alt--": ["workspace::DecreaseActiveDockSize", { "px": 0 }],
       "shift-alt-=": ["workspace::IncreaseActiveDockSize", { "px": 0 }],
       "shift-alt-0": "workspace::ResetOpenDocksSize",
-      "ctrl-shift-f": "pane::DeploySearch",
+      "ctrl-shift-f": ["unified_search::Toggle", { "tab": "text" }],
       "ctrl-shift-h": ["pane::DeploySearch", { "replace_enabled": true }],
       "ctrl-shift-t": "pane::ReopenClosedItem",
       "ctrl-k ctrl-p": "workspace::ReopenLastPicker",
@@ -687,12 +687,12 @@
       "ctrl-k ctrl-shift-t": "theme::ToggleMode",
       "ctrl-alt-super-p": "settings_profile_selector::Toggle",
       "ctrl-t": "project_symbols::Toggle",
-      "ctrl-p": "file_finder::Toggle",
+      "ctrl-p": "unified_search::Toggle",
       "ctrl-shift-tab": ["tab_switcher::Toggle", { "select_last": true }],
       "ctrl-tab": "tab_switcher::Toggle",
       "ctrl-e": "file_finder::Toggle",
       "f1": "command_palette::Toggle",
-      "ctrl-shift-p": "command_palette::Toggle",
+      "ctrl-shift-p": ["unified_search::Toggle", { "tab": "actions" }],
       "ctrl-shift-m": "diagnostics::Deploy",
       "ctrl-shift-e": "project_panel::ToggleFocus",
       "ctrl-shift-b": "outline_panel::ToggleFocus",
@@ -771,6 +771,27 @@
     "bindings": {
       "space": "menu::Confirm",
       "shift-r": "agent::RenameSelectedThread",
+    },
+  },
+  {
+    "context": "UnifiedSearch",
+    "use_key_equivalents": true,
+    "bindings": {
+      "up": "menu::SelectPrevious",
+      "down": "menu::SelectNext",
+      "enter": "menu::Confirm",
+      "escape": "menu::Cancel",
+      "tab": "unified_search::SelectNextTab",
+      "shift-tab": "unified_search::SelectPreviousTab",
+      "ctrl-enter": "unified_search::OpenInProjectSearch",
+    },
+  },
+  {
+    "context": "UnifiedSearch && empty_query",
+    "use_key_equivalents": true,
+    "bindings": {
+      "left": "unified_search::SelectPreviousTab",
+      "right": "unified_search::SelectNextTab",
     },
   },
   {

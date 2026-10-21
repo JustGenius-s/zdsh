@@ -2326,8 +2326,33 @@ fn reload_menus(cx: &mut App) {
     cx.set_menus(menus);
 }
 
+/// The keys GPUI Kit's components bind for themselves when GPUI Kit initializes. Reloading the
+/// keymap clears every binding, and nothing else would bind these again.
+struct KitKeyBindings(Vec<KeyBinding>);
+
+impl gpui::Global for KitKeyBindings {}
+
+/// Initializes GPUI Kit and keeps the keys it binds, so that keymap reloads restore them.
+pub fn init_gpui_kit(cx: &mut App) {
+    let bindings_before = cx.key_bindings().borrow().bindings().len();
+    gpui_kit::init(cx);
+    let kit_bindings = cx
+        .key_bindings()
+        .borrow()
+        .bindings()
+        .skip(bindings_before)
+        .cloned()
+        .collect();
+    cx.set_global(KitKeyBindings(kit_bindings));
+}
+
 fn reload_keymaps(cx: &mut App, mut user_key_bindings: Vec<KeyBinding>) {
     cx.clear_key_bindings();
+    // Bound first, so that Zed's keymaps take precedence over GPUI Kit's defaults.
+    if let Some(kit_bindings) = cx.try_global::<KitKeyBindings>() {
+        let kit_bindings = kit_bindings.0.clone();
+        cx.bind_keys(kit_bindings);
+    }
     load_default_keymap(cx);
 
     for key_binding in &mut user_key_bindings {

@@ -220,7 +220,7 @@ impl RenderOnce for StatusDot {
 
 /// How long ago `time` was, as briefly as Cursor's sidebar puts it: "now", "25m", "1h", "7d",
 /// "2mo" or "1y".
-pub(crate) fn relative_time(time: DateTime<Utc>) -> String {
+pub fn relative_time(time: DateTime<Utc>) -> String {
     let seconds = Utc::now().signed_duration_since(time).num_seconds().max(0);
     const MINUTE: i64 = 60;
     const HOUR: i64 = 60 * MINUTE;

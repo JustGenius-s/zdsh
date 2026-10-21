@@ -687,7 +687,7 @@
       "ctrl-0": "pane::ActivateLastItem",
       "ctrl--": "pane::GoBack",
       "ctrl-_": "pane::GoForward",
-      "cmd-shift-f": "pane::DeploySearch",
+      "cmd-shift-f": ["unified_search::Toggle", { "tab": "text" }],
     },
   },
   {
@@ -707,7 +707,7 @@
       // Change the default action on `menu::Confirm` by setting the parameter
       // "alt-cmd-o": ["projects::OpenRecent", {"create_new_window": true }],
       "alt-cmd-o": "projects::OpenRecent",
-      "ctrl-r": "projects::OpenRecent",
+      "ctrl-r": ["unified_search::Toggle", { "tab": "projects" }],
       "ctrl-cmd-o": ["projects::OpenRemote", { "from_existing_connection": false }],
       "ctrl-cmd-shift-o": ["projects::OpenRemote", { "from_existing_connection": true }],
       "cmd-ctrl-b": "branches::OpenRecent",
@@ -742,7 +742,7 @@
       "ctrl-alt-)": "workspace::ResetOpenDocksSize",
       "ctrl-alt-_": ["workspace::DecreaseOpenDocksSize", { "px": 0 }],
       "ctrl-alt-+": ["workspace::IncreaseOpenDocksSize", { "px": 0 }],
-      "cmd-shift-f": "pane::DeploySearch",
+      "cmd-shift-f": ["unified_search::Toggle", { "tab": "text" }],
       "cmd-shift-h": ["pane::DeploySearch", { "replace_enabled": true }],
       "cmd-shift-t": "pane::ReopenClosedItem",
       "cmd-k cmd-p": "workspace::ReopenLastPicker",
@@ -751,10 +751,10 @@
       "cmd-k cmd-shift-t": "theme::ToggleMode",
       "ctrl-alt-cmd-p": "settings_profile_selector::Toggle",
       "cmd-t": "project_symbols::Toggle",
-      "cmd-p": "file_finder::Toggle",
+      "cmd-p": "unified_search::Toggle",
       "ctrl-shift-tab": ["tab_switcher::Toggle", { "select_last": true }],
       "ctrl-tab": "tab_switcher::Toggle",
-      "cmd-shift-p": "command_palette::Toggle",
+      "cmd-shift-p": ["unified_search::Toggle", { "tab": "actions" }],
       "cmd-shift-m": "diagnostics::Deploy",
       "cmd-shift-e": "project_panel::ToggleFocus",
       "cmd-shift-b": "outline_panel::ToggleFocus",
@@ -818,6 +818,27 @@
     "bindings": {
       "space": "menu::Confirm",
       "shift-r": "agent::RenameSelectedThread",
+    },
+  },
+  {
+    "context": "UnifiedSearch",
+    "use_key_equivalents": true,
+    "bindings": {
+      "up": "menu::SelectPrevious",
+      "down": "menu::SelectNext",
+      "enter": "menu::Confirm",
+      "escape": "menu::Cancel",
+      "tab": "unified_search::SelectNextTab",
+      "shift-tab": "unified_search::SelectPreviousTab",
+      "cmd-enter": "unified_search::OpenInProjectSearch",
+    },
+  },
+  {
+    "context": "UnifiedSearch && empty_query",
+    "use_key_equivalents": true,
+    "bindings": {
+      "left": "unified_search::SelectPreviousTab",
+      "right": "unified_search::SelectNextTab",
     },
   },
   {

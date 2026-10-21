@@ -1,7 +1,6 @@
 use crate::{
     CloseWindow, NewFile, NewTerminal, OpenInTerminal, OpenOptions, OpenTerminal, OpenVisible,
-    SplitDirection, ToggleFileFinder, ToggleProjectSymbols, ToggleZoom, Workspace,
-    WorkspaceItemBuilder, ZoomIn, ZoomOut,
+    SplitDirection, ToggleZoom, Workspace, WorkspaceItemBuilder, ZoomIn, ZoomOut,
     focus_follows_mouse::FocusFollowsMouse as _,
     invalid_item_view::InvalidItemView,
     item::{
@@ -33,7 +32,7 @@ use gpui_kit::{
     component::{
         Icon as KitIcon, Sizable as _, Size as KitSize,
         button::{Button, ButtonVariants as _},
-        menu::{PopupMenu, PopupMenuItem},
+        menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
         tab::{Tab, TabBar},
     },
 };
@@ -59,7 +58,7 @@ use std::{
 use theme_settings::ThemeSettings;
 use ui::{
     ContextMenu, DecoratedIcon, IconButtonShape, IconDecoration, IconDecorationKind, Indicator,
-    PopoverMenu, PopoverMenuHandle, Tooltip, prelude::*,
+    Tooltip, prelude::*,
 };
 use util::{
     ResultExt, debug_panic, markdown::MarkdownInlineCode, maybe, paths::PathStyle,
@@ -473,8 +472,6 @@ pub struct Pane {
     window_move_pending: bool,
     save_modals_spawned: HashSet<EntityId>,
     close_pane_if_empty: bool,
-    pub new_item_context_menu_handle: PopoverMenuHandle<ContextMenu>,
-    pub split_item_context_menu_handle: PopoverMenuHandle<ContextMenu>,
     pinned_tab_count: usize,
     diagnostics: HashMap<ProjectPath, DiagnosticSeverity>,
     zoom_out_on_close: bool,
@@ -651,8 +648,6 @@ impl Pane {
             window_move_pending: false,
             save_modals_spawned: HashSet::default(),
             close_pane_if_empty: true,
-            split_item_context_menu_handle: Default::default(),
-            new_item_context_menu_handle: Default::default(),
             pinned_tab_count: 0,
             diagnostics: Default::default(),
             zoom_out_on_close: true,
@@ -742,9 +737,7 @@ impl Pane {
                 }
 
                 active_item.item_focus_handle(cx).focus(window, cx);
-            } else if let Some(focused) = window.focused(cx)
-                && !self.context_menu_focused(window, cx)
-            {
+            } else if let Some(focused) = window.focused(cx) {
                 self.last_focus_handle_by_item
                     .insert(active_item.item_id(), focused.downgrade());
             }
@@ -755,11 +748,6 @@ impl Pane {
                 welcome_page.read(cx).focus_handle(cx).focus(window, cx);
             }
         }
-    }
-
-    pub fn context_menu_focused(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        self.new_item_context_menu_handle.is_focused(window, cx)
-            || self.split_item_context_menu_handle.is_focused(window, cx)
     }
 
     fn focus_out(&mut self, _event: FocusOutEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -3869,13 +3857,9 @@ impl Pane {
                 this.drag_split_direction = None;
                 this.handle_external_paths_drop(paths, window, cx)
             }))
-            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                if event.click_count() == 2 {
-                    window.dispatch_action(this.double_click_dispatch_action.boxed_clone(), cx);
-                }
-            }))
             // On macOS the tab bar can sit at the top edge of the window where the title bar used
-            // to be, so its empty space moves the window like a title bar does.
+            // to be, so its empty space moves and double-click zooms the window like a title bar
+            // does.
             .when(cfg!(target_os = "macos"), |this| {
                 this.on_mouse_down(
                     MouseButton::Left,
@@ -3892,6 +3876,11 @@ impl Pane {
                         window.start_window_move();
                     }
                 }))
+                .on_click(|event: &ClickEvent, window, _| {
+                    if event.click_count() == 2 {
+                        window.titlebar_double_click();
+                    }
+                })
             })
     }
 
@@ -3931,11 +3920,6 @@ impl Pane {
             .on_drop(cx.listener(move |this, paths, window, cx| {
                 this.drag_split_direction = None;
                 this.handle_external_paths_drop(paths, window, cx)
-            }))
-            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                if event.click_count() == 2 {
-                    window.dispatch_action(this.double_click_dispatch_action.boxed_clone(), cx);
-                }
             }))
     }
 
@@ -4465,8 +4449,8 @@ fn default_render_tab_bar_buttons(
     _window: &mut Window,
     cx: &mut Context<Pane>,
 ) -> (Option<AnyElement>, Option<AnyElement>) {
-    let new_item_focus = pane.focus_handle(cx);
-    let split_focus = new_item_focus.clone();
+    let focus_handle = pane.focus_handle(cx);
+    let agent_enabled = AgentSettings::get_global(cx).enabled(cx);
     let has_project = pane
         .project
         .read_with(cx, |project, cx| {
@@ -4478,79 +4462,64 @@ fn default_render_tab_bar_buttons(
         Some(_) => (false, pane.items_len() > 1),
         None => (false, false),
     };
-    // Ideally we would return a vec of elements here to pass directly to the [TabBar]'s
-    // `end_slot`, but due to needing a view here that isn't possible.
-    let right_children = h_flex()
-        // Instead we need to replicate the spacing from the [TabBar]'s `end_slot` here.
-        .gap(DynamicSpacing::Base04.rems(cx))
-        .when(AgentSettings::get_global(cx).enabled(cx), |toolbar| {
-            toolbar.child(
-                KitIconButton::new("new-agent-tab", KitIconName::Sparkles)
-                    .disabled(!has_project)
-                    .tooltip(move |window, cx| {
-                        if has_project {
-                            Tooltip::for_action("New Agent Tab", &zed_actions::agent::NewThread, cx)
-                        } else {
-                            Tooltip::text("Open a Project to Create an Agent Tab")(window, cx)
-                        }
-                    })
-                    .on_click(cx.listener(|_pane, _, window, cx| {
-                        cx.focus_self(window);
-                        window.dispatch_action(Box::new(zed_actions::agent::NewThread), cx);
-                    })),
+    let more_menu = Button::new("pane-tab-bar-more")
+        .ghost()
+        .icon(KitIconName::Ellipsis)
+        .tooltip("More…")
+        .debug_selector(|| "ICON-Ellipsis".into())
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+            let mut menu = menu.action_context(focus_handle.clone()).label("Create");
+            if agent_enabled {
+                menu = menu.menu_with_disabled(
+                    "New Agent Tab",
+                    zed_actions::agent::NewThread.boxed_clone(),
+                    !has_project,
+                );
+            }
+            let menu = menu
+                .menu("New File", NewFile.boxed_clone())
+                .menu("New Terminal", NewTerminal::default().boxed_clone())
+                .separator()
+                .label("Split");
+            let cannot_split = !can_clone && !can_split_move;
+            // Items that can't be cloned into the new pane are moved there instead.
+            let mode = if can_split_move {
+                SplitMode::MovePane
+            } else {
+                SplitMode::default()
+            };
+            menu.menu_with_disabled(
+                "Split Right",
+                SplitRight { mode }.boxed_clone(),
+                cannot_split,
+            )
+            .menu_with_disabled("Split Left", SplitLeft { mode }.boxed_clone(), cannot_split)
+            .menu_with_disabled("Split Up", SplitUp { mode }.boxed_clone(), cannot_split)
+            .menu_with_disabled(
+                "Split Down",
+                SplitDown { mode }.boxed_clone(),
+                cannot_split,
             )
         })
-        .child(
-            PopoverMenu::new("pane-tab-bar-popover-menu")
-                .trigger(
-                    KitIconButton::new("plus", KitIconName::Plus).tooltip(Tooltip::text("New…")),
-                )
-                .anchor(Anchor::TopRight)
-                .with_handle(pane.new_item_context_menu_handle.clone())
-                .menu(move |window, cx| {
-                    Some(ContextMenu::build(window, cx, |menu, _, _| {
-                        menu.context(new_item_focus.clone())
-                            .action("New File", NewFile.boxed_clone())
-                            .action("Open File", ToggleFileFinder::default().boxed_clone())
-                            .separator()
-                            .action("Search Project", DeploySearch::default().boxed_clone())
-                            .action("Search Symbols", ToggleProjectSymbols.boxed_clone())
-                            .separator()
-                            .action("New Terminal", NewTerminal::default().boxed_clone())
-                    }))
-                }),
+        .into_any_element();
+    let search = Button::new("pane-tab-bar-search")
+        .ghost()
+        .icon(KitIconName::Search)
+        .tooltip_with_action(
+            "Search…",
+            &zed_actions::unified_search::Toggle::default(),
+            None,
         )
-        .child(
-            PopoverMenu::new("pane-tab-bar-split")
-                .trigger(
-                    KitIconButton::new("split", KitIconName::Columns2)
-                        .disabled(!can_clone && !can_split_move)
-                        .tooltip(Tooltip::text("Split Pane")),
-                )
-                .anchor(Anchor::TopRight)
-                .with_handle(pane.split_item_context_menu_handle.clone())
-                .menu(move |window, cx| {
-                    ContextMenu::build(window, cx, |menu, _, _| {
-                        let mode = SplitMode::MovePane;
-                        let menu = menu.context(split_focus.clone());
-                        if can_split_move {
-                            menu.action("Split Right", SplitRight { mode }.boxed_clone())
-                                .action("Split Left", SplitLeft { mode }.boxed_clone())
-                                .action("Split Up", SplitUp { mode }.boxed_clone())
-                                .action("Split Down", SplitDown { mode }.boxed_clone())
-                        } else {
-                            menu.action("Split Right", SplitRight::default().boxed_clone())
-                                .action("Split Left", SplitLeft::default().boxed_clone())
-                                .action("Split Up", SplitUp::default().boxed_clone())
-                                .action("Split Down", SplitDown::default().boxed_clone())
-                        }
-                    })
-                    .into()
-                }),
-        )
-        .into_any_element()
-        .into();
-    (None, right_children)
+        .on_click(|_, window, cx| {
+            window.dispatch_action(
+                zed_actions::unified_search::Toggle::default().boxed_clone(),
+                cx,
+            )
+        });
+    (
+        None,
+        Some(h_flex().child(search).child(more_menu).into_any_element()),
+    )
 }
 
 impl Focusable for Pane {
@@ -7291,7 +7260,9 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_double_click_pinned_tab_bar_empty_space_creates_new_tab(cx: &mut TestAppContext) {
+    async fn test_double_click_pinned_tab_bar_empty_space_does_not_create_new_tab(
+        cx: &mut TestAppContext,
+    ) {
         init_test(cx);
         let fs = FakeFs::new(cx.executor());
 
@@ -7302,9 +7273,7 @@ mod tests {
 
         // The real NewFile handler lives in editor::init, which isn't initialized
         // in workspace tests. Register a global action handler that sets a flag so
-        // we can verify the action is dispatched without depending on the editor crate.
-        // TODO: If editor::init is ever available in workspace tests, remove this
-        // flag and assert the resulting tab bar state directly instead.
+        // we can verify the action is not dispatched without depending on the editor crate.
         let new_file_dispatched = Rc::new(Cell::new(false));
         cx.update(|_, cx| {
             let new_file_dispatched = new_file_dispatched.clone();
@@ -7350,11 +7319,9 @@ mod tests {
 
         cx.run_until_parked();
 
-        // TODO: If editor::init is ever available in workspace tests, replace this
-        // with an assert_item_labels check that verifies a new tab is actually created.
         assert!(
-            new_file_dispatched.get(),
-            "Double-clicking pinned tab bar empty space should dispatch the new file action"
+            !new_file_dispatched.get(),
+            "Double-clicking pinned tab bar empty space should not dispatch the new file action"
         );
     }
 
@@ -8679,7 +8646,7 @@ mod tests {
             pane.update_in(cx, |pane, _window, _cx| pane.tab_bar_scroll_handle.clone());
         assert_eq!(tab_bar_scroll_handle.children_count(), 6);
         let tab_bounds = cx.debug_bounds("TAB-4").unwrap();
-        let new_tab_button_bounds = cx.debug_bounds("ICON-Plus").unwrap();
+        let more_button_bounds = cx.debug_bounds("ICON-Ellipsis").unwrap();
         let scroll_bounds = tab_bar_scroll_handle.bounds();
         let scroll_offset = tab_bar_scroll_handle.offset();
         assert!(scroll_offset.x < px(0.));
@@ -8687,8 +8654,8 @@ mod tests {
         assert!(tab_bounds.left() >= scroll_bounds.left());
         assert!(tab_bounds.right() <= scroll_bounds.right());
         assert!(
-            !tab_bounds.intersects(&new_tab_button_bounds),
-            "Tab should not overlap with the new tab button, if this is failing check if there's been a redesign!"
+            !tab_bounds.intersects(&more_button_bounds),
+            "Tab should not overlap with the more button, if this is failing check if there's been a redesign!"
         );
     }
 

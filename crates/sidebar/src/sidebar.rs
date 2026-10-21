@@ -1,6 +1,8 @@
 mod sidebar_row;
 mod thread_switcher;
 
+pub use sidebar_row::relative_time;
+
 use acp_thread::ThreadStatus;
 use action_log::DiffStats;
 use agent::{ThreadStore, ZED_AGENT_ID};
@@ -14,7 +16,6 @@ use agent_ui::thread_metadata_store::{
 };
 use agent_ui::threads_archive_view::{
     ThreadsArchiveView, ThreadsArchiveViewEvent, format_history_entry_timestamp,
-    fuzzy_match_positions,
 };
 use agent_ui::{
     AcpThreadImportOnboarding, Agent, AgentPanel, AgentPanelEvent, AgentThreadSource,
@@ -76,8 +77,9 @@ use zed_actions::editor::{MoveDown, MoveUp};
 use zed_actions::{CreateWorktree, NewWorktreeBranchTarget, OpenRecent};
 
 use zed_actions::agents_sidebar::{FocusSidebarFilter, ToggleThreadSwitcher};
+use zed_actions::unified_search::{self, SearchTab};
 
-use crate::sidebar_row::{GROUP_GAP, LIST_INSET, SidebarRow, StatusDot, relative_time};
+use crate::sidebar_row::{GROUP_GAP, LIST_INSET, SidebarRow, StatusDot};
 use crate::thread_switcher::{
     ThreadSwitcher, ThreadSwitcherEntry, ThreadSwitcherEvent, ThreadSwitcherSelection,
     ThreadSwitcherTerminalEntry, ThreadSwitcherThreadEntry,
@@ -768,7 +770,6 @@ pub struct Sidebar {
     /// picked. Serialization runs on many triggers besides resizing.
     width_set_by_user: bool,
     focus_handle: FocusHandle,
-    filter_editor: Entity<Editor>,
     rename_editor: Entity<Editor>,
     list_state: ListState,
     contents: SidebarContents,
@@ -849,11 +850,6 @@ impl Sidebar {
         })
         .detach();
 
-        let filter_editor = cx.new(|cx| {
-            let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("Search threads…", window, cx);
-            editor
-        });
         let rename_editor = cx.new(|cx| Editor::single_line(window, cx));
 
         cx.subscribe_in(
@@ -875,17 +871,6 @@ impl Sidebar {
                 }
             },
         )
-        .detach();
-
-        cx.subscribe(&filter_editor, |this: &mut Self, _, event, cx| {
-            if let editor::EditorEvent::BufferEdited = event {
-                let query = this.filter_editor.read(cx).text(cx);
-                if !query.is_empty() {
-                    this.selection.take();
-                }
-                this.schedule_update_entries(!query.is_empty(), cx);
-            }
-        })
         .detach();
 
         cx.subscribe_in(
@@ -937,7 +922,6 @@ impl Sidebar {
             width: AgentSettings::get_global(cx).threads_sidebar.default_width,
             width_set_by_user: false,
             focus_handle,
-            filter_editor,
             rename_editor,
             list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)),
             contents: SidebarContents::default(),
@@ -1398,8 +1382,6 @@ impl Sidebar {
             .first()
             .map(|ws| ws.read(cx).project().read(cx).agent_server_store().clone());
 
-        let query = self.filter_editor.read(cx).text(cx);
-
         let previous = mem::take(&mut self.contents);
 
         let old_statuses = &self.live_thread_statuses;
@@ -1588,7 +1570,7 @@ impl Sidebar {
             let label = group_key.display_name(&path_detail_map);
 
             let is_collapsed = self.is_group_collapsed(group_key, cx);
-            let should_load_threads = !is_collapsed || !query.is_empty();
+            let should_load_threads = !is_collapsed;
 
             let is_active = active_workspace
                 .as_ref()
@@ -1859,145 +1841,54 @@ impl Sidebar {
             };
             let has_threads = has_visible_rows || has_stored_thread_rows;
 
-            if !query.is_empty() {
-                let workspace_highlight_positions =
-                    fuzzy_match_positions(&query, &label).unwrap_or_default();
-                let workspace_matched = !workspace_highlight_positions.is_empty();
+            let has_terminal_notifications = terminals
+                .iter()
+                .any(|t| notified_terminals.contains(&t.metadata.terminal_id));
 
-                let mut matched_threads: Vec<Arc<ThreadEntry>> = Vec::new();
-                for mut thread in threads {
-                    let mut worktree_matched = false;
-                    {
-                        let thread = Arc::make_mut(&mut thread);
-                        let title = thread.metadata.display_title();
-                        if let Some(positions) = fuzzy_match_positions(&query, title.as_ref()) {
-                            thread.highlight_positions = positions;
-                        }
-                        for worktree in &mut thread.worktrees {
-                            let Some(name) = worktree.worktree_name.as_ref() else {
-                                continue;
-                            };
-                            if let Some(positions) = fuzzy_match_positions(&query, name) {
-                                worktree.highlight_positions = positions;
-                                worktree_matched = true;
-                            }
-                        }
-                    }
-                    if workspace_matched
-                        || !thread.highlight_positions.is_empty()
-                        || worktree_matched
-                    {
-                        matched_threads.push(thread);
-                    }
-                }
-
-                let mut matched_terminals: Vec<TerminalEntry> = Vec::new();
-                for mut terminal in terminals {
-                    let mut terminal_matched = false;
-                    let terminal_title = terminal.metadata.display_title();
-                    if let Some(positions) = fuzzy_match_positions(&query, terminal_title.as_ref())
-                    {
-                        terminal.highlight_positions = positions;
-                        terminal_matched = true;
-                    }
-                    let mut worktree_matched = false;
-                    for worktree in &mut terminal.worktrees {
-                        let Some(name) = worktree.worktree_name.as_ref() else {
-                            continue;
-                        };
-                        if let Some(positions) = fuzzy_match_positions(&query, name) {
-                            worktree.highlight_positions = positions;
-                            worktree_matched = true;
-                        }
-                    }
-                    if workspace_matched || terminal_matched || worktree_matched {
-                        matched_terminals.push(terminal);
-                    }
-                }
-
-                if matched_threads.is_empty() && matched_terminals.is_empty() && !workspace_matched
-                {
-                    continue;
-                }
-
-                // Check for notifications: threads that completed while not active.
-                let has_thread_notifications = matched_threads
+            // When collapsed, threads aren't loaded into `threads`, so we
+            // query the store for thread IDs to check notifications and
+            // to prevent the retain below from purging them.
+            let has_thread_notifications = if threads.is_empty() && !notified_threads.is_empty() {
+                let thread_store = ThreadMetadataStore::global(cx);
+                let store = thread_store.read(cx);
+                let group_thread_ids = store
+                    .entries_for_main_worktree_path(group_key.path_list(), group_host.as_ref())
+                    .chain(store.entries_for_path(group_key.path_list(), group_host.as_ref()))
+                    .map(|m| m.thread_id)
+                    .collect::<HashSet<_>>();
+                current_thread_ids.extend(group_thread_ids.iter());
+                group_thread_ids
                     .iter()
-                    .any(|t| notified_threads.contains(&t.metadata.thread_id));
-                let has_terminal_notifications = matched_terminals
-                    .iter()
-                    .any(|t| notified_terminals.contains(&t.metadata.terminal_id));
-
-                project_header_indices.push(entries.len());
-                entries.push(ListEntry::ProjectHeader {
-                    key: group_key.clone(),
-                    label,
-                    highlight_positions: workspace_highlight_positions,
-                    has_running_threads,
-                    waiting_thread_count,
-                    has_notifications: has_thread_notifications || has_terminal_notifications,
-                    is_active,
-                    has_threads,
-                });
-
-                Self::push_entries_by_display_time(
-                    &mut entries,
-                    matched_terminals,
-                    matched_threads,
-                    &mut current_session_ids,
-                    &mut current_thread_ids,
-                );
+                    .any(|id| notified_threads.contains(id))
             } else {
-                let has_terminal_notifications = terminals
+                threads
                     .iter()
-                    .any(|t| notified_terminals.contains(&t.metadata.terminal_id));
+                    .any(|t| notified_threads.contains(&t.metadata.thread_id))
+            };
 
-                // When collapsed, threads aren't loaded into `threads`, so we
-                // query the store for thread IDs to check notifications and
-                // to prevent the retain below from purging them.
-                let has_thread_notifications = if threads.is_empty() && !notified_threads.is_empty()
-                {
-                    let thread_store = ThreadMetadataStore::global(cx);
-                    let store = thread_store.read(cx);
-                    let group_thread_ids = store
-                        .entries_for_main_worktree_path(group_key.path_list(), group_host.as_ref())
-                        .chain(store.entries_for_path(group_key.path_list(), group_host.as_ref()))
-                        .map(|m| m.thread_id)
-                        .collect::<HashSet<_>>();
-                    current_thread_ids.extend(group_thread_ids.iter());
-                    group_thread_ids
-                        .iter()
-                        .any(|id| notified_threads.contains(id))
-                } else {
-                    threads
-                        .iter()
-                        .any(|t| notified_threads.contains(&t.metadata.thread_id))
-                };
+            project_header_indices.push(entries.len());
+            entries.push(ListEntry::ProjectHeader {
+                key: group_key.clone(),
+                label,
+                highlight_positions: Vec::new(),
+                has_running_threads,
+                waiting_thread_count,
+                has_notifications: has_thread_notifications || has_terminal_notifications,
+                is_active,
+                has_threads,
+            });
 
-                project_header_indices.push(entries.len());
-                entries.push(ListEntry::ProjectHeader {
-                    key: group_key.clone(),
-                    label,
-                    highlight_positions: Vec::new(),
-                    has_running_threads,
-                    waiting_thread_count,
-                    has_notifications: has_thread_notifications || has_terminal_notifications,
-                    is_active,
-                    has_threads,
-                });
-
-                if is_collapsed {
-                    continue;
-                }
-
-                Self::push_entries_by_display_time(
-                    &mut entries,
-                    terminals,
-                    threads,
-                    &mut current_session_ids,
-                    &mut current_thread_ids,
-                );
+            if is_collapsed {
+                continue;
             }
+
+            Self::push_entries_by_display_time(
+                &mut entries,
+                terminals,
+                threads,
+                &mut current_session_ids,
+                &mut current_thread_ids,
+            );
         }
 
         notified_threads.retain(|id| current_thread_ids.contains(id));
@@ -2327,8 +2218,6 @@ impl Sidebar {
     ) -> AnyElement {
         let host = key.host();
 
-        let has_filter = self.has_filter_query(cx);
-
         let id_prefix = if is_sticky { "sticky-" } else { "" };
         let id = SharedString::from(format!("{id_prefix}project-header-{ix}"));
         let group_name = SharedString::from(format!("{id_prefix}header-group-{ix}"));
@@ -2401,10 +2290,7 @@ impl Sidebar {
         let disclosure = Icon::new(disclosure_icon)
             .size(IconSize::Small)
             .color(Color::Muted);
-        // A search shows every group open, so there's nothing to fold while it's on.
-        let row = if has_filter {
-            SidebarRow::new(id, folder, title)
-        } else if is_focused {
+        let row = if is_focused {
             SidebarRow::new(id, disclosure, title)
         } else {
             SidebarRow::new(id, folder, title).leading_on_hover(disclosure)
@@ -2458,7 +2344,7 @@ impl Sidebar {
                                     window,
                                     cx,
                                 );
-                            } else if !this.has_filter_query(cx) {
+                            } else {
                                 this.toggle_collapse(&key_for_toggle, window, cx);
                             }
                         }),
@@ -2501,7 +2387,7 @@ impl Sidebar {
             SharedString::from(format!("{id_prefix}project-header-new-thread-{ix}")),
             IconName::Plus,
         )
-        .when(!is_menu_open && !self.has_filter_query(cx), |button| {
+        .when(!is_menu_open, |button| {
             let color = cx.theme().colors();
             button
                 .hover_background(color.element_background)
@@ -2811,7 +2697,7 @@ impl Sidebar {
             .with_handle(menu_handle)
             .trigger(
                 IconButton::new(trigger_id, IconName::Ellipsis)
-                    .when(!is_menu_open && !self.has_filter_query(cx), |button| {
+                    .when(!is_menu_open, |button| {
                         let color = cx.theme().colors();
                         button
                             .hover_background(color.element_background)
@@ -3255,15 +3141,9 @@ impl Sidebar {
         dispatch_context.add("ThreadsSidebar");
         dispatch_context.add("menu");
 
-        let is_archived_search_focused = matches!(&self.view, SidebarView::Archive(archive) if archive.read(cx).is_filter_editor_focused(window, cx));
-
         let is_renaming = self.rename_editor.focus_handle(cx).is_focused(window);
 
-        let identifier = if self.filter_editor.focus_handle(cx).is_focused(window)
-            || is_archived_search_focused
-        {
-            "searching"
-        } else if is_renaming {
+        let identifier = if is_renaming {
             "editing"
         } else {
             "not_searching"
@@ -3281,10 +3161,11 @@ impl Sidebar {
         if let SidebarView::Archive(archive) = &self.view {
             let has_selection = archive.read(cx).has_selection();
             if !has_selection {
-                archive.update(cx, |view, cx| view.focus_filter_editor(window, cx));
+                archive.update(cx, |_, cx| cx.focus_self(window));
             }
         } else if self.selection.is_none() {
-            self.filter_editor.focus_handle(cx).focus(window, cx);
+            self.select_first_entry();
+            cx.notify();
         }
     }
 
@@ -3294,30 +3175,8 @@ impl Sidebar {
             return;
         }
 
-        if self.filter_editor.read(cx).is_focused(window) {
-            if self.reset_filter_editor_text(window, cx) {
-                self.selection = None;
-                self.update_entries(cx);
-                return;
-            }
-
-            if self.selection.is_none() {
-                self.select_first_entry();
-            }
-            if self.selection.is_some() {
-                self.focus_handle.focus(window, cx);
-                cx.notify();
-            }
-            return;
-        }
-
-        if self.reset_filter_editor_text(window, cx) {
-            self.update_entries(cx);
-        } else {
-            self.selection = None;
-            self.filter_editor.focus_handle(cx).focus(window, cx);
-            cx.notify();
-        }
+        self.selection = None;
+        cx.notify();
     }
 
     fn focus_sidebar_filter(
@@ -3326,32 +3185,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.selection = None;
-        if let SidebarView::Archive(archive) = &self.view {
-            archive.update(cx, |view, cx| {
-                view.clear_selection();
-                view.focus_filter_editor(window, cx);
-            });
-        } else {
-            self.filter_editor.focus_handle(cx).focus(window, cx);
-        }
-
-        cx.notify();
-    }
-
-    fn reset_filter_editor_text(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        self.filter_editor.update(cx, |editor, cx| {
-            if editor.buffer().read(cx).len(cx).0 > 0 {
-                editor.set_text("", window, cx);
-                true
-            } else {
-                false
-            }
-        })
-    }
-
-    fn has_filter_query(&self, cx: &App) -> bool {
-        !self.filter_editor.read(cx).text(cx).is_empty()
+        open_thread_search(window, cx);
     }
 
     fn start_renaming_entry(
@@ -3508,15 +3342,6 @@ impl Sidebar {
         }
     }
 
-    fn editor_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selection.is_none() {
-            self.select_next(&SelectNext, window, cx);
-        }
-        if self.selection.is_some() {
-            self.focus_handle.focus(window, cx);
-        }
-    }
-
     fn select_next(&mut self, _: &SelectNext, _window: &mut Window, cx: &mut Context<Self>) {
         let next = match self.selection {
             Some(ix) if ix + 1 < self.contents.entries.len() => ix + 1,
@@ -3529,11 +3354,10 @@ impl Sidebar {
         cx.notify();
     }
 
-    fn select_previous(&mut self, _: &SelectPrevious, window: &mut Window, cx: &mut Context<Self>) {
+    fn select_previous(&mut self, _: &SelectPrevious, _: &mut Window, cx: &mut Context<Self>) {
         match self.selection {
             Some(0) => {
                 self.selection = None;
-                self.filter_editor.focus_handle(cx).focus(window, cx);
                 cx.notify();
             }
             Some(ix) => {
@@ -4102,6 +3926,17 @@ impl Sidebar {
                     remote_connection,
                 )
         })
+    }
+
+    /// Opens a thread wherever it lives: in its open workspace, in this or another window, or
+    /// in a workspace opened for it, restoring the thread first when it is archived.
+    pub fn open_thread(
+        &mut self,
+        metadata: ThreadMetadata,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_thread_from_archive(metadata, window, cx);
     }
 
     fn open_thread_from_archive(
@@ -6750,18 +6585,6 @@ impl Sidebar {
             .into_any_element()
     }
 
-    fn render_filter_input(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .min_w_0()
-            .flex_1()
-            .capture_action(
-                cx.listener(|this, _: &editor::actions::Newline, window, cx| {
-                    this.editor_confirm(window, cx);
-                }),
-            )
-            .child(self.filter_editor.clone())
-    }
-
     fn toggle_recent_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.recent_projects.take().is_some() {
             cx.notify();
@@ -6834,13 +6657,8 @@ impl Sidebar {
                     })
                     .entry(
                         "Open Project…",
-                        Some(OpenRecent::default().boxed_clone()),
-                        move |window, cx| {
-                            this.update(cx, |sidebar, cx| {
-                                sidebar.toggle_recent_projects(window, cx)
-                            })
-                            .ok();
-                        },
+                        Some(search_projects_action()),
+                        move |window, cx| window.dispatch_action(search_projects_action(), cx),
                     )
                 }))
             });
@@ -7417,13 +7235,8 @@ impl Sidebar {
         self.cycle_thread_impl(false, window, cx);
     }
 
-    fn render_no_results(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_query = self.has_filter_query(cx);
-        let message = if has_query {
-            "No threads match your search."
-        } else {
-            "No threads yet"
-        };
+    fn render_no_results(&self) -> impl IntoElement {
+        let message = "No threads yet";
 
         v_flex()
             .id("sidebar-no-results")
@@ -7461,39 +7274,6 @@ impl Sidebar {
         .on_clone_repo(|_, window, cx| {
             window.dispatch_action(git::Clone.boxed_clone(), cx);
         })
-    }
-
-    fn render_sidebar_header(
-        &self,
-        no_open_projects: bool,
-        _window: &Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        h_flex()
-            .h_8()
-            .px_2()
-            .gap_1()
-            .border_b_1()
-            .border_color(cx.theme().colors().border)
-            .when(!no_open_projects, |this| {
-                this.child(
-                    Icon::new(IconName::MagnifyingGlass)
-                        .size(IconSize::Small)
-                        .color(Color::Muted),
-                )
-                .child(self.render_filter_input(cx))
-                .when(self.has_filter_query(cx), |this| {
-                    this.child(
-                        IconButton::new("clear_filter", IconName::Close)
-                            .icon_size(IconSize::Small)
-                            .tooltip(Tooltip::text("Clear Search"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.reset_filter_editor_text(window, cx);
-                                this.update_entries(cx);
-                            })),
-                    )
-                })
-            })
     }
 
     fn active_workspace(&self, cx: &App) -> Option<Entity<Workspace>> {
@@ -7719,19 +7499,39 @@ impl Sidebar {
 
         self._subscriptions.push(subscription);
         self.view = SidebarView::Archive(archive_view.clone());
-        archive_view.update(cx, |view, cx| view.focus_filter_editor(window, cx));
+        archive_view.update(cx, |_, cx| cx.focus_self(window));
         self.serialize(cx);
         cx.notify();
     }
 
     fn show_thread_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Dropping thread history drops whatever it had focused, so focus moves to the list,
+        // unless it is already somewhere else, such as in a thread just opened from history.
+        let had_focus = self.focus_handle.contains_focused(window, cx);
         self.view = SidebarView::ThreadList;
         self._subscriptions.clear();
-        let handle = self.filter_editor.read(cx).focus_handle(cx);
-        handle.focus(window, cx);
+        if had_focus {
+            self.focus_handle.focus(window, cx);
+        }
         self.serialize(cx);
         cx.notify();
     }
+}
+
+/// Opens the search panel on its Agents tab, where threads are searched.
+fn open_thread_search(window: &mut Window, cx: &mut App) {
+    window.dispatch_action(
+        Box::new(unified_search::Toggle {
+            tab: Some(SearchTab::Agents),
+        }),
+        cx,
+    );
+}
+
+fn search_projects_action() -> Box<dyn gpui::Action> {
+    Box::new(unified_search::Toggle {
+        tab: Some(SearchTab::Projects),
+    })
 }
 
 fn render_import_onboarding_banner(
@@ -7940,38 +7740,36 @@ impl Render for Sidebar {
             .min_h_0()
             .bg(bg)
             .map(|this| match &self.view {
-                SidebarView::ThreadList => this
-                    .child(self.render_sidebar_header(no_open_projects, window, cx))
-                    .map(|this| {
-                        if no_open_projects {
-                            this.child(self.render_empty_state(cx))
-                        } else {
-                            this.child(self.render_collection_header(cx)).child(
-                                v_flex()
-                                    .relative()
-                                    .flex_1()
-                                    .overflow_hidden()
-                                    .child(
-                                        list(
-                                            self.list_state.clone(),
-                                            cx.processor(Self::render_list_entry),
-                                        )
-                                        .flex_1()
-                                        .size_full(),
+                SidebarView::ThreadList => this.map(|this| {
+                    if no_open_projects {
+                        this.child(self.render_empty_state(cx))
+                    } else {
+                        this.child(self.render_collection_header(cx)).child(
+                            v_flex()
+                                .relative()
+                                .flex_1()
+                                .overflow_hidden()
+                                .child(
+                                    list(
+                                        self.list_state.clone(),
+                                        cx.processor(Self::render_list_entry),
                                     )
-                                    .when(no_search_results, |this| {
-                                        this.child(self.render_no_results(cx))
-                                    })
-                                    .when_some(sticky_header, |this, header| this.child(header))
-                                    .custom_scrollbars(
-                                        Scrollbars::new(ScrollAxes::Vertical)
-                                            .tracked_scroll_handle(&self.list_state),
-                                        window,
-                                        cx,
-                                    ),
-                            )
-                        }
-                    }),
+                                    .flex_1()
+                                    .size_full(),
+                                )
+                                .when(no_search_results, |this| {
+                                    this.child(self.render_no_results())
+                                })
+                                .when_some(sticky_header, |this, header| this.child(header))
+                                .custom_scrollbars(
+                                    Scrollbars::new(ScrollAxes::Vertical)
+                                        .tracked_scroll_handle(&self.list_state),
+                                    window,
+                                    cx,
+                                ),
+                        )
+                    }
+                }),
                 SidebarView::Archive(archive_view) => this.child(archive_view.clone()),
             })
             .map(|this| {

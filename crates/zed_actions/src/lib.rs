@@ -944,8 +944,52 @@ pub mod agents_sidebar {
     actions!(
         agents_sidebar,
         [
-            /// Moves focus to the sidebar's search/filter editor.
+            /// Opens the search panel on its Agents tab, which searches every thread,
+            /// archived ones included.
             FocusSidebarFilter,
+        ]
+    );
+}
+
+pub mod unified_search {
+    use gpui::{Action, actions};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+
+    /// A tab of the search panel, naming which results it shows.
+    #[derive(PartialEq, Eq, Clone, Copy, Debug, Default, Deserialize, JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum SearchTab {
+        #[default]
+        All,
+        Projects,
+        Agents,
+        Files,
+        Text,
+        Actions,
+        Settings,
+    }
+
+    /// Opens the search panel over agents, projects, files, file contents, actions and settings.
+    #[derive(PartialEq, Clone, Deserialize, Default, JsonSchema, Action)]
+    #[action(namespace = unified_search)]
+    #[serde(deny_unknown_fields)]
+    pub struct Toggle {
+        /// The tab to open on. Defaults to "all".
+        #[serde(default)]
+        pub tab: Option<SearchTab>,
+    }
+
+    actions!(
+        unified_search,
+        [
+            /// Shows the previous tab of the search panel.
+            SelectPreviousTab,
+            /// Shows the next tab of the search panel.
+            SelectNextTab,
+            /// Opens Project Search with the search panel's text query, for replacing and
+            /// filtering by path.
+            OpenInProjectSearch,
         ]
     );
 }

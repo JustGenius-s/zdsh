@@ -20840,6 +20840,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39ec24b3121d976906ece63c9daad25b85969647682eee313cb5779fdd69e14e"
 
 [[package]]
+name = "unified_search"
+version = "0.1.0"
+dependencies = [
+ "agent_ui",
+ "anyhow",
+ "chrono",
+ "command_palette",
+ "editor",
+ "fuzzy_nucleo",
+ "gpui-kit",
+ "gpui-pre",
+ "language",
+ "menu",
+ "project",
+ "recent_projects",
+ "settings_ui",
+ "sidebar",
+ "util",
+ "workspace",
+ "zed_actions",
+]
+
+[[package]]
 name = "unindent"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -24346,6 +24369,7 @@ dependencies = [
  "tracing",
  "ui",
  "ui_prompt",
+ "unified_search",
  "url",
  "urlencoding",
  "util",

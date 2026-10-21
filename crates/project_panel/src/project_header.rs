@@ -1,18 +1,16 @@
 use std::path::Path;
 
-use editor::EditorSettings;
 use git_ui_core::worktree_picker::WorktreePicker;
 use gpui::{
     Anchor, AnyElement, Context, Entity, Focusable as _, IntoElement, ParentElement, SharedString,
 };
-use gpui_kit::assets::IconName as KitIconName;
 use project::{
     git_store::Repository, linked_worktree_short_name, project_settings::ProjectSettings,
     repo_identity_path, repo_identity_path_if_local,
 };
 use settings::Settings as _;
 use ui::{PopoverMenu, Tooltip, prelude::*};
-use workspace::{DeploySearch, KitIconButton, PickerTrigger, panel_header};
+use workspace::{PickerTrigger, panel_header};
 
 use crate::ProjectPanel;
 
@@ -92,7 +90,6 @@ impl ProjectPanel {
         }
 
         let is_git_enabled = ProjectSettings::get_global(cx).git.enabled.status;
-        let show_search_button = EditorSettings::get_global(cx).search.button;
         Some(
             panel_header()
                 .child(self.render_project_name(project_name, cx))
@@ -100,22 +97,7 @@ impl ProjectPanel {
                     repository
                         .filter(|_| is_git_enabled)
                         .map(|_| self.render_worktree_picker(linked_worktree_name, cx)),
-                )
-                .when(show_search_button, |header| {
-                    header.child(div().flex_1()).child(
-                        KitIconButton::new("project-search", KitIconName::Search)
-                            .tooltip(|_, cx| {
-                                Tooltip::for_action(
-                                    "Project Search",
-                                    &DeploySearch::default(),
-                                    cx,
-                                )
-                            })
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(DeploySearch::default()), cx)
-                            }),
-                    )
-                }),
+                ),
         )
     }
 
