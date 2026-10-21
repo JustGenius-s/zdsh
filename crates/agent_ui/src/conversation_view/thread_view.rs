@@ -602,6 +602,7 @@ pub struct ThreadView {
     _add_menu_subscriptions: Vec<Subscription>,
     composer_bounds: Rc<Cell<Option<gpui::Bounds<Pixels>>>>,
     context_usage_expanded: bool,
+    cursor_usage_expanded: bool,
     /// Whether the docked composer puts its controls on a row below the input, as it does once
     /// the input takes more than one line.
     composer_stacked: bool,
@@ -975,6 +976,18 @@ impl ThreadView {
             }
         }
 
+        if let Some(cursor_state) = cursor_agent::State::global(cx) {
+            subscriptions.push(cx.observe(&cursor_state, |_, _, cx| cx.notify()));
+        }
+        subscriptions.push(cx.subscribe(
+            &thread,
+            |this, _, event: &acp_thread::AcpThreadEvent, cx| {
+                if matches!(event, acp_thread::AcpThreadEvent::Stopped { .. }) {
+                    this.refresh_cursor_usage_after_turn(cx);
+                }
+            },
+        ));
+
         subscriptions.push(cx.observe(&message_editor, |this, editor, cx| {
             if editor.read(cx).editor().read(cx).read_only(cx) {
                 this._draft_resolve_task.take();
@@ -1066,6 +1079,7 @@ impl ThreadView {
             _add_menu_subscriptions: Vec::new(),
             composer_bounds: Rc::default(),
             context_usage_expanded: false,
+            cursor_usage_expanded: false,
             composer_stacked: false,
             empty_thread_placeholder: placeholder,
             placeholder_shows_follow_up: None,

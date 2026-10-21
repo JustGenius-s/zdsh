@@ -24,6 +24,7 @@ use std::sync::atomic::AtomicBool;
 use ui::{HighlightedLabel, ProgressBar, Switch};
 
 const FOLLOW_UP_PLACEHOLDER: &str = "Send follow-up";
+const CURSOR_USAGE_DASHBOARD_URL: &str = "https://cursor.com/dashboard?tab=usage";
 
 impl ThreadView {
     /// Returns the composer, plus the changes chips when they should float over the transcript's
@@ -45,6 +46,10 @@ impl ThreadView {
         let context_usage_card = self
             .context_usage_expanded
             .then(|| self.render_context_usage_card(cx))
+            .flatten();
+        let cursor_usage_card = self
+            .cursor_usage_expanded
+            .then(|| self.render_cursor_usage_card(cx))
             .flatten();
         let add_menu_card = self.add_menu.clone().map(|list| {
             composer_card(cx)
@@ -109,6 +114,7 @@ impl ThreadView {
         let float_changes_chips = !is_empty_thread
             && !cards_above_composer
             && context_usage_card.is_none()
+            && cursor_usage_card.is_none()
             && docked_menus.is_empty();
         let (changes_chips, floating_changes_chips) = if float_changes_chips {
             (None, changes_chips)
@@ -165,6 +171,7 @@ impl ThreadView {
                         }))
                     })
                     .children(context_usage_card)
+                    .children(cursor_usage_card)
                     .children(docked_menus)
                     .children(agent_selector)
                     .children(changes_chips)
@@ -626,6 +633,7 @@ impl ThreadView {
         search_focus.focus(window, cx);
         self.add_menu = Some(list);
         self.context_usage_expanded = false;
+        self.cursor_usage_expanded = false;
         cx.notify();
     }
 
@@ -804,6 +812,7 @@ impl ThreadView {
                     .gap_1()
                     .children(sandbox_status)
                     .child(self.render_follow_toggle(cx))
+                    .children(self.render_cursor_usage_ring(cx))
                     .children(self.render_context_usage_ring(cx)),
             )
             .into_any_element()
@@ -900,6 +909,9 @@ impl ThreadView {
                         this.close_add_menu(window, cx);
                     }
                     this.context_usage_expanded = !this.context_usage_expanded;
+                    if this.context_usage_expanded {
+                        this.cursor_usage_expanded = false;
+                    }
                     cx.notify();
                 }))
                 .into_any_element(),
@@ -1015,6 +1027,277 @@ impl ThreadView {
                 .children(legend)
                 .into_any_element(),
         )
+    }
+
+    /// The Cursor account's usage, while the user is signed in to Cursor.
+    fn cursor_usage(cx: &App) -> Option<cursor_agent::CursorUsage> {
+        let state = cursor_agent::State::global(cx)?;
+        let state = state.read(cx);
+        if !state.is_authenticated() {
+            return None;
+        }
+        state.usage().cloned()
+    }
+
+    fn refresh_cursor_usage(force: bool, cx: &mut App) {
+        if let Some(state) = cursor_agent::State::global(cx) {
+            state.update(cx, |state, cx| state.refresh_usage(force, cx));
+        }
+    }
+
+    /// A Cursor turn spends from the account's allowance, so the reading is stale once it ends.
+    pub(super) fn refresh_cursor_usage_after_turn(&self, cx: &mut Context<Self>) {
+        let used_cursor = self.as_native_thread(cx).is_some_and(|thread| {
+            thread
+                .read(cx)
+                .model()
+                .is_some_and(|model| model.provider_id() == cursor_agent::PROVIDER_ID)
+        });
+        if used_cursor {
+            Self::refresh_cursor_usage(true, cx);
+        }
+    }
+
+    fn render_cursor_usage_ring(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let percent = Self::cursor_usage(cx)?.percent_used()?;
+        let ratio = (percent / 100.0) as f32;
+        let progress_color = Self::context_usage_color(ratio, cx);
+        let percentage = format_usage_percent(percent);
+        let tooltip_label = format!("Cursor Usage: {percentage}");
+
+        Some(
+            PillButton::new("cursor-usage-ring")
+                .size(KitSize::Small)
+                .toggle_state(self.cursor_usage_expanded)
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            CircularProgress::new(ratio, 1.0, px(16.), cx)
+                                .stroke_width(px(2.))
+                                .progress_color(progress_color),
+                        )
+                        .child(Label::new(percentage).size(LabelSize::Small)),
+                )
+                .tooltip(Tooltip::text(tooltip_label))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    if this.add_menu.is_some() {
+                        this.close_add_menu(window, cx);
+                    }
+                    this.cursor_usage_expanded = !this.cursor_usage_expanded;
+                    if this.cursor_usage_expanded {
+                        this.context_usage_expanded = false;
+                        Self::refresh_cursor_usage(false, cx);
+                    }
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )
+    }
+
+    fn render_cursor_usage_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = cursor_agent::State::global(cx)?;
+        let (usage, usage_error, is_loading) = {
+            let state = state.read(cx);
+            if !state.is_authenticated() {
+                return None;
+            }
+            (
+                state.usage().cloned()?,
+                state.usage_error(),
+                state.is_loading_usage(),
+            )
+        };
+        usage.percent_used()?;
+
+        let resets = usage.billing_cycle_end.map(|billing_cycle_end| {
+            format!(
+                "Resets {}",
+                chrono::DateTime::<chrono::Local>::from(billing_cycle_end).format("%b %-d")
+            )
+        });
+        let mut metrics = Vec::new();
+        if let Some(plan) = &usage.plan {
+            let allowance = (plan.limit > 0.0).then(|| {
+                let mut allowance = format!(
+                    "{} / {}",
+                    format_cents(plan.included_spend),
+                    format_cents(plan.limit)
+                );
+                if plan.bonus_spend > 0.0 {
+                    allowance.push_str(&format!(" (+{})", format_cents(plan.bonus_spend)));
+                }
+                allowance
+            });
+            metrics.push(
+                cursor_usage_metric("total", "Total limit", resets, plan.total_percent_used, cx)
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .justify_between()
+                            .child(
+                                Label::new(format!(
+                                    "{} used",
+                                    format_usage_percent(plan.total_percent_used)
+                                ))
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                            )
+                            .children(allowance.map(|allowance| {
+                                Label::new(allowance)
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted)
+                            })),
+                    ),
+            );
+            metrics.push(cursor_usage_metric(
+                "api",
+                "API limit",
+                Some(format!(
+                    "{} used",
+                    format_usage_percent(plan.api_percent_used)
+                )),
+                plan.api_percent_used,
+                cx,
+            ));
+            metrics.push(cursor_usage_metric(
+                "auto",
+                "Auto limit",
+                Some(format!(
+                    "{} used",
+                    format_usage_percent(plan.auto_percent_used)
+                )),
+                plan.auto_percent_used,
+                cx,
+            ));
+        }
+        if let Some(spend_limit) = &usage.spend_limit {
+            metrics.push(cursor_usage_metric(
+                "spend-limit",
+                "Spend limit",
+                Some(format!(
+                    "{} / {}",
+                    format_cents(spend_limit.used),
+                    format_cents(spend_limit.limit)
+                )),
+                spend_limit.percent_used(),
+                cx,
+            ));
+        }
+
+        Some(
+            composer_card(cx)
+                .px_3p5()
+                .py_3()
+                .gap_2p5()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .justify_between()
+                        .child(h_flex().gap_2().child(Label::new("Cursor Usage")).children(
+                            usage.plan_name.map(|plan_name| {
+                                Tag::secondary().with_size(KitSize::Small).child(plan_name)
+                            }),
+                        ))
+                        .child(
+                            h_flex()
+                                .gap_0p5()
+                                .child(
+                                    PillButton::new("refresh-cursor-usage")
+                                        .size(KitSize::XSmall)
+                                        .icon(IconName::RotateCw)
+                                        .disabled(is_loading)
+                                        .tooltip(Tooltip::text("Refresh"))
+                                        .on_click(|_, _, cx| Self::refresh_cursor_usage(true, cx)),
+                                )
+                                .child(
+                                    PillButton::new("open-cursor-dashboard")
+                                        .size(KitSize::XSmall)
+                                        .icon(IconName::ArrowUpRight)
+                                        .tooltip(Tooltip::text("Open Cursor Dashboard"))
+                                        .on_click(|_, _, cx| {
+                                            cx.open_url(CURSOR_USAGE_DASHBOARD_URL)
+                                        }),
+                                )
+                                .child(
+                                    PillButton::new("hide-cursor-usage")
+                                        .size(KitSize::XSmall)
+                                        .icon(IconName::Dash)
+                                        .tooltip(Tooltip::text("Hide"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.cursor_usage_expanded = false;
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                )
+                .child(div().w_full().h_px().bg(cx.theme().colors().border_variant))
+                .child(v_flex().w_full().gap_3().children(metrics))
+                .children(
+                    usage_error
+                        .map(|error| Label::new(error).size(LabelSize::Small).color(Color::Error)),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+/// One limit in the Cursor usage card: its name and reading above a bar of the share used.
+fn cursor_usage_metric(
+    id: &'static str,
+    label: &'static str,
+    reading: Option<String>,
+    percent: f64,
+    cx: &App,
+) -> Div {
+    let theme = KitTheme::global(cx);
+    let bar_color = if percent >= 95.0 {
+        theme.danger
+    } else if percent >= 80.0 {
+        theme.warning
+    } else {
+        theme.blue_light
+    };
+    v_flex()
+        .w_full()
+        .gap_1p5()
+        .child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .justify_between()
+                .child(Label::new(label))
+                .children(reading.map(|reading| Label::new(reading).color(Color::Muted))),
+        )
+        .child(
+            ProgressBar::new(
+                SharedString::from(format!("cursor-usage-{id}")),
+                (percent / 100.0).clamp(0.0, 1.0) as f32,
+                1.0,
+                cx,
+            )
+            .bg_color(cx.theme().colors().element_background)
+            .fg_color(bar_color),
+        )
+}
+
+/// Small shares keep a decimal so a fresh cycle doesn't read as unused.
+fn format_usage_percent(percent: f64) -> String {
+    if percent > 0.0 && percent < 1.0 {
+        format!("{percent:.1}%")
+    } else {
+        format!("{}%", percent.round() as u32)
+    }
+}
+
+fn format_cents(cents: f64) -> String {
+    let dollars = cents / 100.0;
+    if (dollars - dollars.round()).abs() < 0.005 {
+        format!("${}", dollars.round() as i64)
+    } else {
+        format!("${dollars:.2}")
     }
 }
 

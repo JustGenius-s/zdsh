@@ -5608,7 +5608,10 @@ mod tests {
         .to_uri()
         .to_string();
         editor.update(&mut cx, |editor, cx| {
-            assert_eq!(editor.text(cx), format!("[@file.txt]({expected_file_uri}) "));
+            assert_eq!(
+                editor.text(cx),
+                format!("[@file.txt]({expected_file_uri}) ")
+            );
         });
 
         let contents = mention_contents(&message_editor, &mut cx).await;

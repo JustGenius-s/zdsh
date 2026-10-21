@@ -29,6 +29,7 @@ impl CursorLanguageModelProvider {
         cx: &mut App,
     ) -> Self {
         let state = cx.new(|cx| State::new(http_client, credentials_provider, cx));
+        State::set_global(state.clone(), cx);
         Self {
             state,
             runs: Arc::new(RunRegistry::default()),

@@ -1,12 +1,12 @@
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use credentials_provider::CredentialsProvider;
 use futures::{AsyncReadExt as _, FutureExt as _, future::Shared};
-use gpui::{AsyncApp, Context, SharedString, Task};
+use gpui::{App, AsyncApp, Context, Entity, Global, SharedString, Task};
 use gpui_util::ResultExt as _;
 use http_client::{
     AsyncBody, HttpClient, Method, Request as HttpRequest, RequestTimeout, http::request::Builder,
@@ -23,8 +23,10 @@ use uuid::Uuid;
 
 mod protocol;
 mod run;
+mod usage;
 
 pub use run::{RunRegistry, stream_completion};
+pub use usage::{CursorUsage, PlanUsage, SpendLimitUsage, fetch_usage};
 
 pub const PROVIDER_ID: LanguageModelProviderId = LanguageModelProviderId::new("cursor");
 pub const PROVIDER_NAME: LanguageModelProviderName = LanguageModelProviderName::new("Cursor");
@@ -44,6 +46,10 @@ pub(crate) const CLIENT_VERSION: &str = "3.5.33";
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 
 const MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long a usage reading counts as current, so composers opening the usage card don't each
+/// ask Cursor again.
+const USAGE_TTL: Duration = Duration::from_secs(60);
 
 // Browser sign-in polling mirrors Cursor's CLI: 404 means the user has not approved yet.
 const POLL_BASE_DELAY: Duration = Duration::from_secs(1);
@@ -642,7 +648,15 @@ pub struct State {
     models_error: Option<SharedString>,
     last_auth_error: Option<SharedString>,
     auth_generation: u64,
+    usage: Option<CursorUsage>,
+    usage_error: Option<SharedString>,
+    usage_fetched_at: Option<Instant>,
+    usage_task: Option<Task<()>>,
 }
+
+struct GlobalState(Entity<State>);
+
+impl Global for GlobalState {}
 
 impl State {
     pub fn new(
@@ -672,6 +686,7 @@ impl State {
                             state.credentials = credentials;
                             cx.notify();
                             state.refresh_models(cx);
+                            state.refresh_usage(false, cx);
                             state.models_task.clone()
                         })
                         .log_err()
@@ -701,7 +716,21 @@ impl State {
             models_error: None,
             last_auth_error: None,
             auth_generation: 0,
+            usage: None,
+            usage_error: None,
+            usage_fetched_at: None,
+            usage_task: None,
         }
+    }
+
+    /// The app's Cursor sign-in, once the Cursor provider has been registered.
+    pub fn global(cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<GlobalState>()
+            .map(|global| global.0.clone())
+    }
+
+    pub fn set_global(state: Entity<Self>, cx: &mut App) {
+        cx.set_global(GlobalState(state));
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -745,6 +774,61 @@ impl State {
 
     pub fn models(&self) -> &[CursorModel] {
         &self.models
+    }
+
+    /// The last usage reading, kept while a newer one loads.
+    pub fn usage(&self) -> Option<&CursorUsage> {
+        self.usage.as_ref()
+    }
+
+    pub fn usage_error(&self) -> Option<SharedString> {
+        self.usage_error.clone()
+    }
+
+    pub fn is_loading_usage(&self) -> bool {
+        self.usage_task.is_some()
+    }
+
+    /// Loads the account's usage again, unless a reading from the last minute is still current
+    /// and `force` is false.
+    pub fn refresh_usage(&mut self, force: bool, cx: &mut Context<Self>) {
+        if self.usage_task.is_some() {
+            return;
+        }
+        let is_current = self
+            .usage_fetched_at
+            .is_some_and(|fetched_at| fetched_at.elapsed() < USAGE_TTL);
+        if is_current && !force {
+            return;
+        }
+        let Some(credentials) = self.credentials() else {
+            return;
+        };
+        let auth_generation = self.auth_generation;
+        let http_client = self.http_client.clone();
+        self.usage_task = Some(cx.spawn(async move |this, cx| {
+            let result = fetch_usage(http_client.as_ref(), &credentials).await;
+            this.update(cx, |state, cx| {
+                if state.auth_generation == auth_generation {
+                    state.usage_fetched_at = Some(Instant::now());
+                    match result {
+                        Ok(usage) => {
+                            state.usage = Some(usage);
+                            state.usage_error = None;
+                        }
+                        Err(error) => {
+                            log::error!("Failed to load Cursor usage: {error:#}");
+                            state.usage_error = Some(format!("{error:#}").into());
+                        }
+                    }
+                }
+                // Releasing the handle cancels this task, so nothing may follow it.
+                state.usage_task = None;
+                cx.notify();
+            })
+            .log_err();
+        }));
+        cx.notify();
     }
 
     /// The in-flight load of saved credentials and models, or `None` once it finished.
@@ -819,6 +903,11 @@ impl State {
                         state.credentials = Some(credentials);
                         state.models_error = None;
                         state.refresh_models(cx);
+                        state.usage = None;
+                        state.usage_error = None;
+                        state.usage_fetched_at = None;
+                        state.usage_task = None;
+                        state.refresh_usage(true, cx);
                     }
                     Err(error) => {
                         log::error!("Cursor sign-in failed: {error:#}");
@@ -849,6 +938,10 @@ impl State {
         self.models.clear();
         self.models_error = None;
         self.last_auth_error = None;
+        self.usage = None;
+        self.usage_error = None;
+        self.usage_fetched_at = None;
+        self.usage_task = None;
         cx.notify();
 
         let credentials_provider = self.credentials_provider.clone();
