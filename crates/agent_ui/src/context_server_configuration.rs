@@ -8,7 +8,7 @@ use language::LanguageRegistry;
 use settings::update_settings_file;
 use ui::prelude::*;
 use util::ResultExt;
-use workspace::{MultiWorkspace, Workspace};
+use workspace::{MultiWorkspace, MultiWorkspaceWindow, Workspace};
 
 use crate::agent_configuration::ConfigureContextServerModal;
 
@@ -30,9 +30,7 @@ pub(crate) fn init(language_registry: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, cx
         }
         extension::Event::ExtensionInstalled(manifest)
         | extension::Event::ConfigureExtensionRequested(manifest) => {
-            let Some(multi_workspace) = cx
-                .active_window()
-                .and_then(|window| window.downcast::<MultiWorkspace>())
+            let Some(multi_workspace) = cx.active_window().and_then(MultiWorkspaceWindow::from_any)
             else {
                 return;
             };

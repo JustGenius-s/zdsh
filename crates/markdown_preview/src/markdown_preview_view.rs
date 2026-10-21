@@ -2308,7 +2308,7 @@ mod tests {
     use gpui::UpdateGlobal as _;
     use gpui::{
         App, AppContext as _, Entity, Focusable as _, Modifiers, MouseButton, MouseDownEvent,
-        MouseUpEvent, TestAppContext, VisualTestContext, WindowHandle, px,
+        MouseUpEvent, TestAppContext, VisualTestContext, px,
     };
     use language::{Buffer, DiskState, Point};
     use project::{Project, ProjectPath};
@@ -2323,7 +2323,8 @@ mod tests {
     use workspace::item::{Item, ItemHandle, SerializableItem};
     use workspace::path_link::{OpenTarget, OpenTargetFoundBy};
     use workspace::{
-        AppState, ItemId, MultiWorkspace, Pane, SaveIntent, Workspace, WorkspaceId, open_paths,
+        AppState, ItemId, MultiWorkspace, MultiWorkspaceWindow, Pane, SaveIntent, Workspace,
+        WorkspaceId, open_paths,
     };
 
     use super::{
@@ -3035,7 +3036,8 @@ mod tests {
         .await
         .unwrap();
 
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         let preview = multi_workspace
             .update(cx, |multi_workspace, window, cx| {
                 let workspace = multi_workspace.workspace().clone();
@@ -3116,7 +3118,8 @@ mod tests {
         .await
         .unwrap();
 
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         let preview = multi_workspace
             .update(cx, |multi_workspace, window, cx| {
                 let workspace = multi_workspace.workspace().clone();
@@ -3189,7 +3192,8 @@ mod tests {
         .await
         .unwrap();
 
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         let (preview, editor) = multi_workspace
             .update(cx, |multi_workspace, window, cx| {
                 let workspace = multi_workspace.workspace().clone();
@@ -3532,7 +3536,8 @@ mod tests {
         .await
         .unwrap();
 
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         let open_task = multi_workspace
             .update(cx, |multi_workspace, window, cx| {
                 let workspace = multi_workspace.workspace().clone();
@@ -3664,7 +3669,8 @@ mod tests {
         .await
         .unwrap();
 
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         let worktree_id = multi_workspace
             .update(cx, |multi_workspace, _, cx| {
                 multi_workspace
@@ -3792,7 +3798,8 @@ mod tests {
         .await
         .unwrap();
 
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         let (preview, second_editor) = multi_workspace
             .update(cx, |multi_workspace, window, cx| {
                 let workspace = multi_workspace.workspace().clone();
@@ -3857,7 +3864,7 @@ mod tests {
         cx: &mut TestAppContext,
         file_name: &str,
         contents: &str,
-    ) -> (WindowHandle<MultiWorkspace>, Entity<Editor>) {
+    ) -> (MultiWorkspaceWindow, Entity<Editor>) {
         let app_state = init_test(cx);
         let mut entries = serde_json::Map::new();
         entries.insert(file_name.to_string(), json!(contents));
@@ -3878,7 +3885,8 @@ mod tests {
         .await
         .unwrap();
 
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         let editor = multi_workspace
             .update(cx, |multi_workspace, _, cx| {
                 multi_workspace
@@ -3893,7 +3901,7 @@ mod tests {
 
     fn open_preview_for_active_editor(
         cx: &mut TestAppContext,
-        multi_workspace: &WindowHandle<MultiWorkspace>,
+        multi_workspace: &MultiWorkspaceWindow,
     ) -> Entity<MarkdownPreviewView> {
         multi_workspace
             .update(cx, |multi_workspace, window, cx| {
@@ -3913,7 +3921,7 @@ mod tests {
 
     fn dispatch_close_and_return_to_editor(
         cx: &mut TestAppContext,
-        multi_workspace: &WindowHandle<MultiWorkspace>,
+        multi_workspace: &MultiWorkspaceWindow,
         preview: &Entity<MarkdownPreviewView>,
     ) {
         multi_workspace
@@ -3929,7 +3937,7 @@ mod tests {
 
     fn assert_editor_is_active_and_focused(
         cx: &mut TestAppContext,
-        multi_workspace: &WindowHandle<MultiWorkspace>,
+        multi_workspace: &MultiWorkspaceWindow,
         expected_editor: &Entity<Editor>,
     ) {
         multi_workspace
@@ -3950,7 +3958,7 @@ mod tests {
 
     fn assert_no_markdown_preview_items(
         cx: &mut TestAppContext,
-        multi_workspace: &WindowHandle<MultiWorkspace>,
+        multi_workspace: &MultiWorkspaceWindow,
     ) {
         multi_workspace
             .update(cx, |multi_workspace, _, cx| {
@@ -4363,7 +4371,8 @@ mod tests {
         .await
         .unwrap();
 
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         let workspace = multi_workspace
             .update(cx, |multi_workspace, _, _| {
                 multi_workspace.workspace().clone()
@@ -4499,11 +4508,7 @@ mod tests {
         cx: &mut TestAppContext,
         files: serde_json::Value,
         lazy_language: bool,
-    ) -> (
-        Entity<Project>,
-        Entity<Workspace>,
-        WindowHandle<MultiWorkspace>,
-    ) {
+    ) -> (Entity<Project>, Entity<Workspace>, MultiWorkspaceWindow) {
         init_test(cx);
         let fs = FakeFs::new(cx.executor());
         fs.insert_tree(path!("/project"), files).await;
@@ -4520,13 +4525,13 @@ mod tests {
                 multi_workspace.workspace().clone()
             })
             .unwrap();
-        (project, workspace, multi_workspace)
+        (project, workspace, multi_workspace.into())
     }
 
     async fn open_project_file(
         cx: &mut TestAppContext,
         project: &Entity<Project>,
-        multi_workspace: &WindowHandle<MultiWorkspace>,
+        multi_workspace: &MultiWorkspaceWindow,
         path: &str,
         pane: Option<&Entity<Pane>>,
         focus_item: bool,

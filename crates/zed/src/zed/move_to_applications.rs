@@ -13,7 +13,7 @@ use ui::{
 };
 use util::ResultExt;
 use util::command::new_command;
-use workspace::{ModalView, MultiWorkspace};
+use workspace::{ModalView, MultiWorkspace, MultiWorkspaceWindow};
 
 const DONT_ASK_AGAIN_KEY: &str = "move_to_applications_dont_ask_again";
 static PROMPTED_THIS_SESSION: AtomicBool = AtomicBool::new(false);
@@ -310,7 +310,7 @@ async fn restart_into(app_path: PathBuf, cx: &mut AsyncWindowContext) -> Result<
         .update(|_window, cx| {
             cx.windows()
                 .into_iter()
-                .filter_map(|window| window.downcast::<MultiWorkspace>())
+                .filter_map(MultiWorkspaceWindow::from_any)
                 .collect::<Vec<_>>()
         })
         .context("collecting workspace windows before restarting")?;

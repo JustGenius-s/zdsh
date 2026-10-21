@@ -2,10 +2,11 @@ use anyhow::{Context as _, Result};
 use fs::Fs;
 
 use gpui::{
-    AnyView, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable, ManagedView,
-    MouseButton, Pixels, Render, Subscription, Task, TaskExt, WeakEntity, Window, WindowId,
-    actions, deferred, px,
+    AnyView, AnyWindowHandle, App, AppContext, Context, Entity, EntityId, EventEmitter,
+    FocusHandle, Focusable, ManagedView, MouseButton, Pixels, Render, Subscription, Task, TaskExt,
+    WeakEntity, Window, WindowHandle, WindowId, WindowOptions, actions, deferred, px,
 };
+use gpui_kit::base::Root;
 pub use project::ProjectGroupKey;
 use project::{DisableAiSettings, Project};
 use remote::RemoteConnectionOptions;
@@ -281,7 +282,134 @@ pub struct MultiWorkspace {
 
 impl EventEmitter<MultiWorkspaceEvent> for MultiWorkspace {}
 
+/// A handle to a window showing a [`MultiWorkspace`], in place of `WindowHandle<MultiWorkspace>`.
+///
+/// Workspace windows are rooted in GPUI Kit's [`Root`] so Kit's window layers (notifications,
+/// dialogs, tooltips) work in them, which makes the window's root type `Root` rather than
+/// `MultiWorkspace`. Test windows still root the `MultiWorkspace` directly, so both are accepted.
+/// Only workspace windows are rooted in `Root`, so a `Root` window is taken to be one.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct MultiWorkspaceWindow(AnyWindowHandle);
+
+impl MultiWorkspaceWindow {
+    pub fn from_any(handle: AnyWindowHandle) -> Option<Self> {
+        (handle.downcast::<Root>().is_some() || handle.downcast::<MultiWorkspace>().is_some())
+            .then_some(Self(handle))
+    }
+
+    pub fn update<C, R>(
+        &self,
+        cx: &mut C,
+        update: impl FnOnce(&mut MultiWorkspace, &mut Window, &mut Context<MultiWorkspace>) -> R,
+    ) -> Result<R>
+    where
+        C: AppContext,
+    {
+        cx.update_window(self.0, |root_view, window, cx| {
+            let multi_workspace = multi_workspace_in_root_view(root_view, cx)?;
+            Ok(multi_workspace.update(cx, |multi_workspace, cx| {
+                update(multi_workspace, window, cx)
+            }))
+        })?
+    }
+
+    pub fn read<'a>(&self, cx: &'a App) -> Result<&'a MultiWorkspace> {
+        Ok(self.entity_in_app(cx)?.read(cx))
+    }
+
+    pub fn read_with<C, R>(
+        &self,
+        cx: &C,
+        read_with: impl FnOnce(&MultiWorkspace, &App) -> R,
+    ) -> Result<R>
+    where
+        C: AppContext,
+    {
+        let multi_workspace = self.entity(cx)?;
+        Ok(cx.read_entity(&multi_workspace, read_with))
+    }
+
+    pub fn entity<C>(&self, cx: &C) -> Result<Entity<MultiWorkspace>>
+    where
+        C: AppContext,
+    {
+        match self.0.downcast::<Root>() {
+            Some(root) => cx.read_window(&root, |root, cx| {
+                multi_workspace_in_root_view(root.into(), cx)
+            })?,
+            None => self.0.read(cx, |multi_workspace, _| multi_workspace),
+        }
+    }
+
+    pub fn is_active(&self, cx: &mut App) -> Option<bool> {
+        cx.update_window(self.0, |_, window, _| window.is_window_active())
+            .ok()
+    }
+
+    fn entity_in_app(&self, cx: &App) -> Result<Entity<MultiWorkspace>> {
+        match self.0.downcast::<Root>() {
+            Some(root) => multi_workspace_in_root_view(root.read(cx)?.view().clone(), cx),
+            None => self
+                .0
+                .downcast::<MultiWorkspace>()
+                .context("not a workspace window")?
+                .entity(cx),
+        }
+    }
+}
+
+impl std::ops::Deref for MultiWorkspaceWindow {
+    type Target = AnyWindowHandle;
+
+    fn deref(&self) -> &AnyWindowHandle {
+        &self.0
+    }
+}
+
+impl From<MultiWorkspaceWindow> for AnyWindowHandle {
+    fn from(window: MultiWorkspaceWindow) -> Self {
+        window.0
+    }
+}
+
+impl From<WindowHandle<MultiWorkspace>> for MultiWorkspaceWindow {
+    fn from(window: WindowHandle<MultiWorkspace>) -> Self {
+        Self(window.into())
+    }
+}
+
+fn multi_workspace_in_root_view(root_view: AnyView, cx: &App) -> Result<Entity<MultiWorkspace>> {
+    let root_view = match root_view.downcast::<Root>() {
+        Ok(root) => root.read(cx).view().clone(),
+        Err(root_view) => root_view,
+    };
+    root_view
+        .downcast::<MultiWorkspace>()
+        .ok()
+        .context("not a workspace window")
+}
+
 impl MultiWorkspace {
+    /// The `MultiWorkspace` shown in `window`, if it is a workspace window.
+    pub fn for_window(window: &Window, cx: &App) -> Option<Entity<MultiWorkspace>> {
+        match window.root::<Root>().flatten() {
+            Some(root) => root.read(cx).view().clone().downcast().ok(),
+            None => window.root::<MultiWorkspace>().flatten(),
+        }
+    }
+
+    /// Opens a workspace window, rooted in GPUI Kit's [`Root`] (see [`MultiWorkspaceWindow`]).
+    pub fn open_window(
+        options: WindowOptions,
+        cx: &mut App,
+        build: impl FnOnce(&mut Window, &mut App) -> Entity<MultiWorkspace>,
+    ) -> Result<MultiWorkspaceWindow> {
+        let window = cx.open_window(options, |window, cx| {
+            let multi_workspace = build(window, cx);
+            cx.new(|cx| Root::new(multi_workspace, window, cx))
+        })?;
+        Ok(MultiWorkspaceWindow(window.into()))
+    }
     pub fn sidebar_side(&self, cx: &App) -> SidebarSide {
         self.sidebar
             .as_ref()
@@ -547,7 +675,7 @@ impl MultiWorkspace {
     }
 
     pub fn close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(window_handle) = window.window_handle().downcast::<Self>() else {
+        let Some(window_handle) = MultiWorkspaceWindow::from_any(window.window_handle()) else {
             log::error!("cannot close a window whose root is not a MultiWorkspace");
             return;
         };
@@ -1093,7 +1221,7 @@ impl MultiWorkspace {
         };
 
         let app_state = self.workspace().read(cx).app_state().clone();
-        let window_handle = window.window_handle().downcast::<MultiWorkspace>();
+        let window_handle = MultiWorkspaceWindow::from_any(window.window_handle());
         let connect_task = connect_remote(connection_options.clone(), window, cx);
         let paths_vec = paths.paths().to_vec();
 
@@ -1185,7 +1313,7 @@ impl MultiWorkspace {
 
         let paths = path_list.paths().to_vec();
         let app_state = self.workspace().read(cx).app_state().clone();
-        let requesting_window = window.window_handle().downcast::<MultiWorkspace>();
+        let requesting_window = MultiWorkspaceWindow::from_any(window.window_handle());
         let fs = <dyn Fs>::global(cx);
 
         cx.spawn(async move |_this, cx| {

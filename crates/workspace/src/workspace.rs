@@ -34,10 +34,10 @@ pub use chat_panel::ChatPanel;
 pub use dock::Panel;
 pub use multi_workspace::{
     CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MoveProjectDown,
-    MoveProjectToNewWindow, MoveProjectUp, MultiWorkspace, MultiWorkspaceEvent, NewThread,
-    NextProject, NextThread, PreviousProject, PreviousThread, ProjectGroup, ProjectGroupKey,
-    RemovalIntent, SerializedProjectGroupState, Sidebar, SidebarEvent, SidebarHandle,
-    SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar,
+    MoveProjectToNewWindow, MoveProjectUp, MultiWorkspace, MultiWorkspaceEvent,
+    MultiWorkspaceWindow, NewThread, NextProject, NextThread, PreviousProject, PreviousThread,
+    ProjectGroup, ProjectGroupKey, RemovalIntent, SerializedProjectGroupState, Sidebar,
+    SidebarEvent, SidebarHandle, SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar,
 };
 pub use panel_header::{KitIconButton, PickerTrigger, panel_header};
 pub use path_list::{PathList, SerializedPathList};
@@ -70,7 +70,7 @@ use gpui::{
     EventEmitter, FocusHandle, Focusable, Global, HitboxBehavior, Hsla, KeyContext, Keystroke,
     ManagedView, MouseButton, PathPromptOptions, Point, PromptLevel, Render, ResizeEdge, Size,
     Stateful, Subscription, SystemWindowTabController, Task, TaskExt, Tiling, WeakEntity,
-    WindowBounds, WindowHandle, WindowId, WindowOptions, actions, canvas, point, relative, size,
+    WindowBounds, WindowId, WindowOptions, actions, canvas, point, relative, size,
     transparent_black,
 };
 pub use history_manager::*;
@@ -963,7 +963,7 @@ pub fn prompt_for_open_path_and_open(
         window,
         cx,
     );
-    let multi_workspace_handle = window.window_handle().downcast::<MultiWorkspace>();
+    let multi_workspace_handle = MultiWorkspaceWindow::from_any(window.window_handle());
     cx.spawn_in(window, async move |this, cx| {
         let Some(paths) = paths.await.log_err().flatten() else {
             return;
@@ -1976,10 +1976,7 @@ impl Workspace {
         let left_dock = Dock::new(DockPosition::Left, modal_layer.clone(), window, cx);
         let bottom_dock = Dock::new(DockPosition::Bottom, modal_layer.clone(), window, cx);
         let right_dock = Dock::new(DockPosition::Right, modal_layer.clone(), window, cx);
-        let multi_workspace = window
-            .root::<MultiWorkspace>()
-            .flatten()
-            .map(|mw| mw.downgrade());
+        let multi_workspace = MultiWorkspace::for_window(window, cx).map(|mw| mw.downgrade());
         let status_bar = cx.new(|cx| StatusBar::new(&center_pane.clone(), window, cx));
 
         let session_id = app_state.session.read(cx).id().to_owned();
@@ -2158,7 +2155,7 @@ impl Workspace {
     pub fn new_local(
         abs_paths: Vec<PathBuf>,
         app_state: Arc<AppState>,
-        requesting_window: Option<WindowHandle<MultiWorkspace>>,
+        requesting_window: Option<MultiWorkspaceWindow>,
         env: Option<HashMap<String, String>>,
         init: Option<Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + Send>>,
         open_mode: OpenMode,
@@ -2259,7 +2256,7 @@ impl Workspace {
                 _ => requesting_window,
             };
 
-            let (window, workspace): (WindowHandle<MultiWorkspace>, Entity<Workspace>) =
+            let (window, workspace): (MultiWorkspaceWindow, Entity<Workspace>) =
                 if let Some(window) = window_to_replace {
                     let centered_layout = serialized_workspace
                         .as_ref()
@@ -2327,29 +2324,31 @@ impl Workspace {
                         .as_ref()
                         .map(|w| w.centered_layout)
                         .unwrap_or(false);
-                    let window = cx.open_window(options, {
-                        let app_state = app_state.clone();
-                        let project_handle = project_handle.clone();
-                        move |window, cx| {
-                            let workspace = cx.new(|cx| {
-                                let mut workspace = Workspace::new(
-                                    Some(workspace_id),
-                                    project_handle,
-                                    app_state,
-                                    window,
-                                    cx,
-                                );
-                                workspace.centered_layout = centered_layout;
+                    let window = cx.update(|cx| {
+                        MultiWorkspace::open_window(options, cx, {
+                            let app_state = app_state.clone();
+                            let project_handle = project_handle.clone();
+                            move |window, cx| {
+                                let workspace = cx.new(|cx| {
+                                    let mut workspace = Workspace::new(
+                                        Some(workspace_id),
+                                        project_handle,
+                                        app_state,
+                                        window,
+                                        cx,
+                                    );
+                                    workspace.centered_layout = centered_layout;
 
-                                // Call init callback to add items before window renders
-                                if let Some(init) = init {
-                                    init(&mut workspace, window, cx);
-                                }
+                                    // Call init callback to add items before window renders
+                                    if let Some(init) = init {
+                                        init(&mut workspace, window, cx);
+                                    }
 
-                                workspace
-                            });
-                            cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
-                        }
+                                    workspace
+                                });
+                                cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
+                            }
+                        })
                     })?;
                     let workspace =
                         window.update(cx, |multi_workspace: &mut MultiWorkspace, _, _cx| {
@@ -3638,7 +3637,7 @@ impl Workspace {
             let workspace_count = cx.update(|_window, cx| {
                 cx.windows()
                     .iter()
-                    .filter(|window| window.downcast::<MultiWorkspace>().is_some())
+                    .filter(|window| MultiWorkspaceWindow::from_any(**window).is_some())
                     .count()
             })?;
 
@@ -3648,7 +3647,7 @@ impl Workspace {
                     cx.windows()
                         .into_iter()
                         .filter(|window| *window != current_window)
-                        .filter_map(|window| window.downcast::<MultiWorkspace>())
+                        .filter_map(MultiWorkspaceWindow::from_any)
                         .filter_map(|multi_workspace| {
                             multi_workspace.read(cx).ok().map(|multi_workspace| {
                                 multi_workspace.workspace().read(cx).removing
@@ -3695,7 +3694,7 @@ impl Workspace {
                         let multi_workspace = cx
                             .windows()
                             .iter()
-                            .filter_map(|window| window.downcast::<MultiWorkspace>())
+                            .filter_map(|window| MultiWorkspaceWindow::from_any(*window))
                             .next()
                             .unwrap();
                         let project = multi_workspace
@@ -3967,7 +3966,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<Workspace>>> {
-        let requesting_window = window.window_handle().downcast::<MultiWorkspace>();
+        let requesting_window = MultiWorkspaceWindow::from_any(window.window_handle());
         let is_remote = self.project.read(cx).is_via_collab();
         let has_worktree = self.project.read(cx).worktrees(cx).next().is_some();
         let has_dirty_items = self.items(cx).any(|item| item.is_dirty(cx));
@@ -6904,7 +6903,7 @@ impl Workspace {
         }
 
         let workspace = self.weak_handle();
-        let Some(window_handle) = window.window_handle().downcast::<MultiWorkspace>() else {
+        let Some(window_handle) = MultiWorkspaceWindow::from_any(window.window_handle()) else {
             return;
         };
         let on_release_callback = Box::new(move |cx: &mut App| {
@@ -8981,9 +8980,7 @@ impl Workspace {
     }
 
     pub fn for_window(window: &Window, cx: &App) -> Option<Entity<Workspace>> {
-        window
-            .root::<MultiWorkspace>()
-            .flatten()
+        MultiWorkspace::for_window(window, cx)
             .map(|multi_workspace| multi_workspace.read(cx).workspace().clone())
     }
 
@@ -9550,7 +9547,7 @@ impl RegionFocusHandles {
     }
 }
 
-fn notify_if_database_failed(window: WindowHandle<MultiWorkspace>, cx: &mut AsyncApp) {
+fn notify_if_database_failed(window: MultiWorkspaceWindow, cx: &mut AsyncApp) {
     window
         .update(cx, |multi_workspace, _, cx| {
             let workspace = multi_workspace.workspace().clone();
@@ -10371,7 +10368,7 @@ pub async fn restore_multiworkspace(
     multi_workspace: SerializedMultiWorkspace,
     app_state: Arc<AppState>,
     cx: &mut AsyncApp,
-) -> anyhow::Result<WindowHandle<MultiWorkspace>> {
+) -> anyhow::Result<MultiWorkspaceWindow> {
     let SerializedMultiWorkspace {
         active_workspace,
         state,
@@ -10455,7 +10452,7 @@ pub async fn restore_multiworkspace(
 }
 
 pub async fn apply_restored_multiworkspace_state(
-    window_handle: WindowHandle<MultiWorkspace>,
+    window_handle: MultiWorkspaceWindow,
     state: &MultiWorkspaceState,
     fs: Arc<dyn fs::Fs>,
     cx: &mut AsyncApp,
@@ -10526,7 +10523,7 @@ pub async fn apply_restored_multiworkspace_state(
 }
 
 fn restore_native_window_state(
-    window_handle: WindowHandle<MultiWorkspace>,
+    window_handle: MultiWorkspaceWindow,
     workspace_id: WorkspaceId,
     cx: &mut AsyncApp,
 ) {
@@ -10604,7 +10601,7 @@ actions!(
 async fn join_channel_internal(
     channel_id: ChannelId,
     app_state: &Arc<AppState>,
-    requesting_window: Option<WindowHandle<MultiWorkspace>>,
+    requesting_window: Option<MultiWorkspaceWindow>,
     requesting_workspace: Option<WeakEntity<Workspace>>,
     active_call: &dyn AnyActiveCall,
     cx: &mut AsyncApp,
@@ -10785,7 +10782,7 @@ fn serialize_pane_handle(
 pub fn join_channel(
     channel_id: ChannelId,
     app_state: Arc<AppState>,
-    requesting_window: Option<WindowHandle<MultiWorkspace>>,
+    requesting_window: Option<MultiWorkspaceWindow>,
     requesting_workspace: Option<WeakEntity<Workspace>>,
     cx: &mut App,
 ) -> Task<Result<()>> {
@@ -10890,7 +10887,7 @@ pub fn join_channel(
 pub async fn get_any_active_multi_workspace(
     app_state: Arc<AppState>,
     mut cx: AsyncApp,
-) -> anyhow::Result<WindowHandle<MultiWorkspace>> {
+) -> anyhow::Result<MultiWorkspaceWindow> {
     // find an existing workspace to focus and show call controls
     let active_window = activate_any_workspace_window(&mut cx);
     if active_window.is_none() {
@@ -10910,17 +10907,15 @@ pub async fn get_any_active_multi_workspace(
     activate_any_workspace_window(&mut cx).context("could not open zed")
 }
 
-pub fn activate_any_workspace_window(cx: &mut AsyncApp) -> Option<WindowHandle<MultiWorkspace>> {
+pub fn activate_any_workspace_window(cx: &mut AsyncApp) -> Option<MultiWorkspaceWindow> {
     cx.update(|cx| {
-        if let Some(workspace_window) = cx
-            .active_window()
-            .and_then(|window| window.downcast::<MultiWorkspace>())
+        if let Some(workspace_window) = cx.active_window().and_then(MultiWorkspaceWindow::from_any)
         {
             return Some(workspace_window);
         }
 
         for window in cx.windows() {
-            if let Some(workspace_window) = window.downcast::<MultiWorkspace>() {
+            if let Some(workspace_window) = MultiWorkspaceWindow::from_any(window) {
                 workspace_window
                     .update(cx, |_, window, _| window.activate_window())
                     .ok();
@@ -10976,10 +10971,10 @@ fn workspace_is_at_location(
 pub fn workspace_windows_for_location(
     serialized_location: &SerializedWorkspaceLocation,
     cx: &App,
-) -> Vec<WindowHandle<MultiWorkspace>> {
+) -> Vec<MultiWorkspaceWindow> {
     cx.windows()
         .into_iter()
-        .filter_map(|window| window.downcast::<MultiWorkspace>())
+        .filter_map(MultiWorkspaceWindow::from_any)
         .filter(|multi_workspace| {
             multi_workspace.read(cx).is_ok_and(|multi_workspace| {
                 multi_workspace
@@ -10996,10 +10991,10 @@ pub async fn find_existing_workspace(
     location: &SerializedWorkspaceLocation,
     cx: &mut AsyncApp,
 ) -> (
-    Option<(WindowHandle<MultiWorkspace>, Entity<Workspace>)>,
+    Option<(MultiWorkspaceWindow, Entity<Workspace>)>,
     OpenVisible,
 ) {
-    let mut existing: Option<(WindowHandle<MultiWorkspace>, Entity<Workspace>)> = None;
+    let mut existing: Option<(MultiWorkspaceWindow, Entity<Workspace>)> = None;
     let mut open_visible = OpenVisible::All;
     let mut best_match = None;
 
@@ -11068,7 +11063,7 @@ pub async fn find_existing_workspace(
                 let windows = workspace_windows_for_location(location, cx);
                 let window = cx
                     .active_window()
-                    .and_then(|window| window.downcast::<MultiWorkspace>())
+                    .and_then(MultiWorkspaceWindow::from_any)
                     .filter(|window| windows.contains(window))
                     .or_else(|| windows.into_iter().next());
                 if let Some(window) = window {
@@ -11114,7 +11109,7 @@ pub struct OpenOptions {
     /// `cli_default_open_behavior` setting.
     pub add_dirs_to_sidebar: bool,
     pub wait: bool,
-    pub requesting_window: Option<WindowHandle<MultiWorkspace>>,
+    pub requesting_window: Option<MultiWorkspaceWindow>,
     pub open_mode: OpenMode,
     pub env: Option<HashMap<String, String>>,
     pub open_in_dev_container: bool,
@@ -11148,7 +11143,7 @@ impl OpenOptions {
 /// The result of opening a workspace via [`open_paths`], [`Workspace::new_local`],
 /// or [`Workspace::open_workspace_for_paths`].
 pub struct OpenResult {
-    pub window: WindowHandle<MultiWorkspace>,
+    pub window: MultiWorkspaceWindow,
     pub workspace: Entity<Workspace>,
     pub opened_items: Vec<Option<anyhow::Result<Box<dyn ItemHandle>>>>,
 }
@@ -11157,9 +11152,9 @@ pub struct OpenResult {
 pub fn open_workspace_by_id(
     workspace_id: WorkspaceId,
     app_state: Arc<AppState>,
-    requesting_window: Option<WindowHandle<MultiWorkspace>>,
+    requesting_window: Option<MultiWorkspaceWindow>,
     cx: &mut App,
-) -> Task<anyhow::Result<WindowHandle<MultiWorkspace>>> {
+) -> Task<anyhow::Result<MultiWorkspaceWindow>> {
     let project_handle = Project::local(
         app_state.client.clone(),
         app_state.node_runtime.clone(),
@@ -11221,23 +11216,25 @@ pub fn open_workspace_by_id(
                 options
             });
 
-            let window = cx.open_window(options, {
-                let app_state = app_state.clone();
-                let project_handle = project_handle.clone();
-                move |window, cx| {
-                    let workspace = cx.new(|cx| {
-                        let mut workspace = Workspace::new(
-                            Some(workspace_id),
-                            project_handle,
-                            app_state,
-                            window,
-                            cx,
-                        );
-                        workspace.centered_layout = centered_layout;
-                        workspace
-                    });
-                    cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
-                }
+            let window = cx.update(|cx| {
+                MultiWorkspace::open_window(options, cx, {
+                    let app_state = app_state.clone();
+                    let project_handle = project_handle.clone();
+                    move |window, cx| {
+                        let workspace = cx.new(|cx| {
+                            let mut workspace = Workspace::new(
+                                Some(workspace_id),
+                                project_handle,
+                                app_state,
+                                window,
+                                cx,
+                            );
+                            workspace.centered_layout = centered_layout;
+                            workspace
+                        });
+                        cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
+                    }
+                })
             })?;
 
             let workspace = window.update(cx, |multi_workspace: &mut MultiWorkspace, _, _cx| {
@@ -11307,7 +11304,7 @@ pub fn open_paths(
                     );
                     let window = cx
                         .active_window()
-                        .and_then(|window| window.downcast::<MultiWorkspace>())
+                        .and_then(MultiWorkspaceWindow::from_any)
                         .filter(|window| windows.contains(window))
                         .or_else(|| windows.into_iter().next());
                     if let Some(window) = window {
@@ -11342,7 +11339,7 @@ pub fn open_paths(
                     );
                     let window = cx
                         .active_window()
-                        .and_then(|window| window.downcast::<MultiWorkspace>())
+                        .and_then(MultiWorkspaceWindow::from_any)
                         .filter(|window| windows.contains(window))
                         .or_else(|| windows.into_iter().next());
                     window.filter(|window| {
@@ -11552,7 +11549,7 @@ pub fn create_and_open_local_file(
 }
 
 pub fn open_remote_project_with_new_connection(
-    window: WindowHandle<MultiWorkspace>,
+    window: MultiWorkspaceWindow,
     remote_connection: Arc<dyn RemoteConnection>,
     cancel_rx: oneshot::Receiver<()>,
     delegate: Arc<dyn RemoteClientDelegate>,
@@ -11615,7 +11612,7 @@ pub fn open_remote_project_with_existing_connection(
     project: Entity<Project>,
     paths: Vec<PathBuf>,
     app_state: Arc<AppState>,
-    window: WindowHandle<MultiWorkspace>,
+    window: MultiWorkspaceWindow,
     provisional_project_group_key: Option<ProjectGroupKey>,
     source_workspace: Option<WeakEntity<Workspace>>,
     cx: &mut AsyncApp,
@@ -11645,7 +11642,7 @@ async fn open_remote_project_inner(
     workspace_id: WorkspaceId,
     serialized_workspace: Option<SerializedWorkspace>,
     app_state: Arc<AppState>,
-    window: WindowHandle<MultiWorkspace>,
+    window: MultiWorkspaceWindow,
     provisional_project_group_key: Option<ProjectGroupKey>,
     source_workspace: Option<WeakEntity<Workspace>>,
     cx: &mut AsyncApp,
@@ -11787,13 +11784,9 @@ pub fn join_in_room_project(
 ) -> Task<Result<()>> {
     let windows = cx.windows();
     cx.spawn(async move |cx| {
-        let existing_window_and_workspace: Option<(
-            WindowHandle<MultiWorkspace>,
-            Entity<Workspace>,
-        )> = windows.into_iter().find_map(|window_handle| {
-            window_handle
-                .downcast::<MultiWorkspace>()
-                .and_then(|window_handle| {
+        let existing_window_and_workspace: Option<(MultiWorkspaceWindow, Entity<Workspace>)> =
+            windows.into_iter().find_map(|window_handle| {
+                MultiWorkspaceWindow::from_any(window_handle).and_then(|window_handle| {
                     window_handle
                         .update(cx, |multi_workspace, _window, cx| {
                             multi_workspace
@@ -11806,7 +11799,7 @@ pub fn join_in_room_project(
                         })
                         .unwrap_or(None)
                 })
-        });
+            });
 
         let multi_workspace_window = if let Some((existing_window, target_workspace)) =
             existing_window_and_workspace
@@ -11834,7 +11827,7 @@ pub fn join_in_room_project(
             cx.update(|cx| {
                 let mut options = (app_state.build_window_options)(None, cx);
                 options.window_bounds = window_bounds_override.map(WindowBounds::Windowed);
-                cx.open_window(options, |window, cx| {
+                MultiWorkspace::open_window(options, cx, |window, cx| {
                     let workspace = cx.new(|cx| {
                         Workspace::new(Default::default(), project, app_state.clone(), window, cx)
                     });
@@ -11878,7 +11871,7 @@ pub fn reload(cx: &mut App) {
     let mut workspace_windows = cx
         .windows()
         .into_iter()
-        .filter_map(|window| window.downcast::<MultiWorkspace>())
+        .filter_map(MultiWorkspaceWindow::from_any)
         .collect::<Vec<_>>();
 
     // If multiple windows have unsaved changes, and need a save prompt,
@@ -11918,7 +11911,7 @@ pub fn reload(cx: &mut App) {
 }
 
 pub async fn prepare_windows_to_quit(
-    workspace_windows: &[WindowHandle<MultiWorkspace>],
+    workspace_windows: &[MultiWorkspaceWindow],
     cx: &mut AsyncApp,
 ) -> bool {
     // If the user cancels any save prompt, then keep the app open.
@@ -11962,7 +11955,7 @@ pub async fn prepare_windows_to_quit(
 }
 
 pub(crate) async fn prepare_window_to_close(
-    window: WindowHandle<MultiWorkspace>,
+    window: MultiWorkspaceWindow,
     close_intent: CloseIntent,
     cx: &mut AsyncApp,
 ) -> Result<bool> {
@@ -12018,7 +12011,7 @@ pub(crate) async fn prepare_window_to_close(
 }
 
 pub async fn flush_windows_serialization(
-    workspace_windows: &[WindowHandle<MultiWorkspace>],
+    workspace_windows: &[MultiWorkspaceWindow],
     cx: &mut AsyncApp,
 ) {
     let flush_tasks = collect_flush_tasks(workspace_windows, cx);
@@ -12029,7 +12022,7 @@ fn flush_windows_serialization_on_quit(cx: &mut App) -> impl Future<Output = ()>
     let workspace_windows = cx
         .windows()
         .into_iter()
-        .filter_map(|window| window.downcast::<MultiWorkspace>())
+        .filter_map(MultiWorkspaceWindow::from_any)
         .collect::<Vec<_>>();
     let flush_tasks = collect_flush_tasks(&workspace_windows, cx);
     async move {
@@ -12038,7 +12031,7 @@ fn flush_windows_serialization_on_quit(cx: &mut App) -> impl Future<Output = ()>
 }
 
 fn collect_flush_tasks(
-    workspace_windows: &[WindowHandle<MultiWorkspace>],
+    workspace_windows: &[MultiWorkspaceWindow],
     cx: &mut impl AppContext,
 ) -> Vec<Task<()>> {
     let mut flush_tasks = Vec::new();
@@ -12516,10 +12509,7 @@ pub fn with_active_or_new_workspace(
     cx: &mut App,
     f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) + Send + 'static,
 ) {
-    match cx
-        .active_window()
-        .and_then(|w| w.downcast::<MultiWorkspace>())
-    {
+    match cx.active_window().and_then(MultiWorkspaceWindow::from_any) {
         Some(multi_workspace) => {
             cx.defer(move |cx| {
                 multi_workspace

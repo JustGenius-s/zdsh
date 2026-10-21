@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result};
 use askpass::EncryptedPassword;
 use editor::Editor;
 use futures::{FutureExt as _, channel::oneshot, select};
-use gpui::{AppContext, AsyncApp, PromptLevel, WindowHandle};
+use gpui::{AppContext, AsyncApp, PromptLevel};
 
 use project::trusted_worktrees;
 use remote::{
@@ -18,8 +18,8 @@ pub use settings::SshConnection;
 use settings::{DevContainerConnection, ExtendingVec, RegisterSetting, Settings, WslConnection};
 use util::paths::PathWithPosition;
 use workspace::{
-    AppState, MultiWorkspace, OpenOptions, SerializedWorkspaceLocation, Workspace,
-    find_existing_workspace,
+    AppState, MultiWorkspace, MultiWorkspaceWindow, OpenOptions, SerializedWorkspaceLocation,
+    Workspace, find_existing_workspace,
 };
 
 pub use remote_connection::{
@@ -131,7 +131,7 @@ pub async fn open_remote_project(
     app_state: Arc<AppState>,
     open_options: workspace::OpenOptions,
     cx: &mut AsyncApp,
-) -> Result<WindowHandle<MultiWorkspace>> {
+) -> Result<MultiWorkspaceWindow> {
     let created_new_window = open_options.requesting_window.is_none();
 
     let (existing, open_visible) = find_existing_workspace(
@@ -218,26 +218,29 @@ pub async fn open_remote_project(
             cx.update(|cx| (app_state.build_window_options)(workspace_position.display, cx));
         options.window_bounds = workspace_position.window_bounds;
 
-        let window = cx.open_window(options, |window, cx| {
-            let project = project::Project::local(
-                app_state.client.clone(),
-                app_state.node_runtime.clone(),
-                app_state.user_store.clone(),
-                app_state.languages.clone(),
-                app_state.fs.clone(),
-                None,
-                project::LocalProjectFlags {
-                    init_worktree_trust: false,
-                    ..Default::default()
-                },
-                cx,
-            );
-            let workspace = cx.new(|cx| {
-                let mut workspace = Workspace::new(None, project, app_state.clone(), window, cx);
-                workspace.centered_layout = workspace_position.centered_layout;
-                workspace
-            });
-            cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
+        let window = cx.update(|cx| {
+            MultiWorkspace::open_window(options, cx, |window, cx| {
+                let project = project::Project::local(
+                    app_state.client.clone(),
+                    app_state.node_runtime.clone(),
+                    app_state.user_store.clone(),
+                    app_state.languages.clone(),
+                    app_state.fs.clone(),
+                    None,
+                    project::LocalProjectFlags {
+                        init_worktree_trust: false,
+                        ..Default::default()
+                    },
+                    cx,
+                );
+                let workspace = cx.new(|cx| {
+                    let mut workspace =
+                        Workspace::new(None, project, app_state.clone(), window, cx);
+                    workspace.centered_layout = workspace_position.centered_layout;
+                    workspace
+                });
+                cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
+            })
         })?;
         let workspace = window.update(cx, |multi_workspace, _, _cx| {
             multi_workspace.workspace().clone()
@@ -423,7 +426,7 @@ pub async fn open_remote_project(
 }
 
 pub fn navigate_to_positions(
-    window: &WindowHandle<MultiWorkspace>,
+    window: &MultiWorkspaceWindow,
     items: impl IntoIterator<Item = Option<Box<dyn workspace::item::ItemHandle>>>,
     positions: &[PathWithPosition],
     cx: &mut AsyncApp,
@@ -580,7 +583,7 @@ mod tests {
         assert_eq!(windows, 1, "Should have opened a window");
 
         let multi_workspace_handle =
-            cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
 
         multi_workspace_handle
             .update(cx, |multi_workspace, _, cx| {
@@ -669,7 +672,7 @@ mod tests {
             "First open should create exactly one window"
         );
 
-        let first_window = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let first_window = cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         let first_workspace = first_window
             .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
             .unwrap();
@@ -760,7 +763,7 @@ mod tests {
         );
 
         let still_first_window =
-            cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         assert_eq!(
             still_first_window, first_window,
             "The window handle should be the same after reuse"
@@ -931,7 +934,7 @@ mod tests {
         executor.run_until_parked();
 
         assert_eq!(cx.update(|cx| cx.windows().len()), 1);
-        let window = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let window = cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
 
         // Force the remote client into ServerNotRunning state (simulates the
         // scenario where the remote server died and reconnection failed).

@@ -213,9 +213,7 @@ pub fn register_test_sidebar(
     cx: &mut VisualTestContext,
 ) -> Entity<TestWorkspaceSidebar> {
     cx.update(|window, cx| {
-        let multi_workspace = window
-            .root::<MultiWorkspace>()
-            .flatten()
+        let multi_workspace = MultiWorkspace::for_window(window, cx)
             .expect("test window should have a MultiWorkspace root");
         let sidebar = cx.new(|cx| TestWorkspaceSidebar::new(threads_list_active, cx));
         multi_workspace.update(cx, |multi_workspace, cx| {

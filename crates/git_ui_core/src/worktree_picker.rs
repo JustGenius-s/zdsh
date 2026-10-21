@@ -18,7 +18,7 @@ use ui::{
 };
 use util::{ResultExt as _, paths::PathExt};
 use workspace::{
-    ModalView, MultiWorkspace, RemovalIntent, Workspace, dock::DockPosition,
+    ModalView, MultiWorkspace, MultiWorkspaceWindow, RemovalIntent, Workspace, dock::DockPosition,
     notifications::DetachAndPromptErr,
 };
 
@@ -468,7 +468,7 @@ impl WorktreePickerDelegate {
     fn refresh_project_worktree_paths(&mut self, window: &mut Window, cx: &mut App) {
         let mut paths = self.active_worktree_paths.clone();
 
-        if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten()
+        if let Some(multi_workspace) = MultiWorkspace::for_window(window, cx)
             && let Some(workspace) = self.workspace.upgrade()
         {
             let group_key = workspace.read(cx).project_group_key(cx);
@@ -672,7 +672,7 @@ impl WorktreePickerDelegate {
         if self.active_worktree_paths.contains(worktree_path) {
             return None;
         }
-        let multi_workspace = window.root::<MultiWorkspace>().flatten()?;
+        let multi_workspace = MultiWorkspace::for_window(window, cx)?;
         let workspace = self.workspace.upgrade()?;
         let group_key = workspace.read(cx).project_group_key(cx);
         multi_workspace
@@ -703,7 +703,7 @@ impl WorktreePickerDelegate {
         else {
             return;
         };
-        let Some(window_handle) = window.window_handle().downcast::<MultiWorkspace>() else {
+        let Some(window_handle) = MultiWorkspaceWindow::from_any(window.window_handle()) else {
             return;
         };
 
@@ -1631,15 +1631,17 @@ pub async fn open_remote_worktree(
         cx.update(|_, cx| (app_state.build_window_options)(workspace_position.display, cx))?;
     options.window_bounds = workspace_position.window_bounds;
 
-    let new_window = cx.open_window(options, |window, cx| {
-        let workspace = cx.new(|cx| {
-            let mut workspace =
-                Workspace::new(None, new_project.clone(), app_state.clone(), window, cx);
-            workspace.centered_layout = workspace_position.centered_layout;
-            workspace
-        });
-        cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
-    })?;
+    let new_window = cx.update(|_, cx| {
+        MultiWorkspace::open_window(options, cx, |window, cx| {
+            let workspace = cx.new(|cx| {
+                let mut workspace =
+                    Workspace::new(None, new_project.clone(), app_state.clone(), window, cx);
+                workspace.centered_layout = workspace_position.centered_layout;
+                workspace
+            });
+            cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
+        })
+    })??;
 
     workspace::open_remote_project_with_existing_connection(
         connection_options,

@@ -14,7 +14,7 @@ use futures::future;
 use futures::{FutureExt, StreamExt};
 use git_ui::multi_diff_view::MultiDiffView;
 use git_ui_core::file_diff_view::FileDiffView;
-use gpui::{App, AsyncApp, Global, TaskExt, WindowHandle};
+use gpui::{App, AsyncApp, Global, TaskExt};
 use recent_projects::{RemoteSettings, navigate_to_positions, open_remote_project};
 use remote::{RemoteConnectionOptions, WslConnectionOptions};
 use settings::Settings;
@@ -28,7 +28,9 @@ use util::debug_panic;
 use util::paths::PathWithPosition;
 use workspace::PathList;
 use workspace::item::ItemHandle;
-use workspace::{AppState, MultiWorkspace, OpenOptions, OpenResult, SerializedWorkspaceLocation};
+use workspace::{
+    AppState, MultiWorkspaceWindow, OpenOptions, OpenResult, SerializedWorkspaceLocation,
+};
 
 #[derive(Default, Debug)]
 pub struct OpenRequest {
@@ -466,7 +468,7 @@ pub async fn open_paths_with_positions(
     open_options: workspace::OpenOptions,
     cx: &mut AsyncApp,
 ) -> Result<(
-    WindowHandle<MultiWorkspace>,
+    MultiWorkspaceWindow,
     Vec<Option<Result<Box<dyn ItemHandle>>>>,
 )> {
     let paths = path_positions
@@ -692,7 +694,7 @@ async fn resolve_open_behavior(
     let has_existing_windows = cx.update(|cx| {
         cx.windows()
             .iter()
-            .any(|window| window.downcast::<MultiWorkspace>().is_some())
+            .any(|window| MultiWorkspaceWindow::from_any(*window).is_some())
     });
 
     if !has_existing_windows {
@@ -703,7 +705,7 @@ async fn resolve_open_behavior(
         let paths_as_pathbufs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
         let paths_in_existing_workspace = cx.update(|cx| {
             for window in cx.windows() {
-                if let Some(multi_workspace) = window.downcast::<MultiWorkspace>() {
+                if let Some(multi_workspace) = MultiWorkspaceWindow::from_any(window) {
                     if let Ok(multi_workspace) = multi_workspace.read(cx) {
                         for workspace in multi_workspace.workspaces() {
                             let project = workspace.read(cx).project().read(cx);
@@ -1126,7 +1128,7 @@ mod tests {
     use session::Session;
     use std::{path::Path, sync::Arc, task::Poll};
     use util::path;
-    use workspace::{AppState, MultiWorkspace};
+    use workspace::AppState;
 
     struct DiscardResponseSink;
 
@@ -1752,7 +1754,7 @@ mod tests {
         open_workspace_file(path!("/root/dir1"), <_>::default(), app_state.clone(), cx).await;
 
         assert_eq!(cx.windows().len(), 1);
-        let multi_workspace = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        let multi_workspace = MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap();
         multi_workspace
             .update(cx, |multi_workspace, _, cx| {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
@@ -1872,7 +1874,7 @@ mod tests {
         .await;
 
         assert_eq!(cx.windows().len(), 1);
-        let multi_workspace_1 = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        let multi_workspace_1 = MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap();
         multi_workspace_1
             .update(cx, |multi_workspace, _, cx| {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
@@ -1918,7 +1920,7 @@ mod tests {
         .await;
 
         assert_eq!(cx.windows().len(), 2);
-        let multi_workspace_2 = cx.windows()[1].downcast::<MultiWorkspace>().unwrap();
+        let multi_workspace_2 = MultiWorkspaceWindow::from_any(cx.windows()[1]).unwrap();
         multi_workspace_2
             .update(cx, |multi_workspace, _, cx| {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
@@ -2212,7 +2214,7 @@ mod tests {
             .await;
 
         assert_eq!(cx.windows().len(), 1);
-        let multi_workspace_1 = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        let multi_workspace_1 = MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap();
 
         // Open second workspace in a new window
         let workspace_paths_2 = vec![file2_path.to_string()];
@@ -2240,7 +2242,7 @@ mod tests {
             .await;
 
         assert_eq!(cx.windows().len(), 2);
-        let multi_workspace_2 = cx.windows()[1].downcast::<MultiWorkspace>().unwrap();
+        let multi_workspace_2 = MultiWorkspaceWindow::from_any(cx.windows()[1]).unwrap();
 
         // Focus window2
         multi_workspace_2
@@ -2354,7 +2356,8 @@ mod tests {
         assert!(!errored);
         cx.run_until_parked();
 
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         multi_workspace
             .update(cx, |multi_workspace, _, cx| {
                 let flag = multi_workspace.workspace().read(cx).open_in_dev_container();
@@ -2414,7 +2417,8 @@ mod tests {
 
         // With no .devcontainer config, the flag should be cleared once the
         // worktree scan completes, rather than persisting on the workspace.
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         multi_workspace
             .update(cx, |multi_workspace, _, cx| {
                 let flag = multi_workspace
@@ -2725,7 +2729,7 @@ mod tests {
         open_workspace_file(path!("/project"), Default::default(), app_state.clone(), cx).await;
         assert_eq!(cx.windows().len(), 1);
 
-        let multi_workspace = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        let multi_workspace = MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap();
         let serialization_tasks = multi_workspace
             .update(cx, |multi_workspace, window, cx| {
                 multi_workspace.flush_all_serialization(window, cx)
@@ -2759,7 +2763,7 @@ mod tests {
         );
         assert_eq!(cx.windows().len(), 1);
 
-        let restored_window = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        let restored_window = MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap();
         restored_window
             .read_with(cx, |multi_workspace, cx| {
                 let root_paths = multi_workspace.workspace().read(cx).root_paths(cx);

@@ -37,11 +37,12 @@ use gpui::List;
 use gpui::Stateful;
 use gpui::TaskExt;
 use gpui_kit::component::{
-    Side, Sizable as _, Size as KitSize, Theme as KitTheme,
+    Root as KitRoot, Side, Sizable as _, Size as KitSize, Theme as KitTheme, WindowExt as _,
     alert::AlertVariant,
     button::{Button as KitButton, ButtonRounded, ButtonVariant, ButtonVariants as _},
     clipboard::Clipboard as KitClipboard,
     menu::{PopupMenu, PopupMenuItem},
+    notification::Notification,
     popover::Popover,
     shimmer::ShimmerText,
     switch::Switch as KitSwitch,
@@ -52,7 +53,6 @@ use language_model::{
     FastModeConfirmation, LanguageModel, LanguageModelEffortLevel, LanguageModelId,
     LanguageModelProvider, LanguageModelProviderId, LanguageModelRegistry, Speed,
 };
-use notifications::status_toast::StatusToast;
 use project::ResolvedPath;
 use settings::{update_settings_file, update_settings_file_with_completion};
 use ui::{ButtonLike, Checkbox, SplitButton, SplitButtonStyle, Tab, ToggleState};
@@ -1222,7 +1222,7 @@ impl ThreadView {
         match command {
             PromptLocalCommand::ThumbsUp => {
                 self.handle_feedback_click(ThreadFeedback::Positive, window, cx);
-                self.show_success_toast("Thanks for your feedback!", cx);
+                self.show_success_toast("Thanks for your feedback!", window, cx);
             }
             PromptLocalCommand::ThumbsDown => {
                 self.handle_feedback_click(ThreadFeedback::Negative, window, cx);
@@ -1230,20 +1230,20 @@ impl ThreadView {
         }
     }
 
-    fn show_success_toast(&self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
-        let Some(workspace) = self.workspace.upgrade() else {
+    fn show_success_toast(
+        &self,
+        message: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        struct SuccessToast;
+
+        // Kit notifications live in the window's Kit `Root`, which test windows don't have, and
+        // pushing one without it panics.
+        if window.root::<KitRoot>().flatten().is_none() {
             return;
-        };
-        workspace.update(cx, |workspace, cx| {
-            let toast = StatusToast::new(message, cx, |this, _cx| {
-                this.icon(
-                    Icon::new(IconName::Check)
-                        .size(IconSize::Small)
-                        .color(Color::Success),
-                )
-            });
-            workspace.toggle_status_toast(toast, cx);
-        });
+        }
+        window.push_notification(Notification::success(message).id::<SuccessToast>(), cx);
     }
 
     pub(crate) fn as_native_connection(

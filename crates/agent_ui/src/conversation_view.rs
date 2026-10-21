@@ -73,8 +73,8 @@ use util::{
     time::duration_alt_display,
 };
 use workspace::{
-    CollaboratorId, DraggedSelection, MultiWorkspace, NewTerminal, PathList, Workspace,
-    path_link::sanitize_path_text,
+    CollaboratorId, DraggedSelection, MultiWorkspace, MultiWorkspaceWindow, NewTerminal, PathList,
+    Workspace, path_link::sanitize_path_text,
 };
 use zed_actions::agent::{Chat, ToggleModelSelector};
 
@@ -3260,7 +3260,7 @@ impl ConversationView {
             return false;
         }
 
-        if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
+        if let Some(multi_workspace) = MultiWorkspace::for_window(window, cx) {
             self.is_visible(&multi_workspace, cx)
         } else {
             self.workspace
@@ -3272,7 +3272,7 @@ impl ConversationView {
     #[cfg(feature = "audio")]
     fn play_notification_sound(&self, window: &Window, cx: &mut Context<Self>) {
         let visible = window.is_window_active()
-            && if let Some(mw) = window.root::<MultiWorkspace>().flatten() {
+            && if let Some(mw) = MultiWorkspace::for_window(window, cx) {
                 self.is_visible(&mw, cx)
             } else {
                 self.workspace
@@ -3395,7 +3395,8 @@ impl ConversationView {
                 .push(cx.subscribe_in(&pop_up, window, {
                     move |this, _, event, window, cx| match event {
                         AgentNotificationEvent::Accepted => {
-                            let Some(handle) = window.window_handle().downcast::<MultiWorkspace>()
+                            let Some(handle) =
+                                MultiWorkspaceWindow::from_any(window.window_handle())
                             else {
                                 log::error!("root view should be a MultiWorkspace");
                                 return;
@@ -3480,7 +3481,7 @@ impl ConversationView {
                 })
             });
 
-            if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
+            if let Some(multi_workspace) = MultiWorkspace::for_window(window, cx) {
                 let dismiss_if_visible = dismiss_if_visible.clone();
                 subscriptions.push(cx.observe_in(
                     &multi_workspace,
@@ -17324,12 +17325,8 @@ pub(crate) mod tests {
         })
         .collect();
         let (request_id, response) = request_test_generic_permission(&thread, request.clone(), cx);
-        let original_root = cx.update(|window, _| {
-            window
-                .root::<MultiWorkspace>()
-                .flatten()
-                .expect("workspace root")
-        });
+        let original_root =
+            cx.update(|window, cx| MultiWorkspace::for_window(window, cx).expect("workspace root"));
         cx.replace_root_view(|_, _| CapturedGenericPermissionCards {
             thread_view: thread_view.clone(),
             requests: vec![(request_id, request)],
@@ -17413,12 +17410,8 @@ pub(crate) mod tests {
             request_test_generic_permission(&thread, request.clone(), cx);
         // Keep a resolved request snapshot rendered so stale controls cannot
         // target a successor with the same subject or offered option IDs.
-        let original_root = cx.update(|window, _| {
-            window
-                .root::<MultiWorkspace>()
-                .flatten()
-                .expect("workspace root")
-        });
+        let original_root =
+            cx.update(|window, cx| MultiWorkspace::for_window(window, cx).expect("workspace root"));
         cx.replace_root_view(|_, _| CapturedGenericPermissionCards {
             thread_view: thread_view.clone(),
             requests: vec![(second_id, request.clone()), (third_id, request)],

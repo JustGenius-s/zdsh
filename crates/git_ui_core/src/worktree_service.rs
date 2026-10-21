@@ -19,7 +19,8 @@ use remote::RemoteConnectionOptions;
 use settings::Settings;
 use ui::prelude::*;
 use workspace::{
-    MultiWorkspace, OpenMode, PreviousWorkspaceState, ToastView, Workspace, dock::DockPosition,
+    MultiWorkspaceWindow, OpenMode, PreviousWorkspaceState, ToastView, Workspace,
+    dock::DockPosition,
 };
 use zed_actions::NewWorktreeBranchTarget;
 
@@ -785,7 +786,7 @@ fn create_worktree_workspace_inner(
     let previous_state =
         workspace.capture_state_for_worktree_switch(window, fallback_focused_dock, cx);
     let workspace_handle = workspace.weak_handle();
-    let window_handle = window.window_handle().downcast::<MultiWorkspace>();
+    let window_handle = MultiWorkspaceWindow::from_any(window.window_handle());
     let remote_connection_options = project.read(cx).remote_connection_options(cx);
 
     let (git_repos, non_git_paths) = classify_worktrees(project.read(cx), cx);
@@ -920,7 +921,7 @@ pub fn handle_switch_worktree(
     let previous_state =
         workspace.capture_state_for_worktree_switch(window, fallback_focused_dock, cx);
     let workspace_handle = workspace.weak_handle();
-    let window_handle = window.window_handle().downcast::<MultiWorkspace>();
+    let window_handle = MultiWorkspaceWindow::from_any(window.window_handle());
     let remote_connection_options = project.read(cx).remote_connection_options(cx);
 
     let (git_repos, non_git_paths) = classify_worktrees(project.read(cx), cx);
@@ -973,7 +974,7 @@ async fn do_create_worktree(
     remote_branch_fetch_mode: RemoteBranchFetchMode,
     previous_state: PreviousWorkspaceState,
     workspace: WeakEntity<Workspace>,
-    window_handle: Option<gpui::WindowHandle<MultiWorkspace>>,
+    window_handle: Option<MultiWorkspaceWindow>,
     remote_connection_options: Option<RemoteConnectionOptions>,
     activate: bool,
     cx: &mut AsyncWindowContext,
@@ -1114,7 +1115,7 @@ async fn do_switch_worktree(
     non_git_paths: Vec<PathBuf>,
     previous_state: PreviousWorkspaceState,
     workspace: WeakEntity<Workspace>,
-    window_handle: Option<gpui::WindowHandle<MultiWorkspace>>,
+    window_handle: Option<MultiWorkspaceWindow>,
     remote_connection_options: Option<RemoteConnectionOptions>,
     cx: &mut AsyncWindowContext,
 ) -> anyhow::Result<Entity<Workspace>> {
@@ -1154,7 +1155,7 @@ async fn open_worktree_workspace(
     has_non_git: bool,
     previous_state: PreviousWorkspaceState,
     workspace: WeakEntity<Workspace>,
-    window_handle: Option<gpui::WindowHandle<MultiWorkspace>>,
+    window_handle: Option<MultiWorkspaceWindow>,
     remote_connection_options: Option<RemoteConnectionOptions>,
     operation: WorktreeOperation,
     activate: bool,
@@ -1404,7 +1405,7 @@ mod tests {
     use theme::LoadThemes;
     use util::path;
     use util::rel_path::rel_path;
-    use workspace::{TerminalProvider, WorkspaceSettings};
+    use workspace::{MultiWorkspace, TerminalProvider, WorkspaceSettings};
 
     struct CountingTerminalProvider {
         spawned_task_labels: Arc<Mutex<Vec<String>>>,

@@ -1,8 +1,8 @@
+use crate::Workspace;
 use crate::focus_follows_mouse::FocusFollowsMouse as _;
 use crate::persistence::model::DockData;
 use crate::status_bar::HideStatusItem;
 use crate::{DraggedDock, Event, FocusFollowsMouse, ModalLayer, Pane, WorkspaceSettings};
-use crate::Workspace;
 use anyhow::Context as _;
 use client::proto;
 use db::kvp::KeyValueStore;

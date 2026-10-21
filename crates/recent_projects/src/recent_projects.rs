@@ -45,8 +45,8 @@ use ui::{
 };
 use util::{ResultExt, paths::PathExt};
 use workspace::{
-    HistoryManager, ModalView, MultiWorkspace, OpenMode, OpenOptions, OpenVisible, RecentWorkspace,
-    SerializedWorkspaceLocation, Workspace, WorkspaceDb, WorkspaceId,
+    HistoryManager, ModalView, MultiWorkspaceWindow, OpenMode, OpenOptions, OpenVisible,
+    RecentWorkspace, SerializedWorkspaceLocation, Workspace, WorkspaceDb, WorkspaceId,
     notifications::DetachAndPromptErr, with_active_or_new_workspace,
 };
 use zed_actions::{OpenDevContainer, OpenRecent, OpenRemote};
@@ -309,7 +309,7 @@ pub fn init(cx: &mut App) {
             );
 
             let app_state = workspace.app_state().clone();
-            let window_handle = window.window_handle().downcast::<MultiWorkspace>();
+            let window_handle = MultiWorkspaceWindow::from_any(window.window_handle());
 
             cx.spawn_in(window, async move |workspace, cx| {
                 use util::paths::SanitizedPath;
@@ -393,7 +393,7 @@ pub fn init(cx: &mut App) {
             let requesting_window =
                 match workspace::WorkspaceSettings::get_global(cx).default_open_behavior {
                     DefaultOpenBehavior::ExistingWindow => {
-                        window.window_handle().downcast::<MultiWorkspace>()
+                        MultiWorkspaceWindow::from_any(window.window_handle())
                     }
                     DefaultOpenBehavior::NewWindow => None,
                 };
@@ -421,10 +421,7 @@ pub fn init(cx: &mut App) {
     cx.on_action(|open_recent: &OpenRecent, cx| {
         let create_new_window = open_recent.create_new_window;
 
-        match cx
-            .active_window()
-            .and_then(|w| w.downcast::<MultiWorkspace>())
-        {
+        match cx.active_window().and_then(MultiWorkspaceWindow::from_any) {
             Some(multi_workspace) => {
                 cx.defer(move |cx| {
                     multi_workspace
@@ -1154,7 +1151,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                 }
 
                 let key = key.clone();
-                if let Some(handle) = window.window_handle().downcast::<MultiWorkspace>() {
+                if let Some(handle) = MultiWorkspaceWindow::from_any(window.window_handle()) {
                     cx.defer(move |cx| {
                         // Try to activate an existing workspace for this project group
                         // first, so we preserve the actual worktree paths (which may
@@ -2056,7 +2053,7 @@ pub(crate) fn highlights_for_path(
 }
 
 fn move_project_group_to_new_window(key: &ProjectGroupKey, window: &mut Window, cx: &mut App) {
-    if let Some(handle) = window.window_handle().downcast::<MultiWorkspace>() {
+    if let Some(handle) = MultiWorkspaceWindow::from_any(window.window_handle()) {
         let key = key.clone();
         cx.defer(move |cx| {
             handle
@@ -2100,7 +2097,7 @@ fn open_local_project(
         )
     });
 
-    let multi_workspace_handle = window.window_handle().downcast::<MultiWorkspace>();
+    let multi_workspace_handle = MultiWorkspaceWindow::from_any(window.window_handle());
     window
         .spawn(cx, async move |cx| {
             let Some(paths) = paths.await.log_err().flatten() else {
@@ -2159,7 +2156,8 @@ impl RecentProjectsDelegate {
                 SerializedWorkspaceLocation::Local => {
                     let paths = candidate_workspace_paths.paths().to_vec();
                     if replace_current_window {
-                        if let Some(handle) = window.window_handle().downcast::<MultiWorkspace>() {
+                        if let Some(handle) = MultiWorkspaceWindow::from_any(window.window_handle())
+                        {
                             cx.defer(move |cx| {
                                 if let Some(task) = handle
                                     .update(cx, |multi_workspace, window, cx| {
@@ -2191,7 +2189,7 @@ impl RecentProjectsDelegate {
                 SerializedWorkspaceLocation::Remote(mut connection) => {
                     let app_state = workspace.app_state().clone();
                     let replace_window = if replace_current_window {
-                        window.window_handle().downcast::<MultiWorkspace>()
+                        MultiWorkspaceWindow::from_any(window.window_handle())
                     } else {
                         None
                     };
@@ -2408,7 +2406,7 @@ impl RecentProjectsDelegate {
         window: &mut Window,
         cx: &mut Context<Picker<Self>>,
     ) {
-        if let Some(handle) = window.window_handle().downcast::<MultiWorkspace>() {
+        if let Some(handle) = MultiWorkspaceWindow::from_any(window.window_handle()) {
             let key_for_remove = key.clone();
             cx.defer(move |cx| {
                 handle
@@ -2851,7 +2849,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(cx.update(|cx| cx.windows().len()), 1);
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
 
         cx.run_until_parked();
 
@@ -2914,7 +2913,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(cx.update(|cx| cx.windows().len()), 1);
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
 
         cx.run_until_parked();
 
@@ -2975,7 +2975,8 @@ mod tests {
         let initial_window_count = cx.update(|cx| cx.windows().len());
         assert_eq!(initial_window_count, 1);
 
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         cx.run_until_parked();
 
         let workspace = multi_workspace
@@ -3051,7 +3052,8 @@ mod tests {
         let initial_window_count = cx.update(|cx| cx.windows().len());
         assert_eq!(initial_window_count, 1);
 
-        let multi_workspace = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let multi_workspace =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         cx.run_until_parked();
 
         let workspace = multi_workspace
@@ -3123,7 +3125,7 @@ mod tests {
 
         cx.run_until_parked();
 
-        let mw = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let mw = cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         let remote_key = remote_project_group(1);
 
         // Get workspace info via WindowHandle::read_with (returns Result)
@@ -3234,7 +3236,7 @@ mod tests {
         .unwrap();
         cx.run_until_parked();
 
-        let mw = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let mw = cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         let (workspace, active_key, fh) = mw
             .read_with(cx, |mw, cx| {
                 let ws = mw.workspace().clone();

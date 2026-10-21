@@ -42,8 +42,8 @@ use gpui::{
     Action, App, AppContext as _, AsyncWindowContext, ClipboardItem, Context, DismissEvent,
     Element, Entity, FocusHandle, Focusable, Image, ImageFormat, KeyBinding, ParentElement,
     PathPromptOptions, PromptLevel, ReadGlobal, SharedString, Size, Task, TaskExt, TitlebarOptions,
-    UpdateGlobal, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions,
-    actions, image_cache, img, point, px, retain_all,
+    UpdateGlobal, WeakEntity, Window, WindowBounds, WindowKind, WindowOptions, actions,
+    image_cache, img, point, px, retain_all,
 };
 use image_viewer::ImageInfo;
 use language::Capability;
@@ -95,8 +95,8 @@ use vim_mode_setting::VimModeSetting;
 use workspace::notifications::{NotificationId, dismiss_app_notification, show_app_notification};
 
 use workspace::{
-    AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Panel, Toast, Workspace,
-    WorkspaceSettings, create_and_open_local_file,
+    AppState, MultiWorkspace, MultiWorkspaceWindow, NewFile, NewWindow, OpenLog, Panel, Toast,
+    Workspace, WorkspaceSettings, create_and_open_local_file,
     notifications::simple_message_notification::MessageNotification, open_new,
 };
 use workspace::{CloseProject, CloseWindow, RestoreBanner, with_active_or_new_workspace};
@@ -1298,7 +1298,8 @@ fn register_actions(
         })
         .register_action({
             move |workspace, _: &CloseProject, window, cx| {
-                let Some(window_handle) = window.window_handle().downcast::<MultiWorkspace>() else {
+                let Some(window_handle) = MultiWorkspaceWindow::from_any(window.window_handle())
+                else {
                     return;
                 };
                 let old_group_key = workspace.project_group_key(cx);
@@ -1703,10 +1704,10 @@ fn quit(_: &Quit, cx: &mut App) {
 
     let should_confirm = WorkspaceSettings::get_global(cx).confirm_quit;
     cx.spawn(async move |cx| {
-        let mut workspace_windows: Vec<WindowHandle<MultiWorkspace>> = cx.update(|cx| {
+        let mut workspace_windows: Vec<MultiWorkspaceWindow> = cx.update(|cx| {
             cx.windows()
                 .into_iter()
-                .filter_map(|window| window.downcast::<MultiWorkspace>())
+                .filter_map(MultiWorkspaceWindow::from_any)
                 .collect::<Vec<_>>()
         });
 
@@ -2412,7 +2413,7 @@ pub fn open_new_ssh_project_from_project(
     let requesting_window = if create_new_window {
         None
     } else {
-        window.window_handle().downcast::<MultiWorkspace>()
+        MultiWorkspaceWindow::from_any(window.window_handle())
     };
     cx.spawn_in(window, async move |_, cx| {
         open_remote_project(
@@ -2845,7 +2846,7 @@ mod tests {
     use fs::FakeFs;
     use gpui::{
         Action, AnyWindowHandle, App, AssetSource, BorrowAppContext, Modifiers, OwnedMenuItem,
-        TestAppContext, UpdateGlobal, VisualTestContext, WindowHandle, actions, point, px,
+        TestAppContext, UpdateGlobal, VisualTestContext, actions, point, px,
     };
     use http_client::BlockedHttpClient;
     use language::LanguageRegistry;
@@ -2878,10 +2879,7 @@ mod tests {
         open_new, open_paths, pane,
     };
 
-    async fn flush_workspace_serialization(
-        window: &WindowHandle<MultiWorkspace>,
-        cx: &mut TestAppContext,
-    ) {
+    async fn flush_workspace_serialization(window: &MultiWorkspaceWindow, cx: &mut TestAppContext) {
         let all_tasks = window
             .update(cx, |multi_workspace, window, cx| {
                 let mut tasks = multi_workspace
@@ -3007,7 +3005,7 @@ mod tests {
         .unwrap();
         assert_eq!(cx.read(|cx| cx.windows().len()), 1);
 
-        let multi_workspace = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        let multi_workspace = MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap();
         multi_workspace
             .update(cx, |multi_workspace, _, cx| {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
@@ -3077,7 +3075,7 @@ mod tests {
         executor.run_until_parked();
 
         assert_eq!(cx.update(|cx| cx.windows().len()), 1);
-        let window = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let window = cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
 
         window
             .update(cx, |multi_workspace, _, cx| {
@@ -3187,7 +3185,7 @@ mod tests {
         .unwrap();
         assert_eq!(cx.read(|cx| cx.windows().len()), 1);
         let multi_workspace_1 = cx
-            .read(|cx| cx.windows()[0].downcast::<MultiWorkspace>())
+            .read(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]))
             .unwrap();
         cx.run_until_parked();
         multi_workspace_1
@@ -3447,9 +3445,9 @@ mod tests {
         assert_eq!(cx.update(|cx| cx.windows().len()), 1);
 
         // When opening the workspace, the window is not in a edited state.
-        let window = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let window = cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
 
-        let window_is_edited = |window: WindowHandle<MultiWorkspace>, cx: &mut TestAppContext| {
+        let window_is_edited = |window: MultiWorkspaceWindow, cx: &mut TestAppContext| {
             cx.update(|cx| window.read(cx).unwrap().workspace().read(cx).is_edited())
         };
         let pane = window
@@ -3607,13 +3605,12 @@ mod tests {
         assert_eq!(cx.update(|cx| cx.windows().len()), 1);
 
         // When opening the workspace, the window is not in a edited state.
-        let window = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let window = cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
 
-        let window_is_edited = |window: WindowHandle<MultiWorkspace>, cx: &mut TestAppContext| {
+        let window_is_edited = |window: MultiWorkspaceWindow, cx: &mut TestAppContext| {
             cx.update(|cx| window.read(cx).unwrap().workspace().read(cx).is_edited())
         };
-        let workspace_database_id = |window: WindowHandle<MultiWorkspace>,
-                                     cx: &mut TestAppContext| {
+        let workspace_database_id = |window: MultiWorkspaceWindow, cx: &mut TestAppContext| {
             cx.update(|cx| window.read(cx).unwrap().workspace().read(cx).database_id())
         };
 
@@ -3673,12 +3670,8 @@ mod tests {
         cx.run_until_parked();
 
         // When opening the workspace, the window is not in a edited state.
-        let window = cx.update(|cx| {
-            cx.active_window()
-                .unwrap()
-                .downcast::<MultiWorkspace>()
-                .unwrap()
-        });
+        let window =
+            cx.update(|cx| MultiWorkspaceWindow::from_any(cx.active_window().unwrap()).unwrap());
         assert!(window_is_edited(window, cx));
         assert_eq!(
             workspace_database_id(window, cx),
@@ -3721,7 +3714,7 @@ mod tests {
         cx.run_until_parked();
 
         let multi_workspace = cx
-            .update(|cx| cx.windows().first().unwrap().downcast::<MultiWorkspace>())
+            .update(|cx| MultiWorkspaceWindow::from_any(*cx.windows().first().unwrap()))
             .unwrap();
 
         let editor = multi_workspace
@@ -3787,7 +3780,7 @@ mod tests {
         cx.run_until_parked();
 
         let multi_workspace = cx
-            .update(|cx| cx.windows().first().unwrap().downcast::<MultiWorkspace>())
+            .update(|cx| MultiWorkspaceWindow::from_any(*cx.windows().first().unwrap()))
             .unwrap();
 
         multi_workspace
@@ -3992,7 +3985,7 @@ mod tests {
         .unwrap();
         cx.run_until_parked();
         assert_eq!(cx.update(|cx| cx.windows().len()), 1);
-        let window = cx.update(|cx| cx.windows()[0].downcast::<MultiWorkspace>().unwrap());
+        let window = cx.update(|cx| MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap());
         let workspace = window
             .read_with(cx, |mw, _| mw.workspace().clone())
             .unwrap();
@@ -6008,7 +6001,7 @@ mod tests {
 
         assert_eq!(cx.read(|cx| cx.windows().len()), 1);
 
-        let multi_workspace = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        let multi_workspace = MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap();
         let active_editor = multi_workspace
             .update(cx, |multi_workspace, _, cx| {
                 multi_workspace
@@ -6045,7 +6038,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let multi_workspace = cx.windows()[0].downcast::<MultiWorkspace>().unwrap();
+        let multi_workspace = MultiWorkspaceWindow::from_any(cx.windows()[0]).unwrap();
         let first_item_id = multi_workspace
             .update(cx, |multi_workspace, _, cx| {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
@@ -6812,7 +6805,7 @@ mod tests {
         let workspace_roots = cx.update(|cx| {
             cx.windows()
                 .into_iter()
-                .filter_map(|window| window.downcast::<MultiWorkspace>())
+                .filter_map(MultiWorkspaceWindow::from_any)
                 .flat_map(|window| {
                     let mut roots = Vec::new();
                     if let Ok(multi_workspace) = window.read(cx) {
@@ -7445,10 +7438,10 @@ mod tests {
         cx.run_until_parked();
 
         // --- Verify the restored windows ---
-        let restored_windows: Vec<WindowHandle<MultiWorkspace>> = cx.read(|cx| {
+        let restored_windows: Vec<MultiWorkspaceWindow> = cx.read(|cx| {
             cx.windows()
                 .into_iter()
-                .filter_map(|window| window.downcast::<MultiWorkspace>())
+                .filter_map(MultiWorkspaceWindow::from_any)
                 .collect()
         });
         assert_eq!(restored_windows.len(), 2,);
@@ -7611,10 +7604,10 @@ mod tests {
             .expect("failed to restore workspaces");
         cx.run_until_parked();
 
-        let restored_windows: Vec<WindowHandle<MultiWorkspace>> = cx.read(|cx| {
+        let restored_windows: Vec<MultiWorkspaceWindow> = cx.read(|cx| {
             cx.windows()
                 .into_iter()
-                .filter_map(|window| window.downcast::<MultiWorkspace>())
+                .filter_map(MultiWorkspaceWindow::from_any)
                 .collect()
         });
         assert_eq!(restored_windows.len(), 1);
@@ -7722,7 +7715,7 @@ mod tests {
         let mut restored_tabs = cx.read(|cx| {
             cx.windows()
                 .into_iter()
-                .filter_map(|window| window.downcast::<MultiWorkspace>())
+                .filter_map(MultiWorkspaceWindow::from_any)
                 .map(|window| {
                     window
                         .read_with(cx, |multi_workspace, cx| {
@@ -7872,10 +7865,10 @@ mod tests {
             .expect("failed to restore workspace");
         cx.run_until_parked();
 
-        let restored_windows: Vec<WindowHandle<MultiWorkspace>> = cx.read(|cx| {
+        let restored_windows: Vec<MultiWorkspaceWindow> = cx.read(|cx| {
             cx.windows()
                 .into_iter()
-                .filter_map(|w| w.downcast::<MultiWorkspace>())
+                .filter_map(MultiWorkspaceWindow::from_any)
                 .collect()
         });
         assert_eq!(restored_windows.len(), 1);
@@ -8068,7 +8061,7 @@ mod tests {
         root_path: &Path,
         tab_paths: &[&RelPath],
         cx: &mut TestAppContext,
-    ) -> WindowHandle<MultiWorkspace> {
+    ) -> MultiWorkspaceWindow {
         let workspace::OpenResult { window, .. } = cx
             .update(|cx| {
                 Workspace::new_local(

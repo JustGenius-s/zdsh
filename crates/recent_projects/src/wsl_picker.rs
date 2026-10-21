@@ -8,7 +8,7 @@ use ui::{
     Render, Styled, StyledExt, Toggleable, Window, div, h_flex, rems, v_flex,
 };
 use util::ResultExt as _;
-use workspace::{ModalView, MultiWorkspace};
+use workspace::{ModalView, MultiWorkspace, MultiWorkspaceWindow};
 
 use crate::open_remote_project;
 
@@ -255,7 +255,7 @@ impl WslOpenModal {
 
         let paths = self.paths.clone();
         let open_options = workspace::OpenOptions {
-            requesting_window: window.window_handle().downcast::<MultiWorkspace>(),
+            requesting_window: MultiWorkspaceWindow::from_any(window.window_handle()),
             open_mode,
             ..Default::default()
         };

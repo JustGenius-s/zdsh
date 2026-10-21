@@ -32,8 +32,8 @@ use feature_flags::{
 use gpui::{
     Action as _, Animation, AnimationExt as _, AnyElement, App, ClickEvent, Context, DismissEvent,
     Entity, EntityId, FocusHandle, Focusable, KeyContext, ListState, Modifiers, MouseButton,
-    Pixels, Render, SharedString, Task, TaskExt, WeakEntity, Window, WindowHandle, anchored,
-    deferred, linear_color_stop, linear_gradient, list, prelude::*, pulsating_between, px,
+    Pixels, Render, SharedString, Task, TaskExt, WeakEntity, Window, anchored, deferred,
+    linear_color_stop, linear_gradient, list, prelude::*, pulsating_between, px,
 };
 use itertools::Itertools;
 use language_model::LanguageModelRegistry;
@@ -67,9 +67,10 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use util::ResultExt as _;
 use util::path_list::PathList;
 use workspace::{
-    MoveProjectDown, MoveProjectUp, MultiWorkspace, MultiWorkspaceEvent, NextProject, NextThread,
-    Open, OpenMode, PreviousProject, PreviousThread, ProjectGroupKey, RemovalIntent, SaveIntent,
-    Sidebar as WorkspaceSidebar, SidebarSide, Toast, Workspace, notifications::NotificationId,
+    MoveProjectDown, MoveProjectUp, MultiWorkspace, MultiWorkspaceEvent, MultiWorkspaceWindow,
+    NextProject, NextThread, Open, OpenMode, PreviousProject, PreviousThread, ProjectGroupKey,
+    RemovalIntent, SaveIntent, Sidebar as WorkspaceSidebar, SidebarSide, Toast, Workspace,
+    notifications::NotificationId,
 };
 
 use git_ui_core::worktree_service::{RemoteBranchName, worktree_create_targets};
@@ -3408,10 +3409,10 @@ impl Sidebar {
         &self,
         cx: &App,
         predicate: impl Fn(&Entity<Workspace>, &App) -> bool,
-    ) -> Option<(WindowHandle<MultiWorkspace>, Entity<Workspace>)> {
+    ) -> Option<(MultiWorkspaceWindow, Entity<Workspace>)> {
         cx.windows()
             .into_iter()
-            .filter_map(|window| window.downcast::<MultiWorkspace>())
+            .filter_map(MultiWorkspaceWindow::from_any)
             .find_map(|window| {
                 let workspace = window.read(cx).ok().and_then(|multi_workspace| {
                     multi_workspace
@@ -3730,7 +3731,7 @@ impl Sidebar {
         &self,
         metadata: ThreadMetadata,
         workspace: Entity<Workspace>,
-        target_window: WindowHandle<MultiWorkspace>,
+        target_window: MultiWorkspaceWindow,
         cx: &mut Context<Self>,
     ) {
         let target_session_id = metadata.session_id.clone();
@@ -3880,7 +3881,7 @@ impl Sidebar {
         path_list: &PathList,
         remote_connection: Option<&RemoteConnectionOptions>,
         cx: &App,
-    ) -> Option<(WindowHandle<MultiWorkspace>, Entity<Workspace>)> {
+    ) -> Option<(MultiWorkspaceWindow, Entity<Workspace>)> {
         self.find_workspace_across_windows(cx, |workspace, cx| {
             workspace_path_list(workspace, cx).paths() == path_list.paths()
                 && same_remote_connection_identity(

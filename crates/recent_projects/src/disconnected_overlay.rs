@@ -4,7 +4,7 @@ use remote::RemoteConnectionOptions;
 use settings::Settings;
 use ui::{ElevationIndex, Modal, ModalFooter, ModalHeader, Section, prelude::*};
 use workspace::{
-    ModalView, MultiWorkspace, OpenOptions, Workspace, notifications::DetachAndPromptErr,
+    ModalView, MultiWorkspaceWindow, OpenOptions, Workspace, notifications::DetachAndPromptErr,
 };
 
 use crate::open_remote_project;
@@ -107,7 +107,7 @@ impl DisconnectedOverlay {
             return;
         };
 
-        let Some(window_handle) = window.window_handle().downcast::<MultiWorkspace>() else {
+        let Some(window_handle) = MultiWorkspaceWindow::from_any(window.window_handle()) else {
             return;
         };
 

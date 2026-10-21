@@ -1,7 +1,7 @@
 use crate::{ItemHandle, Pane};
 use gpui::{
-    AnyView, App, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, Role,
-    SharedString, Styled, Subscription, Window,
+    AnyView, App, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render,
+    Role, SharedString, Styled, Subscription, Window,
 };
 use settings::{SettingsContent, update_settings_file};
 use std::{any::TypeId, sync::Arc};

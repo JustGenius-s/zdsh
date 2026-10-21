@@ -1,5 +1,5 @@
 use crate::{
-    MultiWorkspace, SuppressNotification, Toast, Workspace, workspace_error::WorkspaceError,
+    MultiWorkspaceWindow, SuppressNotification, Toast, Workspace, workspace_error::WorkspaceError,
 };
 use anyhow::Context as _;
 use gpui::{
@@ -1560,7 +1560,7 @@ pub fn show_app_notification<V: Notification + 'static>(
             .insert(id.clone(), build_notification.clone());
 
         for window in cx.windows() {
-            if let Some(multi_workspace) = window.downcast::<MultiWorkspace>() {
+            if let Some(multi_workspace) = MultiWorkspaceWindow::from_any(window) {
                 multi_workspace
                     .update(cx, |multi_workspace, _window, cx| {
                         for workspace in multi_workspace.workspaces() {
@@ -1585,7 +1585,7 @@ pub fn dismiss_app_notification(id: &NotificationId, cx: &mut App) {
     cx.defer(move |cx| {
         GLOBAL_APP_NOTIFICATIONS.lock().remove(&id);
         for window in cx.windows() {
-            if let Some(multi_workspace) = window.downcast::<MultiWorkspace>() {
+            if let Some(multi_workspace) = MultiWorkspaceWindow::from_any(window) {
                 let id = id.clone();
                 multi_workspace
                     .update(cx, |multi_workspace, _window, cx| {

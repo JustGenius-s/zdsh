@@ -9,7 +9,7 @@ use fs::Fs;
 use futures::AsyncReadExt;
 use gpui::{
     App, Entity, EventEmitter, FocusHandle, Focusable, ScrollHandle, Subscription, Task, TextStyle,
-    WeakEntity, WindowHandle, actions,
+    WeakEntity, actions,
 };
 use http_client::{AsyncBody, HttpClient, HttpRequestExt, Request, StatusCode, Url};
 use language::{Buffer, language_settings::SoftWrap};
@@ -21,7 +21,7 @@ use theme_settings::ThemeSettings;
 use ui::{Banner, Divider, SwitchField, WithScrollbar, prelude::*};
 use ui_input::{ErasedEditorEvent, InputField};
 use util::ResultExt;
-use workspace::MultiWorkspace;
+use workspace::MultiWorkspaceWindow;
 
 use crate::{SettingsUiFile, SettingsWindow, all_projects};
 
@@ -94,7 +94,7 @@ impl ScopeChoice {
 
 fn scope_for_settings_file(
     current_file: &SettingsUiFile,
-    original_window: Option<&WindowHandle<MultiWorkspace>>,
+    original_window: Option<&MultiWorkspaceWindow>,
     cx: &App,
 ) -> ScopeChoice {
     if let SettingsUiFile::Project((worktree_id, _)) = current_file {

@@ -853,11 +853,11 @@ impl ThreadView {
                             this.branch_chip_hovered = *hovered;
                             cx.notify();
                         }))
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(
                                 branch_name.to_string(),
                             ));
-                            this.show_success_toast(format!("Copied {branch_name}"), cx);
+                            this.show_success_toast(format!("Copied {branch_name}"), window, cx);
                         })),
                 )
                 .into_any_element(),

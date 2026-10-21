@@ -61,8 +61,9 @@ use theme_settings::load_user_theme;
 use util::{ResultExt, maybe};
 use uuid::Uuid;
 use workspace::{
-    AppState, MultiWorkspace, SerializedWorkspaceLocation, SessionWorkspace, Toast,
-    WorkspaceSettings, WorkspaceStore, notifications::NotificationId, restore_multiworkspace,
+    AppState, MultiWorkspace, MultiWorkspaceWindow, SerializedWorkspaceLocation, SessionWorkspace,
+    Toast, WorkspaceSettings, WorkspaceStore, notifications::NotificationId,
+    restore_multiworkspace,
 };
 use zed::{
     OpenListener, OpenRequest, RawOpenRequest, app_menus, build_window_options,
@@ -1316,7 +1317,7 @@ pub(crate) async fn restore_or_create_workspace(
             // Try to find an active workspace to show the toast
             let toast_shown = cx.update(|cx| {
                 if let Some(window) = cx.active_window()
-                    && let Some(multi_workspace) = window.downcast::<MultiWorkspace>()
+                    && let Some(multi_workspace) = MultiWorkspaceWindow::from_any(window)
                 {
                     multi_workspace
                         .update(cx, |multi_workspace, _, cx| {

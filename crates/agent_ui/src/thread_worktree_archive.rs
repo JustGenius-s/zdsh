@@ -14,7 +14,7 @@ use project::{
 use remote::{RemoteConnectionOptions, same_remote_connection_identity};
 use settings::Settings;
 use util::{ResultExt, paths::PathStyle};
-use workspace::{AppState, MultiWorkspace, Workspace};
+use workspace::{AppState, MultiWorkspace, MultiWorkspaceWindow, Workspace};
 
 use crate::thread_metadata_store::{ArchivedGitWorktree, ThreadId, ThreadMetadataStore};
 
@@ -915,7 +915,7 @@ pub async fn cleanup_thread_archived_worktrees(thread_id: ThreadId, cx: &mut Asy
 pub fn all_open_workspaces(cx: &App) -> Vec<Entity<Workspace>> {
     cx.windows()
         .into_iter()
-        .filter_map(|window| window.downcast::<MultiWorkspace>())
+        .filter_map(MultiWorkspaceWindow::from_any)
         .flat_map(|multi_workspace| {
             multi_workspace
                 .read(cx)

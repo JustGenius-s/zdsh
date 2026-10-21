@@ -49,7 +49,8 @@ use util::{
     rel_path::RelPath,
 };
 use workspace::{
-    AppState, DismissDecision, ModalView, MultiWorkspace, OpenLog, OpenOptions, Toast, Workspace,
+    AppState, DismissDecision, ModalView, MultiWorkspace, MultiWorkspaceWindow, OpenLog,
+    OpenOptions, Toast, Workspace,
     notifications::{DetachAndPromptErr, NotificationId},
     open_remote_project_with_existing_connection,
 };
@@ -490,16 +491,25 @@ impl ProjectPicker {
                         let options = cx
                             .update(|_, cx| (app_state.build_window_options)(None, cx))
                             .log_err()?;
-                        cx.open_window(options, |window, cx| {
-                            let workspace = cx.new(|cx| {
-                                telemetry::event!("SSH Project Created");
-                                Workspace::new(None, project.clone(), app_state.clone(), window, cx)
-                            });
-                            cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
+                        cx.update(|_, cx| {
+                            MultiWorkspace::open_window(options, cx, |window, cx| {
+                                let workspace = cx.new(|cx| {
+                                    telemetry::event!("SSH Project Created");
+                                    Workspace::new(
+                                        None,
+                                        project.clone(),
+                                        app_state.clone(),
+                                        window,
+                                        cx,
+                                    )
+                                });
+                                cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
+                            })
                         })
+                        .and_then(|window| window)
                         .log_err()
                     } else {
-                        cx.window_handle().downcast::<MultiWorkspace>()
+                        MultiWorkspaceWindow::from_any(cx.window_handle())
                     }?;
 
                     let items = open_remote_project_with_existing_connection(
@@ -2003,7 +2013,7 @@ impl RemoteServerProjects {
 
         let replace_window = match (create_new_window, secondary_confirm) {
             (true, false) | (false, true) => None,
-            (true, true) | (false, false) => window.window_handle().downcast::<MultiWorkspace>(),
+            (true, true) | (false, false) => MultiWorkspaceWindow::from_any(window.window_handle()),
         };
 
         cx.spawn_in(window, async move |_, cx| {
@@ -2242,7 +2252,7 @@ impl RemoteServerProjects {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let replace_window = window.window_handle().downcast::<MultiWorkspace>();
+        let replace_window = MultiWorkspaceWindow::from_any(window.window_handle());
         let app_state = Arc::downgrade(&app_state);
 
         cx.spawn_in(window, async move |entity, cx| {

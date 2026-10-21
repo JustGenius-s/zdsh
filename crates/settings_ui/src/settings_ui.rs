@@ -12,8 +12,8 @@ use gpui::{
     Action, App, AsyncApp, AvailableSpace, ClipboardItem, DEFAULT_ADDITIONAL_WINDOW_SIZE, Div,
     Entity, FocusHandle, Focusable, Global, KeyContext, ListState, ReadGlobal as _, Role,
     ScrollHandle, Stateful, Subscription, Task, TitlebarOptions, UniformListScrollHandle,
-    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, actions, container_query, div,
-    list, point, prelude::*, px, uniform_list,
+    WeakEntity, Window, WindowBounds, WindowOptions, actions, container_query, div, list, point,
+    prelude::*, px, uniform_list,
 };
 
 use language::Buffer;
@@ -45,7 +45,7 @@ use ui::{
 
 use util::{ResultExt as _, paths::PathStyle, rel_path::RelPath};
 use workspace::{
-    AppState, MultiWorkspace, OpenOptions, OpenVisible, Workspace, WorkspaceSettings,
+    AppState, MultiWorkspaceWindow, OpenOptions, OpenVisible, Workspace, WorkspaceSettings,
     client_side_decorations,
 };
 use zed_actions::{
@@ -463,7 +463,7 @@ pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut workspace::Workspace, _, _| {
         workspace
             .register_action(|_, action: &OpenSettingsAt, window, cx| {
-                let window_handle = window.window_handle().downcast::<MultiWorkspace>();
+                let window_handle = MultiWorkspaceWindow::from_any(window.window_handle());
                 open_settings_editor_at_target(
                     Some(&action.path),
                     action.target.as_ref().map(SettingsFileTarget::from),
@@ -472,7 +472,7 @@ pub fn init(cx: &mut App) {
                 );
             })
             .register_action(|_, action: &OpenSettingsPage, window, cx| {
-                let window_handle = window.window_handle().downcast::<MultiWorkspace>();
+                let window_handle = MultiWorkspaceWindow::from_any(window.window_handle());
                 open_settings_editor_to_page(
                     &action.page,
                     action.target.as_ref().map(SettingsFileTarget::from),
@@ -481,11 +481,11 @@ pub fn init(cx: &mut App) {
                 );
             })
             .register_action(|_, _: &OpenSettings, window, cx| {
-                let window_handle = window.window_handle().downcast::<MultiWorkspace>();
+                let window_handle = MultiWorkspaceWindow::from_any(window.window_handle());
                 open_settings_editor(None, None, window_handle, cx);
             })
             .register_action(|workspace, _: &OpenProjectSettings, window, cx| {
-                let window_handle = window.window_handle().downcast::<MultiWorkspace>();
+                let window_handle = MultiWorkspaceWindow::from_any(window.window_handle());
                 let target_worktree_id = workspace
                     .project()
                     .read(cx)
@@ -500,13 +500,13 @@ pub fn init(cx: &mut App) {
             })
             .register_action(
                 |_, _: &zed_actions::assistant::OpenSkillCreator, window, cx| {
-                    let window_handle = window.window_handle().downcast::<MultiWorkspace>();
+                    let window_handle = MultiWorkspaceWindow::from_any(window.window_handle());
                     open_skill_creator(pages::SkillCreatorOpenMode::Form, window_handle, cx);
                 },
             )
             .register_action(
                 |_, _: &zed_actions::assistant::CreateSkillFromUrl, window, cx| {
-                    let window_handle = window.window_handle().downcast::<MultiWorkspace>();
+                    let window_handle = MultiWorkspaceWindow::from_any(window.window_handle());
                     let initial_url = pages::skill_url_from_clipboard(cx);
                     open_skill_creator(
                         pages::SkillCreatorOpenMode::Url { initial_url },
@@ -760,7 +760,7 @@ pub fn searchable_settings(cx: &App) -> Vec<SearchableSetting> {
 pub fn open_settings_editor(
     path: Option<&str>,
     target_worktree_id: Option<WorktreeId>,
-    workspace_handle: Option<WindowHandle<MultiWorkspace>>,
+    workspace_handle: Option<MultiWorkspaceWindow>,
     cx: &mut App,
 ) {
     open_settings_editor_at_target(
@@ -792,7 +792,7 @@ fn select_settings_file_target(
 fn open_settings_editor_to_page(
     page: &str,
     target_file: Option<SettingsFileTarget>,
-    workspace_handle: Option<WindowHandle<MultiWorkspace>>,
+    workspace_handle: Option<MultiWorkspaceWindow>,
     cx: &mut App,
 ) {
     let page = page.to_string();
@@ -833,7 +833,7 @@ fn open_settings_editor_to_page(
 fn open_settings_editor_at_target(
     path: Option<&str>,
     target_file: Option<SettingsFileTarget>,
-    workspace_handle: Option<WindowHandle<MultiWorkspace>>,
+    workspace_handle: Option<MultiWorkspaceWindow>,
     cx: &mut App,
 ) {
     /// Assumes a settings GUI window is already open
@@ -895,7 +895,7 @@ fn open_settings_editor_at_target(
 
 pub fn open_skill_creator(
     open_mode: pages::SkillCreatorOpenMode,
-    workspace_handle: Option<WindowHandle<MultiWorkspace>>,
+    workspace_handle: Option<MultiWorkspaceWindow>,
     cx: &mut App,
 ) {
     open_settings_editor_with(workspace_handle, cx, |settings_window, window, cx| {
@@ -904,7 +904,7 @@ pub fn open_skill_creator(
 }
 
 fn open_settings_editor_with(
-    workspace_handle: Option<WindowHandle<MultiWorkspace>>,
+    workspace_handle: Option<MultiWorkspaceWindow>,
     cx: &mut App,
     callback: impl FnOnce(&mut SettingsWindow, &mut Window, &mut Context<SettingsWindow>) + 'static,
 ) {
@@ -1009,7 +1009,7 @@ fn active_language_mut() -> Option<std::sync::RwLockWriteGuard<'static, Option<S
 
 pub struct SettingsWindow {
     title_bar: Option<Entity<PlatformTitleBar>>,
-    original_window: Option<WindowHandle<MultiWorkspace>>,
+    original_window: Option<MultiWorkspaceWindow>,
     files: Vec<(SettingsUiFile, FocusHandle)>,
     worktree_root_dirs: HashMap<WorktreeId, String>,
     current_file: SettingsUiFile,
@@ -1841,7 +1841,7 @@ impl SettingsUiFile {
 
 impl SettingsWindow {
     fn new(
-        original_window: Option<WindowHandle<MultiWorkspace>>,
+        original_window: Option<MultiWorkspaceWindow>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -4242,7 +4242,7 @@ impl SettingsWindow {
                     .workspaces_with_windows()
                     .filter_map(|(window_handle, weak)| {
                         let workspace = weak.upgrade()?;
-                        let window = window_handle.downcast::<MultiWorkspace>()?;
+                        let window = MultiWorkspaceWindow::from_any(window_handle)?;
                         Some((window, workspace))
                     })
                     .find_map(|(window, workspace): (_, Entity<Workspace>)| {
@@ -4767,7 +4767,7 @@ impl Render for SettingsWindow {
 }
 
 pub(crate) fn all_projects(
-    window: Option<&WindowHandle<MultiWorkspace>>,
+    window: Option<&MultiWorkspaceWindow>,
     cx: &App,
 ) -> impl Iterator<Item = Entity<Project>> {
     let mut seen_project_ids = std::collections::HashSet::new();
@@ -5474,6 +5474,7 @@ fn render_icon_theme_picker(
 pub mod test {
 
     use super::*;
+    use workspace::MultiWorkspace;
 
     impl SettingsWindow {
         fn navbar_entry(&self) -> usize {
@@ -6754,7 +6755,7 @@ pub mod test {
             MultiWorkspace::new(workspace, window, cx)
         });
 
-        let workspace2_handle = cx.window_handle().downcast::<MultiWorkspace>().unwrap();
+        let workspace2_handle = MultiWorkspaceWindow::from_any(cx.window_handle()).unwrap();
 
         cx.run_until_parked();
 
@@ -6886,7 +6887,7 @@ pub mod test {
             MultiWorkspace::new(workspace, window, cx)
         });
 
-        let workspace1_handle = cx.window_handle().downcast::<MultiWorkspace>().unwrap();
+        let workspace1_handle = MultiWorkspaceWindow::from_any(cx.window_handle()).unwrap();
 
         cx.run_until_parked();
 
@@ -7098,7 +7099,7 @@ pub mod test {
             });
             MultiWorkspace::new(workspace, window, cx)
         });
-        let workspace_handle = cx.window_handle().downcast::<MultiWorkspace>().unwrap();
+        let workspace_handle = MultiWorkspaceWindow::from_any(cx.window_handle()).unwrap();
 
         cx.run_until_parked();
 
@@ -7208,7 +7209,7 @@ pub mod test {
             });
             MultiWorkspace::new(workspace, window, cx)
         });
-        let workspace_handle = cx.window_handle().downcast::<MultiWorkspace>().unwrap();
+        let workspace_handle = MultiWorkspaceWindow::from_any(cx.window_handle()).unwrap();
 
         cx.run_until_parked();
 

@@ -77,9 +77,9 @@ use theme_settings::ThemeSettings;
 use ui::{KeyBinding, ProjectEmptyState, prelude::*, utils::WithRemSize};
 use util::ResultExt as _;
 use workspace::{
-    CollaboratorId, DraggedSelection, DraggedTab, FocusWorkspaceSidebar, MultiWorkspace, PathList,
-    SerializedPathList, ToggleWorkspaceSidebar, ToggleZoom, ToolbarItemView, Workspace,
-    WorkspaceId,
+    CollaboratorId, DraggedSelection, DraggedTab, FocusWorkspaceSidebar, MultiWorkspace,
+    MultiWorkspaceWindow, PathList, SerializedPathList, ToggleWorkspaceSidebar, ToggleZoom,
+    ToolbarItemView, Workspace, WorkspaceId,
     dock::{DockPosition, Panel, PanelEvent},
     item::{ItemEvent, ItemHandle},
 };
@@ -2714,7 +2714,8 @@ impl AgentPanel {
         let event_subscription = cx.subscribe_in(&pop_up, window, {
             move |this, _, event: &AgentNotificationEvent, window, cx| match event {
                 AgentNotificationEvent::Accepted => {
-                    let Some(handle) = window.window_handle().downcast::<MultiWorkspace>() else {
+                    let Some(handle) = MultiWorkspaceWindow::from_any(window.window_handle())
+                    else {
                         log::error!("root view should be a MultiWorkspace");
                         return;
                     };
@@ -2762,7 +2763,7 @@ impl AgentPanel {
 
         let multi_workspace_subscription = {
             let pop_up_weak = pop_up_weak.clone();
-            window.root::<MultiWorkspace>().flatten().map(|mw| {
+            MultiWorkspace::for_window(window, cx).map(|mw| {
                 cx.observe_in(&mw, window, move |this, _, window, cx| {
                     this.dismiss_terminal_pop_up_if_visible(terminal_id, &pop_up_weak, window, cx);
                 })
@@ -2848,7 +2849,7 @@ impl AgentPanel {
         let Some(workspace) = self.workspace.upgrade() else {
             return false;
         };
-        if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
+        if let Some(multi_workspace) = MultiWorkspace::for_window(window, cx) {
             let multi_workspace = multi_workspace.read(cx);
             if multi_workspace.workspace() != &workspace {
                 return false;
@@ -2867,7 +2868,7 @@ impl AgentPanel {
             return false;
         }
 
-        if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
+        if let Some(multi_workspace) = MultiWorkspace::for_window(window, cx) {
             let multi_workspace = multi_workspace.read(cx);
             if multi_workspace.sidebar_open() && multi_workspace.is_threads_list_view_active(cx) {
                 return true;
@@ -9540,9 +9541,7 @@ mod tests {
         cx.run_until_parked();
 
         let workspace = cx.update(|window, cx| {
-            window
-                .root::<MultiWorkspace>()
-                .flatten()
+            MultiWorkspace::for_window(window, cx)
                 .expect("test window should have a MultiWorkspace root")
                 .read(cx)
                 .workspace()
@@ -9596,9 +9595,7 @@ mod tests {
             assert_eq!(panel.active_terminal_id(), Some(second_terminal_id));
         });
         cx.update(|window, cx| {
-            let multi_workspace = window
-                .root::<MultiWorkspace>()
-                .flatten()
+            let multi_workspace = MultiWorkspace::for_window(window, cx)
                 .expect("test window should have a MultiWorkspace root");
             multi_workspace.update(cx, |multi_workspace, cx| {
                 multi_workspace.open_sidebar(cx);
@@ -9645,9 +9642,7 @@ mod tests {
             assert_eq!(panel.active_terminal_id(), Some(second_terminal_id));
         });
         cx.update(|window, cx| {
-            let multi_workspace = window
-                .root::<MultiWorkspace>()
-                .flatten()
+            let multi_workspace = MultiWorkspace::for_window(window, cx)
                 .expect("test window should have a MultiWorkspace root");
             multi_workspace.update(cx, |multi_workspace, cx| {
                 multi_workspace.open_sidebar(cx);
@@ -9703,9 +9698,7 @@ mod tests {
             .expect("inactive terminal bell should show a notification");
 
         cx.update(|window, cx| {
-            let multi_workspace = window
-                .root::<MultiWorkspace>()
-                .flatten()
+            let multi_workspace = MultiWorkspace::for_window(window, cx)
                 .expect("test window should have a MultiWorkspace root");
             multi_workspace.update(cx, |multi_workspace, cx| {
                 multi_workspace.open_sidebar(cx);
@@ -9857,9 +9850,7 @@ mod tests {
             .expect("hidden terminal bell should show a notification");
 
         let workspace = cx.update(|window, cx| {
-            window
-                .root::<MultiWorkspace>()
-                .flatten()
+            MultiWorkspace::for_window(window, cx)
                 .expect("test window should have a MultiWorkspace root")
                 .read(cx)
                 .workspace()

@@ -5,7 +5,7 @@ use collections::HashMap;
 use editor::{Editor, MultiBufferOffset, SelectionEffects, scroll::Autoscroll};
 use gpui::{
     AsyncWindowContext, Entity, FocusHandle, Focusable as _, ReadGlobal as _, ScrollHandle,
-    WeakEntity, WindowHandle, prelude::*,
+    WeakEntity, prelude::*,
 };
 use itertools::Itertools as _;
 use project::agent_server_store::{AgentId, AgentServerStore, ExternalAgentSource};
@@ -17,7 +17,7 @@ use ui::{
     Divider, PopoverMenu, Tooltip, prelude::*,
 };
 use util::ResultExt as _;
-use workspace::{MultiWorkspace, Workspace, create_and_open_local_file};
+use workspace::{MultiWorkspaceWindow, Workspace, create_and_open_local_file};
 
 use crate::SettingsWindow;
 
@@ -879,7 +879,7 @@ fn collect_kv(
 /// scaffold `agent_servers` entry, and selects its name so the user can fill in
 /// the executable path.
 #[allow(dead_code)]
-fn open_new_custom_agent_in_settings(original_window: WindowHandle<MultiWorkspace>, cx: &mut App) {
+fn open_new_custom_agent_in_settings(original_window: MultiWorkspaceWindow, cx: &mut App) {
     cx.activate(true);
     original_window
         .update(cx, |multi_workspace, window, cx| {

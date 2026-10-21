@@ -27,9 +27,7 @@ impl ChatPanel {
     pub fn new(workspace: &Workspace, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             workspace: workspace.weak_handle(),
-            multi_workspace: window
-                .root::<MultiWorkspace>()
-                .flatten()
+            multi_workspace: MultiWorkspace::for_window(window, cx)
                 .map(|multi_workspace| multi_workspace.downgrade()),
             focus_handle: cx.focus_handle(),
         }
