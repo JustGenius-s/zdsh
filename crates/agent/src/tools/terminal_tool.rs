@@ -54,6 +54,9 @@ pub struct TerminalToolInput {
     ///
     /// REMINDER: read-only git commands (`git log`, `git diff`, `git show`, `git blame`) MUST include `--no-pager` (e.g. `git --no-pager log`). Prefer `git --no-optional-locks status` over `git status` to avoid optional metadata writes. Git commands that may open an editor (`git rebase`, `git commit`, `git merge`, `git tag`) MUST be prefixed with `GIT_EDITOR=true ` (e.g. `GIT_EDITOR=true git rebase origin/main`). Otherwise the terminal will hang.
     pub command: String,
+    /// A short description of what the command does, in 5-10 words (e.g. `Run the agent crate's tests`). It's shown to the user as the title of the command's card.
+    #[serde(default)]
+    pub description: Option<String>,
     /// Working directory: a project root directory or any subdirectory of one, given by name or absolute path. E.g. `my-project/src`, `/home/user/my-project`, or on Windows `my-project\src` or `C:\Users\me\my-project`.
     pub cd: String,
     /// Optional maximum runtime (in milliseconds). If exceeded, the running terminal task is killed.
@@ -96,6 +99,9 @@ pub struct SandboxedTerminalToolInput {
     ///
     /// REMINDER: read-only git commands (`git log`, `git diff`, `git show`, `git blame`) MUST include `--no-pager` (e.g. `git --no-pager log`). Prefer `git --no-optional-locks status` over `git status` to avoid optional metadata writes. Git commands that may open an editor (`git rebase`, `git commit`, `git merge`, `git tag`) MUST be prefixed with `GIT_EDITOR=true ` (e.g. `GIT_EDITOR=true git rebase origin/main`). Otherwise the terminal will hang.
     pub command: String,
+    /// A short description of what the command does, in 5-10 words (e.g. `Run the agent crate's tests`). It's shown to the user as the title of the command's card.
+    #[serde(default)]
+    pub description: Option<String>,
     /// Working directory: a project root directory or any subdirectory of one, given by name or absolute path. E.g. `my-project/src`, `/home/user/my-project`, or on Windows `my-project\src` or `C:\Users\me\my-project`.
     pub cd: String,
     /// Optional maximum runtime (in milliseconds). If exceeded, the running terminal task is killed.
@@ -2424,6 +2430,7 @@ mod tests {
             tool.run(
                 crate::ToolInput::resolved(TerminalToolInput {
                     command: "printf lines".to_string(),
+                    description: None,
                     cd: "root".to_string(),
                     timeout_ms: None,
                     head_lines: Some(1),

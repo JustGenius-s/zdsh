@@ -1,6 +1,6 @@
 use super::composer::PillButton;
 use super::transcript::{
-    ActivityRow, AlertCard, COLUMN_INSET, ROW_GAP, STEP_GAP, TEXT_INSET, kit_icon, transcript_card,
+    ActivityRow, AlertCard, ROW_GAP, STEP_GAP, TEXT_INSET, kit_icon, transcript_card,
 };
 use super::*;
 use crate::entry_view_state::ActivityGroup;
@@ -857,7 +857,7 @@ impl ThreadView {
 
         v_flex()
             .w_full()
-            .when_some(layout.row_gap(), |this, gap| this.px(COLUMN_INSET).pt(gap))
+            .when_some(layout.row_gap(), |this, gap| this.px(TEXT_INSET).pt(gap))
             .map(|this| {
                 if layout == ToolCallLayout::Floating {
                     // The buttons stay in view while a long request scrolls.
@@ -1142,6 +1142,14 @@ impl ThreadView {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "current directory".to_string());
         let command = command_text(tool_call.label.read(cx));
+        let description = tool_call
+            .raw_input
+            .as_ref()
+            .and_then(|input| input.get("description"))
+            .and_then(|description| description.as_str())
+            .map(str::trim)
+            .filter(|description| !description.is_empty())
+            .map(str::to_string);
 
         let is_expanded = self
             .entry_view_state
@@ -1187,7 +1195,19 @@ impl ThreadView {
             div()
                 .id(SharedString::from(child_id("command")))
                 .tooltip(Tooltip::text(format!("Working directory: {working_dir}")))
-                .child(command_title(&command, cx)),
+                .map(|this| match &description {
+                    Some(description) => {
+                        let verb = if needs_confirmation {
+                            "Run"
+                        } else if running {
+                            "Running"
+                        } else {
+                            "Ran"
+                        };
+                        this.child(description_title(verb, description, cx))
+                    }
+                    None => this.child(command_title(&command, cx)),
+                }),
         )
         .when(time_elapsed > ELAPSED_DISPLAY_THRESHOLD, |header| {
             header.meta(duration_alt_display(time_elapsed))
@@ -1286,9 +1306,11 @@ impl ThreadView {
             .entry(entry_ix)
             .and_then(|entry| entry.terminal(terminal));
 
-        // The header shows the command's first line; the whole command shows when it's longer or
-        // when it's waiting to be approved.
-        let show_full_command = needs_confirmation || (is_expanded && command.contains('\n'));
+        // A header with a description leaves the command to the body. Otherwise the header shows the
+        // command's first line, and the whole command shows when it's longer. Either way the whole
+        // command shows while it's waiting to be approved.
+        let show_full_command = needs_confirmation
+            || (is_expanded && (description.is_some() || command.contains('\n')));
         let mut sections = Vec::new();
         if show_full_command {
             sections.push(
@@ -1338,7 +1360,7 @@ impl ThreadView {
 
         v_flex()
             .w_full()
-            .when_some(layout.row_gap(), |this, gap| this.px(COLUMN_INSET).pt(gap))
+            .when_some(layout.row_gap(), |this, gap| this.px(TEXT_INSET).pt(gap))
             .child(
                 ToolCard::new(SharedString::from(child_id("card")), header)
                     .sections(sections)
@@ -1956,7 +1978,7 @@ impl ThreadView {
             cx,
         );
 
-        v_flex().px(COLUMN_INSET).pt(ROW_GAP).child(content)
+        v_flex().px(TEXT_INSET).pt(ROW_GAP).child(content)
     }
 
     fn render_subagent_card(
@@ -2362,6 +2384,19 @@ fn command_title(command: &str, cx: &App) -> impl IntoElement {
         .text_xs()
         .text_color(KitTheme::global(cx).foreground)
         .child(command.lines().next().unwrap_or_default().to_string())
+}
+
+fn description_title(verb: &'static str, description: &str, cx: &App) -> impl IntoElement {
+    h_flex()
+        .min_w_0()
+        .gap_1()
+        .child(
+            div()
+                .flex_none()
+                .text_color(KitTheme::global(cx).foreground)
+                .child(verb),
+        )
+        .child(div().min_w_0().truncate().child(description.to_string()))
 }
 
 fn highlighted_label(

@@ -1096,10 +1096,10 @@ impl ThreadView {
     }
 }
 
-/// Where cards, prompts and the composer sit, inset from the panel's edges.
+/// Where prompts and the composer sit, inset from the panel's edges.
 pub(super) const COLUMN_INSET: Pixels = px(16.);
-/// Where text sits: past a prompt card's border and padding, so text inside and outside of cards
-/// starts at the same place.
+/// Where text and tool cards sit: past a prompt card's border and padding, so text inside and
+/// outside of prompts starts at the same place.
 pub(super) const TEXT_INSET: Pixels = px(29.);
 /// The space above each row of the transcript, which is the same for every kind of row.
 pub(super) const ROW_GAP: Pixels = px(14.);
