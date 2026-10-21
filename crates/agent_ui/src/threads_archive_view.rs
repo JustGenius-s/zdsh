@@ -972,16 +972,28 @@ impl ThreadsArchiveView {
 
         h_flex()
             .mt_px()
-            .pl_2p5()
+            .pl_1()
             .pr_1p5()
             .h(Tab::content_height(cx))
             .justify_between()
             .border_b_1()
             .border_color(cx.theme().colors().border)
             .child(
-                Label::new(count_label)
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
+                h_flex()
+                    .gap_1()
+                    .child(
+                        IconButton::new("back-to-threads", IconName::ArrowLeft)
+                            .icon_size(IconSize::Small)
+                            .tooltip(Tooltip::text("Back to Threads"))
+                            .on_click(cx.listener(|_this, _, _, cx| {
+                                cx.emit(ThreadsArchiveViewEvent::Close);
+                            })),
+                    )
+                    .child(
+                        Label::new(count_label)
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    ),
             )
             .child(
                 h_flex()

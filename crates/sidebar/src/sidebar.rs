@@ -1,3 +1,4 @@
+mod sidebar_row;
 mod thread_switcher;
 
 use acp_thread::ThreadStatus;
@@ -28,10 +29,10 @@ use feature_flags::{
     AgentThreadWorktreeLabel, AgentThreadWorktreeLabelFlag, FeatureFlag, FeatureFlagAppExt as _,
 };
 use gpui::{
-    Action as _, AnyElement, App, ClickEvent, Context, DismissEvent, Entity, EntityId, FocusHandle,
-    Focusable, KeyContext, ListState, Modifiers, Pixels, Render, SharedString, Task, TaskExt,
-    WeakEntity, Window, WindowBackgroundAppearance, WindowHandle, linear_color_stop,
-    linear_gradient, list, prelude::*, px,
+    Action as _, Animation, AnimationExt as _, AnyElement, App, ClickEvent, Context, DismissEvent,
+    Entity, EntityId, FocusHandle, Focusable, KeyContext, ListState, Modifiers, MouseButton,
+    Pixels, Render, SharedString, Task, TaskExt, WeakEntity, Window, WindowHandle, anchored,
+    deferred, linear_color_stop, linear_gradient, list, prelude::*, pulsating_between, px,
 };
 use itertools::Itertools;
 use language_model::LanguageModelRegistry;
@@ -53,12 +54,13 @@ use std::mem;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use theme::ActiveTheme;
 use ui::{
-    AgentThreadStatus, CommonAnimationExt, ContextMenu, ContextMenuEntry, GradientFade,
-    HighlightedLabel, KeyBinding, PopoverMenu, PopoverMenuHandle, ProjectEmptyState, ScrollAxes,
-    Scrollbars, Tab, ThreadItem, ThreadItemWorktreeInfo, TintColor, Tooltip, WithScrollbar,
-    prelude::*, render_modifiers, right_click_menu,
+    AgentThreadStatus, CommonAnimationExt, ContextMenu, ContextMenuEntry, HighlightedLabel,
+    KeyBinding, PopoverMenu, PopoverMenuHandle, ProjectEmptyState, ScrollAxes, Scrollbars,
+    ThreadItemWorktreeInfo, TintColor, Tooltip, WithScrollbar, WorktreeKind, prelude::*,
+    render_modifiers, right_click_menu,
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 use util::ResultExt as _;
@@ -75,6 +77,7 @@ use zed_actions::{CreateWorktree, NewWorktreeBranchTarget, OpenRecent};
 
 use zed_actions::agents_sidebar::{FocusSidebarFilter, ToggleThreadSwitcher};
 
+use crate::sidebar_row::{GROUP_GAP, LIST_INSET, SidebarRow, StatusDot, relative_time};
 use crate::thread_switcher::{
     ThreadSwitcher, ThreadSwitcherEntry, ThreadSwitcherEvent, ThreadSwitcherSelection,
     ThreadSwitcherTerminalEntry, ThreadSwitcherThreadEntry,
@@ -220,19 +223,6 @@ enum ThreadEntryWorkspace {
         /// The project group this entry belongs to.
         project_group_key: ProjectGroupKey,
     },
-}
-
-impl ThreadEntryWorkspace {
-    fn is_remote(&self, cx: &App) -> bool {
-        match self {
-            ThreadEntryWorkspace::Open(workspace) => {
-                !workspace.read(cx).project().read(cx).is_local()
-            }
-            ThreadEntryWorkspace::Closed {
-                project_group_key, ..
-            } => project_group_key.host().is_some(),
-        }
-    }
 }
 
 /// If the title begins with a decorative prefix (such as a leading emoji,
@@ -815,7 +805,8 @@ pub struct Sidebar {
     draft_kinds: HashMap<ThreadId, DraftKind>,
     view: SidebarView,
     restoring_tasks: HashMap<agent_ui::ThreadId, Task<()>>,
-    recent_projects_popover_handle: PopoverMenuHandle<SidebarRecentProjects>,
+    /// The picker for adding a project, open under the "Workspaces" header.
+    recent_projects: Option<Entity<SidebarRecentProjects>>,
     project_header_menu_handles: HashMap<usize, PopoverMenuHandle<ContextMenu>>,
     project_header_new_thread_menu_handles: HashMap<usize, PopoverMenuHandle<ContextMenu>>,
     project_header_menu_ix: Option<usize>,
@@ -966,7 +957,7 @@ impl Sidebar {
             draft_kinds: HashMap::new(),
             view: SidebarView::default(),
             restoring_tasks: HashMap::new(),
-            recent_projects_popover_handle: PopoverMenuHandle::default(),
+            recent_projects: None,
             project_header_menu_handles: HashMap::new(),
             project_header_new_thread_menu_handles: HashMap::new(),
             project_header_menu_ix: None,
@@ -2230,8 +2221,16 @@ impl Sidebar {
         // is_selected means the keyboard selector is here.
         let is_selected = is_focused && self.selection == Some(ix);
 
-        let is_group_header_after_first =
-            ix > 0 && matches!(entry, ListEntry::ProjectHeader { .. });
+        // An open group ends with its last row, or with the header's "No threads yet" line.
+        let next_is_row = matches!(
+            self.contents.entries.get(ix + 1),
+            Some(ListEntry::Thread(_) | ListEntry::Terminal(_))
+        );
+        let ends_open_group = !next_is_row
+            && match entry {
+                ListEntry::ProjectHeader { key, .. } => !self.is_group_collapsed(key, cx),
+                ListEntry::Thread(_) | ListEntry::Terminal(_) => true,
+            };
 
         let is_active = self
             .active_entry
@@ -2276,11 +2275,10 @@ impl Sidebar {
             }
         };
 
-        if is_group_header_after_first {
+        if ends_open_group {
             v_flex()
                 .w_full()
-                .border_t_1()
-                .border_color(cx.theme().colors().border)
+                .pb(rems_from_px(GROUP_GAP))
                 .child(rendered)
                 .into_any_element()
         } else {
@@ -2345,140 +2343,93 @@ impl Sidebar {
         let key_for_toggle = key.clone();
         let key_for_focus = key.clone();
 
-        let color = cx.theme().colors();
-        let sidebar_base_bg = if is_sticky {
-            color.panel_background_for_overlay()
-        } else {
-            color.panel_background
-        };
-
-        // The fade gradient renders as a visible patch on transparent windows,
-        // so truncate the label instead.
-        let opaque_window = cx.theme().window_background_appearance()
-            == WindowBackgroundAppearance::Opaque
-            && sidebar_base_bg.a >= 1.0;
-
         let label = if highlight_positions.is_empty() {
             Label::new(label.clone())
                 .when(!is_active, |this| this.color(Color::Muted))
-                .when(!opaque_window, |this| this.truncate())
+                .truncate()
                 .into_any_element()
         } else {
             HighlightedLabel::new(label.clone(), highlight_positions.to_vec())
                 .when(!is_active, |this| this.color(Color::Muted))
-                .when(!opaque_window, |this| this.truncate())
+                .truncate()
                 .into_any_element()
         };
 
-        let base_bg = color.background.blend(sidebar_base_bg);
-
-        let hover_solid = base_bg.blend(color.ghost_element_hover);
-        let active_solid = base_bg.blend(color.ghost_element_active);
-
-        let group_name_for_gradient = group_name.clone();
-        let gradient_overlay = move || {
-            GradientFade::new(base_bg, hover_solid, active_solid)
-                .width(px(92.0))
-                .right(px(-2.0))
-                .gradient_stop(0.7)
-                .when(!has_filter, |this| {
-                    this.group_name(group_name_for_gradient.clone())
+        let title = h_flex()
+            .min_w_0()
+            .gap_1()
+            .child(label)
+            .when_some(
+                self.render_remote_project_icon(ix, host.as_ref()),
+                |this, icon| this.child(icon),
+            )
+            .when(is_collapsed, |this| {
+                this.when(has_running_threads, |this| {
+                    this.child(
+                        Icon::new(IconName::LoadCircle)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted)
+                            .with_rotate_animation(2),
+                    )
                 })
+                .when(waiting_thread_count > 0, |this| {
+                    let tooltip_text = if waiting_thread_count == 1 {
+                        "1 thread is waiting for confirmation".to_string()
+                    } else {
+                        format!("{waiting_thread_count} threads are waiting for confirmation",)
+                    };
+                    this.child(
+                        div()
+                            .id(format!("{id_prefix}waiting-indicator-{ix}"))
+                            .child(
+                                Icon::new(IconName::Warning)
+                                    .size(IconSize::XSmall)
+                                    .color(Color::Warning),
+                            )
+                            .tooltip(Tooltip::text(tooltip_text)),
+                    )
+                })
+                .when(
+                    has_notifications && !has_running_threads && waiting_thread_count == 0,
+                    |this| this.child(StatusDot::Unread),
+                )
+            });
+
+        let folder = Icon::new(IconName::Folder)
+            .size(IconSize::Small)
+            .color(Color::Muted);
+        let disclosure = Icon::new(disclosure_icon)
+            .size(IconSize::Small)
+            .color(Color::Muted);
+        // A search shows every group open, so there's nothing to fold while it's on.
+        let row = if has_filter {
+            SidebarRow::new(id, folder, title)
+        } else if is_focused {
+            SidebarRow::new(id, disclosure, title)
+        } else {
+            SidebarRow::new(id, folder, title).leading_on_hover(disclosure)
         };
 
-        let header = h_flex()
-            .id(id)
-            .group(&group_name)
-            .when(!has_filter, |this| this.cursor_pointer())
-            .relative()
-            .h(Tab::content_height(cx))
+        let header = div()
             .w_full()
-            .pl_2()
-            .pr_1p5()
-            .justify_between()
-            .border_1()
-            .border_r_2()
-            .map(|this| {
-                if is_focused {
-                    this.border_color(color.panel_focused_border)
-                } else {
-                    this.border_color(gpui::transparent_black())
+            .on_mouse_down(gpui::MouseButton::Right, {
+                let menu_handle = self
+                    .project_header_menu_handles
+                    .get(&ix)
+                    .cloned()
+                    .unwrap_or_default();
+                move |_, window, cx| {
+                    cx.stop_propagation();
+                    menu_handle.toggle(window, cx);
                 }
             })
-            .when(!has_filter, |this| {
-                this.hover(|s| s.bg(color.ghost_element_hover))
-                    .group_active(&group_name, |s| s.bg(color.ghost_element_active))
-            })
+            .block_mouse_except_scroll()
             .child(
-                h_flex()
-                    .relative()
-                    .min_w_0()
-                    .w_full()
-                    .gap_1()
-                    .child(label)
-                    .when_some(
-                        self.render_remote_project_icon(ix, host.as_ref()),
-                        |this, icon| this.child(icon),
-                    )
-                    .when(is_collapsed, |this| {
-                        this.when(has_running_threads, |this| {
-                            this.child(
-                                Icon::new(IconName::LoadCircle)
-                                    .size(IconSize::XSmall)
-                                    .color(Color::Muted)
-                                    .with_rotate_animation(2),
-                            )
-                        })
-                        .when(waiting_thread_count > 0, |this| {
-                            let tooltip_text = if waiting_thread_count == 1 {
-                                "1 thread is waiting for confirmation".to_string()
-                            } else {
-                                format!(
-                                    "{waiting_thread_count} threads are waiting for confirmation",
-                                )
-                            };
-                            this.child(
-                                div()
-                                    .id(format!("{id_prefix}waiting-indicator-{ix}"))
-                                    .child(
-                                        Icon::new(IconName::Warning)
-                                            .size(IconSize::XSmall)
-                                            .color(Color::Warning),
-                                    )
-                                    .tooltip(Tooltip::text(tooltip_text)),
-                            )
-                        })
-                        .when(
-                            has_notifications && !has_running_threads && waiting_thread_count == 0,
-                            |this| {
-                                this.child(
-                                    Icon::new(IconName::Circle)
-                                        .size(IconSize::Small)
-                                        .color(Color::Accent),
-                                )
-                            },
-                        )
-                    })
-                    .when(!has_filter, |this| {
-                        this.child(
-                            div()
-                                .when(!is_focused, |this| this.visible_on_hover(&group_name))
-                                .child(
-                                    Icon::new(disclosure_icon)
-                                        .size(IconSize::Small)
-                                        .color(Color::Muted),
-                                ),
-                        )
-                    }),
-            )
-            .children(opaque_window.then(|| gradient_overlay()))
-            .child(
-                h_flex()
-                    .children(opaque_window.then(|| gradient_overlay()))
-                    .child(
+                row.group(group_name.clone())
+                    .focused(is_focused)
+                    .end(
                         h_flex()
                             .gap_px()
-                            .pr_1p5()
                             .child(self.render_new_thread_button(
                                 ix,
                                 id_prefix,
@@ -2498,49 +2449,31 @@ impl Sidebar {
                             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation();
                             }),
+                    )
+                    .on_click(
+                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                            if event.modifiers().secondary() {
+                                this.activate_or_open_workspace_for_group(
+                                    &key_for_focus,
+                                    window,
+                                    cx,
+                                );
+                            } else if !this.has_filter_query(cx) {
+                                this.toggle_collapse(&key_for_toggle, window, cx);
+                            }
+                        }),
                     ),
-            )
-            .on_mouse_down(gpui::MouseButton::Right, {
-                let menu_handle = self
-                    .project_header_menu_handles
-                    .get(&ix)
-                    .cloned()
-                    .unwrap_or_default();
-                move |_, window, cx| {
-                    cx.stop_propagation();
-                    menu_handle.toggle(window, cx);
-                }
-            })
-            .on_click(
-                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                    if event.modifiers().secondary() {
-                        this.activate_or_open_workspace_for_group(&key_for_focus, window, cx);
-                    } else if !this.has_filter_query(cx) {
-                        this.toggle_collapse(&key_for_toggle, window, cx);
-                    }
-                }),
-            )
-            .block_mouse_except_scroll();
+            );
 
         if !is_collapsed && !has_threads {
             v_flex()
                 .w_full()
                 .child(header)
-                .child(
-                    h_flex()
-                        .px_2()
-                        .pt_1()
-                        .pb_2()
-                        .gap(px(7.))
-                        .child(Icon::new(IconName::Circle).size(IconSize::Small).color(
-                            Color::Custom(cx.theme().colors().icon_placeholder.opacity(0.1)),
-                        ))
-                        .child(
-                            Label::new("No threads yet")
-                                .size(LabelSize::Small)
-                                .color(Color::Placeholder),
-                        ),
-                )
+                .child(SidebarRow::new(
+                    SharedString::from(format!("{id_prefix}no-threads-{ix}")),
+                    StatusDot::Draft,
+                    Label::new("No threads yet").color(Color::Placeholder),
+                ))
                 .into_any_element()
         } else {
             header.into_any_element()
@@ -6309,27 +6242,31 @@ impl Sidebar {
         let id = SharedString::from(format!("thread-entry-{}", ix));
 
         let color = cx.theme().colors();
-        let sidebar_bg = color.panel_background;
         let button_hover_bg = color.element_background;
         let button_active_bg = color.element_active;
 
-        let timestamp: SharedString = if is_empty_draft {
-            SharedString::default()
-        } else {
-            format_history_entry_timestamp(Self::thread_display_time(&thread.metadata)).into()
-        };
+        let timestamp =
+            (!is_empty_draft).then(|| relative_time(Self::thread_display_time(&thread.metadata)));
 
-        let is_remote = thread.workspace.is_remote(cx);
-
-        let worktrees = apply_worktree_label_mode(
+        // A linked worktree's name, or else its branch, follows the title.
+        let worktree_label = apply_worktree_label_mode(
             thread.worktrees.clone(),
             cx.flag_value::<AgentThreadWorktreeLabelFlag>(),
-        );
+        )
+        .into_iter()
+        .filter(|worktree| worktree.kind == WorktreeKind::Linked)
+        .find_map(|worktree| worktree.worktree_name.or(worktree.branch_name));
 
-        let (icon, icon_svg) = if is_draft {
-            (IconName::Circle, None)
+        let status_dot = if is_draft {
+            StatusDot::Draft
         } else {
-            (thread.icon, thread.icon_from_external_svg.clone())
+            match thread.status {
+                AgentThreadStatus::Running => StatusDot::Running,
+                AgentThreadStatus::WaitingForConfirmation => StatusDot::WaitingForConfirmation,
+                AgentThreadStatus::Error => StatusDot::Error,
+                AgentThreadStatus::Completed if has_notification => StatusDot::Unread,
+                AgentThreadStatus::Completed => StatusDot::Read,
+            }
         };
 
         let title_generating = thread.is_title_generating
@@ -6337,31 +6274,172 @@ impl Sidebar {
                 .regenerating_titles
                 .contains(&thread.metadata.thread_id);
 
-        let thread_item = ThreadItem::new(id, title.clone())
-            .base_bg(sidebar_bg)
-            .icon(icon)
-            .when(is_draft, |this| {
-                this.icon_color(Color::Custom(cx.theme().colors().icon_muted.opacity(0.2)))
+        let title_color = if is_active {
+            Color::Default
+        } else {
+            Color::Muted
+        };
+        let title_label = match rename_title_editor {
+            Some(title_editor) => title_editor,
+            None if title_generating => Label::new(title.clone())
+                .color(Color::Muted)
+                .truncate()
+                .with_animation(
+                    "generating-title",
+                    Animation::new(Duration::from_secs(2))
+                        .repeat()
+                        .with_easing(pulsating_between(0.4, 0.8)),
+                    |label, delta| label.alpha(delta),
+                )
+                .into_any_element(),
+            None if thread.highlight_positions.is_empty() => Label::new(title.clone())
+                .color(title_color)
+                .truncate()
+                .into_any_element(),
+            None => HighlightedLabel::new(title.clone(), thread.highlight_positions.to_vec())
+                .color(title_color)
+                .truncate()
+                .into_any_element(),
+        };
+        let title_row = h_flex()
+            .min_w_0()
+            .gap_1p5()
+            .child(div().min_w_0().child(title_label))
+            .when_some(worktree_label, |this, worktree_label| {
+                this.child(
+                    div().min_w_0().child(
+                        Label::new(worktree_label)
+                            .color(Color::Muted)
+                            .alpha(0.6)
+                            .truncate(),
+                    ),
+                )
+            });
+
+        let actions = (is_hovered && !is_renaming).then(|| {
+            let rename_button = IconButton::new(("rename-thread", ix), IconName::Pencil)
+                .hover_background(button_hover_bg)
+                .active_background(button_active_bg)
+                .icon_size(IconSize::Small)
+                .tooltip({
+                    let focus_handle = focus_handle.clone();
+                    move |_window, cx| {
+                        Tooltip::for_action_in(
+                            "Rename Thread",
+                            &RenameSelectedThread,
+                            &focus_handle,
+                            cx,
+                        )
+                    }
+                })
+                .on_click({
+                    let title = title.clone();
+                    cx.listener(move |this, _, window, cx| {
+                        this.start_renaming_entry(
+                            ix,
+                            RenameTarget::Thread(thread_id_for_actions),
+                            title.clone(),
+                            window,
+                            cx,
+                        );
+                    })
+                });
+
+            let contextual_action: Option<AnyElement> = if is_running {
+                Some(
+                    IconButton::new("stop-thread", IconName::Stop)
+                        .icon_size(IconSize::Small)
+                        .icon_color(Color::Error)
+                        .style(ButtonStyle::Tinted(TintColor::Error))
+                        .tooltip(Tooltip::text("Stop Generation"))
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.stop_thread(&thread_id_for_actions, cx);
+                        }))
+                        .into_any_element(),
+                )
+            } else {
+                match thread.draft {
+                    Some(DraftKind::Empty) => None,
+                    Some(DraftKind::WithContent) => Some(
+                        IconButton::new("discard_thread", IconName::Close)
+                            .hover_background(button_hover_bg)
+                            .active_background(button_active_bg)
+                            .icon_size(IconSize::Small)
+                            .tooltip(Tooltip::text("Discard Draft"))
+                            .on_click({
+                                let thread_workspace = thread_workspace.clone();
+                                cx.listener(move |this, _, window, cx| {
+                                    this.remove_draft(
+                                        thread_id_for_actions,
+                                        &thread_workspace,
+                                        window,
+                                        cx,
+                                    );
+                                })
+                            })
+                            .into_any_element(),
+                    ),
+                    None => Some(
+                        IconButton::new("archive-thread", IconName::Archive)
+                            .hover_background(button_hover_bg)
+                            .active_background(button_active_bg)
+                            .icon_size(IconSize::Small)
+                            .tooltip({
+                                let focus_handle = focus_handle.clone();
+                                move |_window, cx| {
+                                    Tooltip::for_action_in(
+                                        "Archive Thread",
+                                        &ArchiveSelectedThread,
+                                        &focus_handle,
+                                        cx,
+                                    )
+                                }
+                            })
+                            .on_click({
+                                let session_id = session_id_for_delete.clone();
+                                cx.listener(move |this, _, window, cx| {
+                                    if let Some(ref session_id) = session_id {
+                                        this.archive_thread(session_id, window, cx);
+                                    }
+                                })
+                            })
+                            .into_any_element(),
+                    ),
+                }
+            };
+
+            h_flex()
+                .gap_0p5()
+                .child(rename_button)
+                .children(contextual_action)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .into_any_element()
+        });
+        // Hovering swaps the time for the actions.
+        let end = actions.or_else(|| {
+            timestamp.map(|timestamp| {
+                Label::new(timestamp)
+                    .color(Color::Placeholder)
+                    .into_any_element()
             })
-            .status(thread.status)
-            .is_remote(is_remote)
-            .when_some(icon_svg, |this, svg| {
-                this.custom_icon_from_external_svg(svg)
-            })
-            .worktrees(worktrees)
-            .timestamp(timestamp)
-            .highlight_positions(thread.highlight_positions.to_vec())
-            .title_generating(title_generating)
-            .notified(has_notification)
-            .when(thread.diff_stats.lines_added > 0, |this| {
-                this.added(thread.diff_stats.lines_added as usize)
-            })
-            .when(thread.diff_stats.lines_removed > 0, |this| {
-                this.removed(thread.diff_stats.lines_removed as usize)
-            })
+        });
+
+        let status_tooltip = match thread.status {
+            AgentThreadStatus::Error => {
+                Some((IconName::Close, Color::Error, "Thread has an Error"))
+            }
+            AgentThreadStatus::WaitingForConfirmation => Some((
+                IconName::Warning,
+                Color::Warning,
+                "Waiting for Confirmation",
+            )),
+            AgentThreadStatus::Running | AgentThreadStatus::Completed => None,
+        };
+
+        let thread_item = SidebarRow::new(id, status_dot, title_row)
+            .when_some(end, |row, end| row.end(end))
             .selected(is_selected)
             .focused(is_focused)
-            .hovered(is_hovered)
             .on_hover(cx.listener(move |this, is_hovered: &bool, _window, cx| {
                 if *is_hovered {
                     this.hovered_thread_index = Some(ix);
@@ -6370,107 +6448,14 @@ impl Sidebar {
                 }
                 cx.notify();
             }))
-            .when_some(rename_title_editor, |this, title_editor| {
-                this.is_truncated(false).title_slot(title_editor)
-            })
-            .when(is_hovered && !is_renaming, |this| {
-                let rename_button = IconButton::new(("rename-thread", ix), IconName::Pencil)
-                    .hover_background(button_hover_bg)
-                    .active_background(button_active_bg)
-                    .icon_size(IconSize::Small)
-                    .tooltip({
-                        let focus_handle = focus_handle.clone();
-                        move |_window, cx| {
-                            Tooltip::for_action_in(
-                                "Rename Thread",
-                                &RenameSelectedThread,
-                                &focus_handle,
-                                cx,
-                            )
-                        }
-                    })
-                    .on_click({
-                        let title = title.clone();
-                        cx.listener(move |this, _, window, cx| {
-                            this.start_renaming_entry(
-                                ix,
-                                RenameTarget::Thread(thread_id_for_actions),
-                                title.clone(),
-                                window,
-                                cx,
-                            );
-                        })
-                    });
-
-                let contextual_action: Option<AnyElement> = if is_running {
-                    Some(
-                        IconButton::new("stop-thread", IconName::Stop)
-                            .icon_size(IconSize::Small)
-                            .icon_color(Color::Error)
-                            .style(ButtonStyle::Tinted(TintColor::Error))
-                            .tooltip(Tooltip::text("Stop Generation"))
-                            .on_click(cx.listener(move |this, _, _window, cx| {
-                                this.stop_thread(&thread_id_for_actions, cx);
-                            }))
-                            .into_any_element(),
-                    )
-                } else {
-                    match thread.draft {
-                        Some(DraftKind::Empty) => None,
-                        Some(DraftKind::WithContent) => Some(
-                            IconButton::new("discard_thread", IconName::Close)
-                                .hover_background(button_hover_bg)
-                                .active_background(button_active_bg)
-                                .icon_size(IconSize::Small)
-                                .tooltip(Tooltip::text("Discard Draft"))
-                                .on_click({
-                                    let thread_workspace = thread_workspace.clone();
-                                    cx.listener(move |this, _, window, cx| {
-                                        this.remove_draft(
-                                            thread_id_for_actions,
-                                            &thread_workspace,
-                                            window,
-                                            cx,
-                                        );
-                                    })
-                                })
-                                .into_any_element(),
-                        ),
-                        None => Some(
-                            IconButton::new("archive-thread", IconName::Archive)
-                                .hover_background(button_hover_bg)
-                                .active_background(button_active_bg)
-                                .icon_size(IconSize::Small)
-                                .tooltip({
-                                    let focus_handle = focus_handle.clone();
-                                    move |_window, cx| {
-                                        Tooltip::for_action_in(
-                                            "Archive Thread",
-                                            &ArchiveSelectedThread,
-                                            &focus_handle,
-                                            cx,
-                                        )
-                                    }
-                                })
-                                .on_click({
-                                    let session_id = session_id_for_delete.clone();
-                                    cx.listener(move |this, _, window, cx| {
-                                        if let Some(ref session_id) = session_id {
-                                            this.archive_thread(session_id, window, cx);
-                                        }
-                                    })
-                                })
-                                .into_any_element(),
-                        ),
-                    }
-                };
-
-                this.action_slot(
+            .when_some(status_tooltip, |row, (icon, color, text)| {
+                row.tooltip(Tooltip::element(move |_, _| {
                     h_flex()
-                        .gap_0p5()
-                        .child(rename_button)
-                        .when_some(contextual_action, |this, action| this.child(action)),
-                )
+                        .gap_1()
+                        .child(Icon::new(icon).size(IconSize::Small).color(color))
+                        .child(Label::new(text))
+                        .into_any_element()
+                }))
             })
             .on_click({
                 let thread_workspace = thread_workspace.clone();
@@ -6635,20 +6620,14 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = ElementId::from(format!("terminal-{}", terminal.metadata.terminal_id));
-        let timestamp = format_history_entry_timestamp(terminal.metadata.created_at);
+        let timestamp = relative_time(terminal.metadata.created_at);
         let is_hovered = self.hovered_thread_index == Some(ix);
         let color = cx.theme().colors();
-        let sidebar_bg = color.panel_background;
         let button_hover_bg = color.element_background;
         let button_active_bg = color.element_active;
         let metadata = terminal.metadata.clone();
         let workspace = terminal.workspace.clone();
         let focus_handle = self.focus_handle.clone();
-        let worktrees = apply_worktree_label_mode(
-            terminal.worktrees.clone(),
-            cx.flag_value::<AgentThreadWorktreeLabelFlag>(),
-        );
-        let is_remote = terminal.workspace.is_remote(cx);
         let is_renaming =
             self.rename_target == Some(RenameTarget::Terminal(terminal.metadata.terminal_id));
         let rename_title_editor = is_renaming.then(|| self.render_rename_title_editor(cx));
@@ -6660,18 +6639,65 @@ impl Sidebar {
                 None => (None, display_title, terminal.highlight_positions.clone()),
             };
 
-        let terminal_item = ThreadItem::new(id, title)
-            .base_bg(sidebar_bg)
-            .icon(IconName::Terminal)
-            .when_some(icon_char, |this, icon_char| this.icon_char(icon_char))
-            .is_remote(is_remote)
-            .worktrees(worktrees)
-            .timestamp(timestamp)
-            .notified(terminal.has_notification)
-            .highlight_positions(highlight_positions)
+        let leading = if terminal.has_notification {
+            StatusDot::Unread.into_any_element()
+        } else if let Some(icon_char) = icon_char {
+            Label::new(icon_char)
+                .size(LabelSize::Small)
+                .color(Color::Muted)
+                .into_any_element()
+        } else {
+            Icon::new(IconName::Terminal)
+                .size(IconSize::Small)
+                .color(Color::Muted)
+                .into_any_element()
+        };
+
+        let title_color = if is_active {
+            Color::Default
+        } else {
+            Color::Muted
+        };
+        let title_label = match rename_title_editor {
+            Some(title_editor) => title_editor,
+            None if highlight_positions.is_empty() => Label::new(title)
+                .color(title_color)
+                .truncate()
+                .into_any_element(),
+            None => HighlightedLabel::new(title, highlight_positions)
+                .color(title_color)
+                .truncate()
+                .into_any_element(),
+        };
+
+        let end = if is_hovered && !is_renaming {
+            IconButton::new("close-terminal", IconName::Close)
+                .hover_background(button_hover_bg)
+                .active_background(button_active_bg)
+                .icon_size(IconSize::Small)
+                .icon_color(Color::Muted)
+                .tooltip(move |_window, cx| {
+                    Tooltip::for_action_in(
+                        "Close Terminal",
+                        &ArchiveSelectedThread,
+                        &focus_handle,
+                        cx,
+                    )
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_terminal(&metadata, &workspace, window, cx);
+                }))
+                .into_any_element()
+        } else {
+            Label::new(timestamp)
+                .color(Color::Placeholder)
+                .into_any_element()
+        };
+
+        let terminal_item = SidebarRow::new(id, leading, div().min_w_0().child(title_label))
+            .end(end)
             .selected(is_active)
             .focused(is_focused)
-            .hovered(is_hovered)
             .on_hover(cx.listener(move |this, is_hovered: &bool, _window, cx| {
                 if *is_hovered {
                     this.hovered_thread_index = Some(ix);
@@ -6680,32 +6706,6 @@ impl Sidebar {
                 }
                 cx.notify();
             }))
-            .when_some(rename_title_editor, |this, title_editor| {
-                this.is_truncated(false).title_slot(title_editor)
-            })
-            .when(is_hovered && !is_renaming, |this| {
-                this.action_slot(
-                    IconButton::new("close-terminal", IconName::Close)
-                        .hover_background(button_hover_bg)
-                        .active_background(button_active_bg)
-                        .icon_size(IconSize::Small)
-                        .icon_color(Color::Muted)
-                        .tooltip({
-                            let focus_handle = focus_handle.clone();
-                            move |_window, cx| {
-                                Tooltip::for_action_in(
-                                    "Close Terminal",
-                                    &ArchiveSelectedThread,
-                                    &focus_handle,
-                                    cx,
-                                )
-                            }
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.close_terminal(&metadata, &workspace, window, cx);
-                        })),
-                )
-            })
             .on_click(cx.listener({
                 let metadata = terminal.metadata.clone();
                 let workspace = terminal.workspace.clone();
@@ -6762,50 +6762,119 @@ impl Sidebar {
             .child(self.filter_editor.clone())
     }
 
-    fn render_recent_projects_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let multi_workspace = self.multi_workspace.upgrade();
+    fn toggle_recent_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.recent_projects.take().is_some() {
+            cx.notify();
+            return;
+        }
+        let Some(multi_workspace) = self.multi_workspace.upgrade() else {
+            return;
+        };
+        let workspace = multi_workspace.read(cx).workspace().clone();
+        let window_project_groups = multi_workspace.read(cx).project_group_keys();
+        let focus_handle = workspace.read(cx).focus_handle(cx);
+        let recent_projects = SidebarRecentProjects::popover(
+            workspace.downgrade(),
+            window_project_groups,
+            focus_handle,
+            window,
+            cx,
+        );
 
-        let workspace = multi_workspace
-            .as_ref()
-            .map(|mw| mw.read(cx).workspace().downgrade());
+        let previous_focus = window.focused(cx);
+        cx.subscribe_in(
+            &recent_projects,
+            window,
+            move |this, recent_projects, _: &DismissEvent, window, cx| {
+                if recent_projects
+                    .focus_handle(cx)
+                    .contains_focused(window, cx)
+                    && let Some(previous_focus) = previous_focus.as_ref()
+                {
+                    window.focus(previous_focus, cx);
+                }
+                this.recent_projects = None;
+                cx.notify();
+            },
+        )
+        .detach();
 
-        let focus_handle = workspace
-            .as_ref()
-            .and_then(|ws| ws.upgrade())
-            .map(|w| w.read(cx).focus_handle(cx))
-            .unwrap_or_else(|| cx.focus_handle());
+        // Like popover menus, the picker is drawn deferred, so it can only take focus once it's
+        // part of a frame.
+        let picker_focus = recent_projects.focus_handle(cx);
+        window.on_next_frame(move |window, _cx| {
+            window.on_next_frame(move |window, cx| {
+                window.focus(&picker_focus, cx);
+            });
+        });
+        self.recent_projects = Some(recent_projects);
+        cx.notify();
+    }
 
-        let window_project_groups: Vec<ProjectGroupKey> = multi_workspace
-            .as_ref()
-            .map(|mw| mw.read(cx).project_group_keys())
-            .unwrap_or_default();
-
-        let popover_handle = self.recent_projects_popover_handle.clone();
-
-        PopoverMenu::new("sidebar-recent-projects-menu")
-            .with_handle(popover_handle)
-            .menu(move |window, cx| {
-                workspace.as_ref().map(|ws| {
-                    SidebarRecentProjects::popover(
-                        ws.clone(),
-                        window_project_groups.clone(),
-                        focus_handle.clone(),
-                        window,
-                        cx,
-                    )
-                })
-            })
+    /// The "Workspaces" line above the groups, with the menu for history and adding projects.
+    fn render_collection_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let this = cx.weak_entity();
+        let menu = PopoverMenu::new("sidebar-collection-menu")
             .trigger_with_tooltip(
-                IconButton::new("open-project", IconName::FolderAdd)
+                IconButton::new("sidebar-collection-menu-button", IconName::Filter)
                     .icon_size(IconSize::Small)
                     .selected_style(ButtonStyle::Tinted(TintColor::Accent)),
-                |_window, cx| Tooltip::for_action("Add Project", &OpenRecent::default(), cx),
+                Tooltip::text("Filter"),
             )
-            .offset(gpui::Point {
-                x: px(-2.0),
-                y: px(-2.0),
-            })
-            .anchor(gpui::Anchor::BottomRight)
+            .anchor(gpui::Anchor::TopRight)
+            .menu(move |window, cx| {
+                let this = this.clone();
+                Some(ContextMenu::build(window, cx, move |menu, _window, _cx| {
+                    menu.entry("Archived", Some(ToggleThreadHistory.boxed_clone()), {
+                        let this = this.clone();
+                        move |window, cx| {
+                            this.update(cx, |sidebar, cx| sidebar.show_archive(window, cx))
+                                .ok();
+                        }
+                    })
+                    .entry(
+                        "Open Project…",
+                        Some(OpenRecent::default().boxed_clone()),
+                        move |window, cx| {
+                            this.update(cx, |sidebar, cx| {
+                                sidebar.toggle_recent_projects(window, cx)
+                            })
+                            .ok();
+                        },
+                    )
+                }))
+            });
+
+        let recent_projects = self.recent_projects.clone().map(|recent_projects| {
+            div().absolute().top_full().right_0().child(
+                deferred(
+                    anchored()
+                        .anchor(gpui::Anchor::TopRight)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(
+                            div()
+                                .occlude()
+                                .mt_1()
+                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                    this.recent_projects = None;
+                                    cx.notify();
+                                }))
+                                .child(recent_projects),
+                        ),
+                )
+                .with_priority(1),
+            )
+        });
+
+        h_flex().w_full().px(rems_from_px(LIST_INSET)).child(
+            h_flex()
+                .w_full()
+                .min_h(rems_from_px(28_f32))
+                .pl_2()
+                .justify_between()
+                .child(Label::new("Workspaces").color(Color::Placeholder))
+                .child(div().relative().child(menu).children(recent_projects)),
+        )
     }
 
     fn new_thread_in_group(
@@ -7427,36 +7496,6 @@ impl Sidebar {
             })
     }
 
-    fn render_sidebar_bottom_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_archive = matches!(self.view, SidebarView::Archive(..));
-        let on_right = self.side(cx) == SidebarSide::Right;
-
-        h_flex()
-            .p_1()
-            .gap_1()
-            .when(on_right, |this| this.flex_row_reverse())
-            .border_t_1()
-            .border_color(cx.theme().colors().border)
-            .child(
-                IconButton::new("history", IconName::Clock)
-                    .icon_size(IconSize::Small)
-                    .toggle_state(is_archive)
-                    .tooltip(move |_, cx| {
-                        let label = if is_archive {
-                            "Hide Thread History"
-                        } else {
-                            "Show Thread History"
-                        };
-                        Tooltip::for_action(label, &ToggleThreadHistory, cx)
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_archive(&ToggleThreadHistory, window, cx);
-                    })),
-            )
-            .child(div().flex_1())
-            .child(self.render_recent_projects_button(cx))
-    }
-
     fn active_workspace(&self, cx: &App) -> Option<Entity<Workspace>> {
         self.multi_workspace
             .upgrade()
@@ -7893,7 +7932,7 @@ impl Render for Sidebar {
             .on_action(cx.listener(Self::on_next_thread))
             .on_action(cx.listener(Self::on_previous_thread))
             .on_action(cx.listener(|this, _: &OpenRecent, window, cx| {
-                this.recent_projects_popover_handle.toggle(window, cx);
+                this.toggle_recent_projects(window, cx);
             }))
             .font(ui_font)
             .size_full()
@@ -7907,7 +7946,7 @@ impl Render for Sidebar {
                         if no_open_projects {
                             this.child(self.render_empty_state(cx))
                         } else {
-                            this.child(
+                            this.child(self.render_collection_header(cx)).child(
                                 v_flex()
                                     .relative()
                                     .flex_1()
@@ -7950,7 +7989,6 @@ impl Render for Sidebar {
                     this.child(self.render_cross_channel_import_onboarding(verbose, cx))
                 })
             })
-            .child(self.render_sidebar_bottom_bar(cx))
     }
 }
 

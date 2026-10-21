@@ -13,7 +13,7 @@ Panel layout presets still arrange dock panels. In zdsh, conversations and threa
 
 ## Threads Sidebar {#threads-sidebar}
 
-The sidebar shows your threads grouped by project. Each project gets its own section with a header. Threads appear below with their title, status indicator, and which agent is running them. Threads running in linked Git worktrees appear under the same project as their main worktree. See [Worktree Isolation](#worktree-isolation).
+The sidebar shows your threads grouped by project, under a **Workspaces** heading. Each project gets its own section with a header: click it to fold the section, or hover it to start a thread in the project. Each thread takes one line: a dot for its status, its title, and how long ago it was updated. The dot is accented for a finished thread you haven't opened, yellow while it waits for confirmation, and red after an error; a spinner replaces it while the thread runs. Hover a thread to rename, archive, or stop it. Threads running in linked Git worktrees appear under the same project as their main worktree. See [Worktree Isolation](#worktree-isolation).
 
 Terminal Threads also appear as entries in the sidebar alongside agent threads, identified by a terminal icon. Click one to switch to it.
 
@@ -69,13 +69,13 @@ The Threads Sidebar can hold different thread types:
 
 The Threads Sidebar can hold multiple projects at once. Each project gets its own group with its own threads and conversation history. This mirrors how Zed handles projects in general — see [Windows & Projects](../windows-and-projects.md) for more on how projects open and how to manage them.
 
-To add another project to the sidebar, click the **Add Project** button (open-folder icon) in the sidebar bottom bar. The popover that opens lists your recent projects and also provides **Add Local Folders** and **Add Remote Folder** buttons at the bottom.
+To add another project to the sidebar, open the menu next to **Workspaces** at the top of the sidebar and choose **Open Project…**. The popover that opens lists your recent projects and also provides **Add Local Folders** and **Add Remote Folder** buttons at the bottom.
 
 ### Multi-Root Folder Projects {#multi-root-folder-projects}
 
 A single project can contain multiple folders (a multi-root folder project). Agents can then read and write across all of those folders in a single thread. There are multiple ways to set one up:
 
-- **From the sidebar:** Click the **Add Project** button, choose **Add Local Folders**, and select multiple folders in the file picker. They open together as one multi-root project.
+- **From the sidebar:** Choose **Open Project…** from the menu next to **Workspaces**, choose **Add Local Folders**, and select multiple folders in the file picker. They open together as one multi-root project.
 - **From the title bar:** Click the project picker (the leftmost project name). For any local entry in the recent projects list, hover it and click the folder-with-plus icon (**Add Folder to this Project**) to merge that project's folders into the current project.
 - **From the Project panel:** Right-click a root folder or any empty space in the Project panel and choose **Add Folders to Project** to add more folders to the current project.
 
