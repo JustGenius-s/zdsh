@@ -6222,7 +6222,6 @@ mod tests {
                 app_state.fs.clone(),
                 prompt_builder,
                 app_state.languages.clone(),
-                true,
                 false,
                 cx,
             );

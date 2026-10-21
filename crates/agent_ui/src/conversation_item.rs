@@ -163,6 +163,7 @@ impl Item for ConversationItem {
     }
     fn tab_content(&self, params: TabContentParams, _: &Window, cx: &App) -> AnyElement {
         h_flex()
+            .min_w_0()
             .gap_1()
             .child(
                 Icon::new(IconName::Sparkle)
@@ -171,7 +172,7 @@ impl Item for ConversationItem {
             )
             .child(
                 Label::new(self.tab_content_text(0, cx))
-                    .single_line()
+                    .truncate()
                     .color(params.text_color()),
             )
             .when_some(self.status(cx), |this, (status, color)| {
@@ -201,7 +202,9 @@ impl Render for ConversationItem {
         let conversation = self.conversation.clone();
         let drag_target = self
             .panel
-            .update(cx, |panel, cx| panel.render_drag_target(Some(conversation), cx))
+            .update(cx, |panel, cx| {
+                panel.render_drag_target(Some(conversation), cx)
+            })
             .log_err();
         let theme = ThemeSettings::get_global(cx);
         WithRemSize::new(theme.agent_ui_font_size(cx))

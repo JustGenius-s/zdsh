@@ -81,6 +81,10 @@ const SEGMENTED_TAB_HEIGHT: Pixels = if cfg!(target_os = "macos") {
     px(32.)
 };
 
+/// The widest a tab gets in the center's tab bar. Without a cap, a single long title, such as an
+/// agent thread named after its first prompt, can take over the bar and crowd out other tabs.
+const MAX_TAB_WIDTH: Pixels = px(240.);
+
 /// A selected entry in e.g. project panel.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SelectedEntry {
@@ -3101,6 +3105,7 @@ impl Pane {
             .child(
                 h_flex()
                     .id(("pane-tab-content", ix))
+                    .min_w_0()
                     .gap_1()
                     .child(label)
                     .map(|this| match tab_tooltip_content {
@@ -3715,6 +3720,7 @@ impl Pane {
         TabBar::new(id)
             .segmented()
             .with_size(SEGMENTED_TAB_SIZE)
+            .max_width(MAX_TAB_WIDTH)
             .when_some(selected_index, |tab_bar, selected_index| {
                 tab_bar.selected_index(selected_index)
             })
@@ -5285,6 +5291,78 @@ mod tests {
             }
             is_dragged_tab
         }
+    }
+
+    struct LongTitleItem {
+        focus_handle: gpui::FocusHandle,
+        title: SharedString,
+    }
+
+    impl LongTitleItem {
+        fn new(title: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
+            Self {
+                focus_handle: cx.focus_handle(),
+                title: title.into(),
+            }
+        }
+    }
+
+    impl EventEmitter<()> for LongTitleItem {}
+
+    impl Focusable for LongTitleItem {
+        fn focus_handle(&self, _cx: &App) -> gpui::FocusHandle {
+            self.focus_handle.clone()
+        }
+    }
+
+    impl Render for LongTitleItem {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::Empty
+        }
+    }
+
+    impl Item for LongTitleItem {
+        type Event = ();
+
+        fn tab_content_text(&self, _detail: usize, _cx: &App) -> gpui::SharedString {
+            self.title.clone()
+        }
+
+        fn tab_content(&self, params: TabContentParams, _window: &Window, _cx: &App) -> AnyElement {
+            Label::new(self.title.clone())
+                .truncate()
+                .color(params.text_color())
+                .into_any_element()
+        }
+    }
+
+    #[gpui::test]
+    async fn test_long_tab_title_is_capped(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
+        cx.simulate_resize(size(px(1200.), px(300.)));
+
+        let title = "A long agent thread title ".repeat(8);
+        pane.update_in(cx, |pane, window, cx| {
+            let item = Box::new(cx.new(|cx| LongTitleItem::new(title, cx)));
+            pane.add_item(item, false, false, None, window, cx);
+        });
+
+        let tab_bounds = cx.debug_bounds("TAB-0").expect("tab should be rendered");
+        assert!(
+            tab_bounds.size.width <= MAX_TAB_WIDTH,
+            "tab is {:?} wide, but should be capped at {MAX_TAB_WIDTH:?}",
+            tab_bounds.size.width
+        );
     }
 
     #[gpui::test]

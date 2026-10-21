@@ -1354,6 +1354,7 @@ pub(super) struct ActivityRow {
     action: SharedString,
     details: Option<SharedString>,
     diff_stats: Option<DiffStats>,
+    meta: Vec<AnyElement>,
     running: bool,
     failed: bool,
     expanded: Option<bool>,
@@ -1369,6 +1370,7 @@ impl ActivityRow {
             action: action.into(),
             details: None,
             diff_stats: None,
+            meta: Vec::new(),
             running: false,
             failed: false,
             expanded: None,
@@ -1398,6 +1400,12 @@ impl ActivityRow {
     /// Adds the lines added and removed after the details.
     pub(super) fn diff_stats(mut self, diff_stats: DiffStats) -> Self {
         self.diff_stats = Some(diff_stats);
+        self
+    }
+
+    /// Adds status after the details that always shows, such as how long a command took.
+    pub(super) fn meta(mut self, meta: impl IntoElement) -> Self {
+        self.meta.push(meta.into_any_element());
         self
     }
 
@@ -1505,6 +1513,11 @@ impl RenderOnce for ActivityRow {
                         ),
                 )
             })
+            .children(
+                self.meta
+                    .into_iter()
+                    .map(|meta| div().flex_none().child(meta)),
+            )
             .when_some(self.expanded, |this, expanded| {
                 let chevron = if expanded {
                     IconName::ChevronDown

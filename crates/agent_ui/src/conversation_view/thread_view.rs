@@ -1,7 +1,7 @@
 use crate::{
     DEFAULT_THREAD_TITLE, SelectPermissionGranularity,
     conversation_view::thread_search_bar::{ThreadSearchBar, ThreadSearchBarEvent},
-    entry_view_state::TERMINAL_CONTENT_TOP_PADDING,
+    entry_view_state::{TERMINAL_CONTENT_TOP_PADDING, TERMINAL_MAX_INLINE_LINES},
     open_abs_path_at_point, project_path_for_file_link,
     thread_metadata_store::{ThreadId, ThreadMetadataStore},
 };

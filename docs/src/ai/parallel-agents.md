@@ -9,7 +9,7 @@ Parallel Agents lets you run multiple agent threads and Terminal Threads at once
 
 In zdsh, open the thread list inside a conversation tab with the double speech bubble **Thread History** button or {#kb multi_workspace::ToggleWorkspaceSidebar}. Opening an existing conversation activates its central tab. File tabs and the Project Panel keep their layout.
 
-Panel layout presets still arrange dock panels. In zdsh, conversations and thread history remain in central tabs with either preset. You can rearrange dock panels by right-clicking their icons.
+You can rearrange dock panels by right-clicking their icons.
 
 ## Threads Sidebar {#threads-sidebar}
 

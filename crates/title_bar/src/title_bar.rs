@@ -5,7 +5,6 @@ mod title_bar_settings;
 mod update_version;
 
 use crate::application_menu::{ApplicationMenu, show_menus};
-use agent_settings::{AgentSettings, WindowLayout};
 use arrayvec::ArrayVec;
 pub use platform_title_bar::{
     self, DraggedWindowTab, MergeAllWindows, MoveTabToNewWindow, PlatformTitleBar,
@@ -20,7 +19,6 @@ use crate::application_menu::{
 use auto_update::AutoUpdateStatus;
 use call::ActiveCall;
 use client::{Client, UserStore};
-use command_palette_hooks::CommandPaletteFilter;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, App, Context, Entity, InteractiveElement, IntoElement,
@@ -30,9 +28,8 @@ use gpui::{
 use onboarding_banner::OnboardingBanner;
 use project::{Project, trusted_worktrees::TrustedWorktrees};
 use remote::RemoteConnectionOptions;
-use settings::{Settings as _, SettingsStore};
+use settings::Settings as _;
 
-use std::any::TypeId;
 use std::sync::Arc;
 use std::time::Duration;
 use theme::ActiveTheme;
@@ -44,8 +41,8 @@ use ui::{
 use update_version::UpdateVersion;
 use util::ResultExt;
 use workspace::{
-    AccessibleMode, MultiWorkspace, ToggleWorktreeSecurity, UseAgenticLayout, UseClassicLayout,
-    Workspace, notifications::NotifyResultExt,
+    AccessibleMode, MultiWorkspace, ToggleWorktreeSecurity, Workspace,
+    notifications::NotifyResultExt,
 };
 
 use zed_actions::OpenRemote;
@@ -69,11 +66,6 @@ actions!(
 pub fn init(cx: &mut App) {
     platform_title_bar::PlatformTitleBar::init(cx);
 
-    update_layout_action_filter(cx);
-
-    cx.observe_global::<SettingsStore>(update_layout_action_filter)
-        .detach();
-
     cx.observe_new(|workspace: &mut Workspace, window, cx| {
         let Some(window) = window else {
             return;
@@ -81,14 +73,6 @@ pub fn init(cx: &mut App) {
         let multi_workspace = workspace.multi_workspace().cloned();
         let item = cx.new(|cx| TitleBar::new("title-bar", workspace, multi_workspace, window, cx));
         workspace.set_titlebar_item(item.into(), window, cx);
-
-        workspace.register_action(|_workspace, _: &UseClassicLayout, _window, cx| {
-            set_window_layout(WindowLayout::Editor(None), cx);
-        });
-
-        workspace.register_action(|_workspace, _: &UseAgenticLayout, _window, cx| {
-            set_window_layout(WindowLayout::Agent(None), cx);
-        });
 
         workspace.register_action(|workspace, _: &SimulateUpdateAvailable, _window, cx| {
             if let Some(titlebar) = workspace
@@ -148,28 +132,6 @@ pub fn init(cx: &mut App) {
         });
     })
     .detach();
-}
-
-/// Hides or shows the panel layout actions in the command palette based on
-/// whether AI is currently disabled.
-fn update_layout_action_filter(cx: &mut App) {
-    let disable_ai = project::DisableAiSettings::get_global(cx).disable_ai;
-    let layout_actions = [
-        TypeId::of::<UseClassicLayout>(),
-        TypeId::of::<UseAgenticLayout>(),
-    ];
-    CommandPaletteFilter::update_global(cx, |filter, _| {
-        if disable_ai {
-            filter.hide_action_types(&layout_actions);
-        } else {
-            filter.show_action_types(layout_actions.iter());
-        }
-    });
-}
-
-fn set_window_layout(layout: WindowLayout, cx: &App) {
-    let fs = <dyn fs::Fs>::global(cx);
-    drop(AgentSettings::set_layout(layout, fs, cx));
 }
 
 pub struct TitleBar {

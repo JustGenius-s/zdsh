@@ -393,10 +393,6 @@ impl Default for Open {
 actions!(
     workspace,
     [
-        /// Switches to the classic, editor-focused panel layout.
-        UseClassicLayout,
-        /// Switches to the agentic panel layout.
-        UseAgenticLayout,
         /// Activates the next pane in the workspace.
         ActivateNextPane,
         /// Activates the previous pane in the workspace.

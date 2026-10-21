@@ -36,6 +36,10 @@ use crate::message_editor::{MessageEditor, MessageEditorEvent, SharedSessionCapa
 /// scrollable terminal's height so the number of visible rows doesn't change.
 pub(crate) const TERMINAL_CONTENT_TOP_PADDING: f32 = 0.5;
 
+/// How many lines of output an agent terminal shows before it scrolls instead, so long output
+/// doesn't stretch its tool card down the transcript.
+pub(crate) const TERMINAL_MAX_INLINE_LINES: usize = 12;
+
 /// Maps an entry index through the removal of `removed` (a contiguous range of
 /// entries), returning `None` if the index referred to a removed entry.
 fn reindex_after_removal(index: usize, removed: &Range<usize>) -> Option<usize> {
@@ -1116,6 +1120,7 @@ fn create_terminal(
         );
 
         view.set_content_top_padding(gpui::rems(TERMINAL_CONTENT_TOP_PADDING), cx);
+        view.set_max_embedded_lines(TERMINAL_MAX_INLINE_LINES, cx);
         view.set_embedded_mode(Some(1000), cx);
         view
     })

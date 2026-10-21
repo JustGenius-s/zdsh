@@ -15,6 +15,7 @@ use gpui_kit::component::{
 use markdown::parser::MarkdownEvent;
 use std::ops::Range;
 use std::time::Duration;
+use terminal::terminal_settings::TerminalSettings;
 use theme_settings::ThemeSettings;
 
 impl ThreadView {
@@ -272,7 +273,10 @@ impl ThreadView {
             div().pt_1().child(
                 transcript_card(cx)
                     .when(failed, |this| this.border_dashed())
-                    .child(content),
+                    .child(scrollable_output(
+                        ("tool-call-edit-output", entry_ix),
+                        content,
+                    )),
             )
         });
 
@@ -445,7 +449,11 @@ impl ThreadView {
             .w_full()
             .when_some(layout.row_gap(), |this, gap| this.px(TEXT_INSET).pt(gap))
             .child(row)
-            .children(output)
+            .children(
+                output.map(|output| {
+                    scrollable_output(("tool-call-activity-output", entry_ix), output)
+                }),
+            )
     }
 
     fn tool_call_kind_icon(tool_call: &ToolCall) -> IconName {
@@ -866,6 +874,20 @@ pub(super) fn markdown_line(label: &Markdown) -> (SharedString, Vec<Range<usize>
 /// How long a command runs before its card shows the elapsed time.
 const ELAPSED_DISPLAY_THRESHOLD: Duration = Duration::from_secs(10);
 
+/// The tallest a tool call's output gets before it scrolls, so long output such as a big diff
+/// doesn't stretch its card down the transcript. About as tall as a terminal's
+/// [`TERMINAL_MAX_INLINE_LINES`].
+const TOOL_OUTPUT_MAX_HEIGHT: Rems = Rems(15.);
+
+fn scrollable_output(id: impl Into<ElementId>, output: impl IntoElement) -> Stateful<Div> {
+    div()
+        .id(id)
+        .w_full()
+        .max_h(TOOL_OUTPUT_MAX_HEIGHT)
+        .overflow_y_scroll()
+        .child(output)
+}
+
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 pub(super) struct TerminalSandboxWarning {
@@ -1064,7 +1086,15 @@ impl ThreadView {
                             self.render_raw_input_disclosure(entry_ix, tool_call, window, cx),
                         )
                     });
-                sections.push(details.into_any_element());
+                // The floating permission row already scrolls as a whole.
+                if layout == ToolCallLayout::Floating {
+                    sections.push(details.into_any_element());
+                } else {
+                    sections.push(
+                        scrollable_output(("tool-call-card-details", entry_ix), details)
+                            .into_any_element(),
+                    );
+                }
             }
             ToolCallStatus::Pending | ToolCallStatus::InProgress
                 if is_edit
@@ -1080,7 +1110,10 @@ impl ThreadView {
             | ToolCallStatus::Failed
             | ToolCallStatus::Canceled => {
                 if is_open && has_content {
-                    sections.push(content(cx).into_any_element());
+                    sections.push(
+                        scrollable_output(("tool-call-card-output", entry_ix), content(cx))
+                            .into_any_element(),
+                    );
                 }
             }
         }
@@ -1395,10 +1428,6 @@ impl ThreadView {
 
         let terminal_id = terminal.entity_id().to_string();
         let child_id = |name: &str| format!("terminal-tool-{name}-{terminal_id}");
-        let header_group = SharedString::from(format!(
-            "terminal-tool-header-group-{}",
-            terminal.entity_id()
-        ));
 
         let working_dir = working_dir
             .as_ref()
@@ -1434,45 +1463,31 @@ impl ThreadView {
         });
 
         let theme = KitTheme::global(cx);
-        let icon = if running {
-            Spinner::new()
-                .icon(kit_icon(IconName::LoadCircle))
-                .with_size(KitSize::Small)
-                .into_any_element()
-        } else {
-            kit_icon(IconName::ToolTerminal)
-                .with_size(KitSize::Small)
-                .into_any_element()
-        };
-
-        let header = ToolCardHeader::new(
-            SharedString::from(child_id("header")),
-            icon,
-            div()
-                .id(SharedString::from(child_id("command")))
-                .tooltip(Tooltip::text(format!("Working directory: {working_dir}")))
-                .map(|this| match &description {
-                    Some(description) => this.child(description_title(
-                        command_verb(needs_confirmation, running),
-                        description,
-                        cx,
-                    )),
-                    None => this.child(command_title(&command, cx)),
-                }),
-        )
-        .when(time_elapsed > ELAPSED_DISPLAY_THRESHOLD, |header| {
-            header.meta(duration_alt_display(time_elapsed))
+        let failed = tool_failed || command_failed;
+        let row_id = SharedString::from(child_id("row"));
+        let row = match &description {
+            Some(description) => {
+                ActivityRow::new(row_id, command_verb(needs_confirmation, running))
+                    .details(description.clone())
+            }
+            None => ActivityRow::new(row_id, command_verb(needs_confirmation, running))
+                .details(command.lines().next().unwrap_or_default().to_string()),
+        }
+        .running(running)
+        .tooltip(Tooltip::text(format!("Working directory: {working_dir}")))
+        .when(time_elapsed > ELAPSED_DISPLAY_THRESHOLD, |row| {
+            row.meta(duration_alt_display(time_elapsed))
         })
-        .when_some(truncated_tooltip, |header, tooltip| {
-            header.meta(
+        .when_some(truncated_tooltip, |row, tooltip| {
+            row.meta(
                 div()
                     .id(SharedString::from(child_id("truncated")))
                     .tooltip(Tooltip::text(tooltip))
-                    .child(kit_icon(IconName::Info).with_size(KitSize::Small)),
+                    .child(kit_icon(IconName::Info).with_size(KitSize::XSmall)),
             )
         })
-        .when(tool_failed || command_failed, |header| {
-            header.meta(
+        .when(failed, |row| {
+            row.meta(
                 div()
                     .id(SharedString::from(child_id("failed")))
                     .debug_selector(move || format!("terminal-tool-failed-{exit_code:?}"))
@@ -1481,18 +1496,18 @@ impl ThreadView {
                     })
                     .child(
                         kit_icon(IconName::Close)
-                            .with_size(KitSize::Small)
+                            .with_size(KitSize::XSmall)
                             .text_color(theme.danger),
                     ),
             )
         })
-        .when_some(tool_call.sandbox_not_applied.as_ref(), |header, reason| {
+        .when_some(tool_call.sandbox_not_applied.as_ref(), |row, reason| {
             let TerminalSandboxWarning {
                 title,
                 detail,
                 docs_url,
             } = self.sandbox_not_applied_warning(reason, cx);
-            header.meta(
+            row.meta(
                 PillButton::new(SharedString::from(child_id("sandbox-not-applied")))
                     .size(KitSize::XSmall)
                     .icon(IconName::LockOff)
@@ -1507,12 +1522,8 @@ impl ThreadView {
                     .on_click(move |_, _, cx| cx.open_url(&docs_url)),
             )
         })
-        .hover_action(copy_command_button(
-            SharedString::from(format!("{header_group}-copy-command")),
-            command.clone(),
-        ))
-        .when(running && terminal_data.is_process_backed(), |header| {
-            header.action(
+        .when(running && terminal_data.is_process_backed(), |row| {
+            row.meta(
                 PillButton::new(SharedString::from(child_id("stop")))
                     .size(KitSize::XSmall)
                     .icon(IconName::Stop)
@@ -1539,6 +1550,10 @@ impl ThreadView {
                     })),
             )
         })
+        .end_slot(copy_command_button(
+            SharedString::from(child_id("copy-command")),
+            command.clone(),
+        ))
         .expanded(is_expanded)
         .on_click(cx.listener({
             let id = tool_call.id.clone();
@@ -1555,45 +1570,36 @@ impl ThreadView {
             .entry_view_state
             .read(cx)
             .entry(entry_ix)
-            .and_then(|entry| entry.terminal(terminal));
-
-        // A header with a description leaves the command to the body. Otherwise the header shows the
-        // command's first line, and the whole command shows when it's longer. Either way the whole
-        // command shows while it's waiting to be approved.
-        let show_full_command = needs_confirmation
-            || (is_expanded && (description.is_some() || command.contains('\n')));
-        let mut sections = Vec::new();
-        if show_full_command {
-            sections.push(
-                self.render_command_block(tool_call.label.clone(), window, cx)
-                    .into_any_element(),
-            );
-        }
-        if is_expanded && let Some(terminal_view) = terminal_view {
+            .and_then(|entry| entry.terminal(terminal))
+            .filter(|_| is_expanded);
+        let terminal_output = terminal_view.map(|terminal_view| {
             let element = if terminal_view
                 .read(cx)
                 .content_mode(window, cx)
                 .is_scrollable()
             {
+                // As tall as the most lines it shows in full, so it doesn't jump when it starts
+                // scrolling. Its text is the card's small UI size.
+                let line_height = TextSize::Small.rems(cx).0
+                    * TerminalSettings::get_global(cx).line_height.value();
                 div()
-                    .h(rems(18. + TERMINAL_CONTENT_TOP_PADDING))
+                    .h(rems(
+                        TERMINAL_MAX_INLINE_LINES as f32 * line_height
+                            + TERMINAL_CONTENT_TOP_PADDING,
+                    ))
                     .child(terminal_view)
                     .into_any_element()
             } else {
                 terminal_view.into_any_element()
             };
-            sections.push(
-                div()
-                    .text_ui_sm(cx)
-                    .h_full()
-                    .on_action(cx.listener(|_this, _: &NewTerminal, window, cx| {
-                        window.dispatch_action(NewThread.boxed_clone(), cx);
-                        cx.stop_propagation();
-                    }))
-                    .child(element)
-                    .into_any_element(),
-            );
-        }
+            div()
+                .h_full()
+                .on_action(cx.listener(|_this, _: &NewTerminal, window, cx| {
+                    window.dispatch_action(NewThread.boxed_clone(), cx);
+                    cx.stop_propagation();
+                }))
+                .child(element)
+        });
 
         let permission_buttons = permission_request.map(|request| {
             let is_first = self.is_first_tool_call(active_session_id, &tool_call.id, cx);
@@ -1609,16 +1615,72 @@ impl ThreadView {
             )
         });
 
+        // Like a terminal, the card shows the command after a prompt and then its output, in the
+        // terminal's font. The terminal leaves a cell's width before its output, so the prompt
+        // starts with a space to line up with it.
+        let shows_card = is_expanded || needs_confirmation;
+        let card = shows_card.then(|| {
+            let terminal_settings = TerminalSettings::get_global(cx);
+            let font_family = terminal_settings.font_family.as_ref().map_or_else(
+                || ThemeSettings::get_global(cx).buffer_font.family.clone(),
+                |family| family.0.clone().into(),
+            );
+            let has_output = terminal_output.is_some();
+            let command_line = h_flex()
+                .w_full()
+                .items_start()
+                .pt(rems(TERMINAL_CONTENT_TOP_PADDING))
+                .when(!has_output, |this| {
+                    this.pb(rems(TERMINAL_CONTENT_TOP_PADDING))
+                })
+                .pr_2()
+                .font_family(font_family)
+                .line_height(relative(terminal_settings.line_height.value()))
+                .bg(cx.theme().colors().terminal_background)
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(theme.muted_foreground)
+                        .child(" $ "),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .text_color(theme.foreground)
+                        .child(command.clone()),
+                );
+            let body = v_flex()
+                .w_full()
+                .text_ui_sm(cx)
+                .child(command_line)
+                .children(terminal_output);
+            let footer = permission_buttons.map(|buttons| {
+                div()
+                    .w_full()
+                    .p_1p5()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .when(failed, |this| this.border_dashed())
+                    .child(buttons)
+            });
+            // Inside another surface, such as the floating permission row, the card leaves out its
+            // own border.
+            if layout.row_gap().is_none() {
+                v_flex().w_full().child(body).children(footer)
+            } else {
+                transcript_card(cx)
+                    .when(failed, |this| this.border_dashed())
+                    .child(body)
+                    .children(footer)
+            }
+        });
+
         v_flex()
             .w_full()
             .when_some(layout.row_gap(), |this, gap| this.px(TEXT_INSET).pt(gap))
-            .child(
-                ToolCard::new(SharedString::from(child_id("card")), header)
-                    .sections(sections)
-                    .when_some(permission_buttons, |card, buttons| card.footer(buttons))
-                    .dashed(tool_failed || command_failed)
-                    .bare(layout.row_gap().is_none()),
-            )
+            .child(row)
+            .children(card.map(|card| div().w_full().pt_1().child(card)))
             .into_any()
     }
 

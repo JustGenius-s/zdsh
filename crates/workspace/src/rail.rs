@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use agent_settings::{AgentSettings, WindowLayout};
 use fs::Fs;
 use gpui::{
     Action, Anchor, App, Context, Div, ElementId, Focusable as _, InteractiveElement,
@@ -17,14 +16,13 @@ use gpui_kit::{
         separator::Separator,
     },
 };
-use project::DisableAiSettings;
 use settings::{Settings as _, update_settings_file};
 use theme::{ActiveTheme as _, Appearance, SystemAppearance, ThemeRegistry};
 use theme_settings::{ThemeAppearanceMode, ThemeSelection, ThemeSettings};
 use ui::{IconName, Tooltip, v_flex};
 use util::ResultExt as _;
 
-use crate::{ItemHandle, UseAgenticLayout, UseClassicLayout, Workspace};
+use crate::{ItemHandle, Workspace};
 
 /// A view that an action opens as a tab, listed on the rail in a group of its own below the left
 /// dock's panels. The app adds these, since the views live in crates the workspace doesn't
@@ -294,8 +292,7 @@ fn theme_menu(menu: PopupMenu, fs: Arc<dyn Fs>, cx: &mut Context<PopupMenu>) -> 
     )
 }
 
-fn settings_menu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
-    let ai_enabled = !DisableAiSettings::get_global(cx).disable_ai;
+fn settings_menu(menu: PopupMenu, _window: &mut Window, _cx: &mut Context<PopupMenu>) -> PopupMenu {
     menu.menu("Settings", zed_actions::OpenSettings.boxed_clone())
         .menu("Keymap", Box::new(zed_actions::OpenKeymap))
         .menu(
@@ -310,25 +307,6 @@ fn settings_menu(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMen
             "Extensions",
             zed_actions::Extensions::default().boxed_clone(),
         )
-        .when(ai_enabled, |menu| {
-            menu.separator()
-                .submenu("Panel Layout", window, cx, |menu, _, cx| {
-                    let layout = AgentSettings::get_layout(cx);
-                    menu.menu_with_check(
-                        "Classic",
-                        matches!(layout, WindowLayout::Editor(_)),
-                        Box::new(UseClassicLayout),
-                    )
-                    .menu_with_check(
-                        "Agentic",
-                        matches!(layout, WindowLayout::Agent(_)),
-                        Box::new(UseAgenticLayout),
-                    )
-                    .when(matches!(layout, WindowLayout::Custom(_)), |menu| {
-                        menu.item(PopupMenuItem::new("Custom").checked(true).disabled(true))
-                    })
-                })
-        })
 }
 
 fn set_theme(fs: Arc<dyn Fs>, name: gpui::SharedString, appearance: Appearance, cx: &mut App) {

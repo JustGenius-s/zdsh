@@ -219,7 +219,6 @@ fn run_visual_tests(project_path: PathBuf, update_baseline: bool) -> Result<()> 
             app_state.fs.clone(),
             prompt_builder,
             app_state.languages.clone(),
-            true,
             false,
             cx,
         );

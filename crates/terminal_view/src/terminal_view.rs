@@ -187,6 +187,8 @@ pub struct TerminalView {
     /// rounded, terminal content isn't clipped.
     background_corner_radii: Option<Corners<Rems>>,
     content_top_padding: Rems,
+    /// How many lines an embedded terminal shows in full before it scrolls instead.
+    max_embedded_lines: usize,
     read_only: bool,
     // Explicit override for whether workspace-specific context menu actions are shown.
     // When `None`, visibility is derived from `mode` (hidden for embedded terminals).
@@ -353,6 +355,7 @@ impl TerminalView {
             mode: TerminalMode::Standalone,
             background_corner_radii: None,
             content_top_padding: Rems::ZERO,
+            max_embedded_lines: Self::MAX_EMBEDDED_LINES,
             read_only: false,
             show_workspace_actions: None,
             workspace_id,
@@ -390,6 +393,12 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.background_corner_radii = corner_radii;
+        cx.notify();
+    }
+
+    /// Sets how many lines an embedded terminal shows in full before it scrolls instead.
+    pub fn set_max_embedded_lines(&mut self, max_lines: usize, cx: &mut Context<Self>) {
+        self.max_embedded_lines = max_lines;
         cx.notify();
     }
 
@@ -452,7 +461,7 @@ impl TerminalView {
 
     /// Returns the current `ContentMode` depending on the set `TerminalMode` and the current number of lines
     ///
-    /// Note: Even in embedded mode, the terminal will fallback to scrollable when its content exceeds `MAX_EMBEDDED_LINES`
+    /// Note: Even in embedded mode, the terminal will fallback to scrollable when its content exceeds `max_embedded_lines`
     pub fn content_mode(&self, window: &Window, cx: &App) -> ContentMode {
         match &self.mode {
             TerminalMode::Standalone => ContentMode::Scrollable,
@@ -470,7 +479,7 @@ impl TerminalView {
                 let terminal = self.terminal.read(cx);
                 let total_lines = terminal.total_lines();
 
-                if total_lines > Self::MAX_EMBEDDED_LINES {
+                if total_lines > self.max_embedded_lines {
                     ContentMode::Scrollable
                 } else {
                     let mut displayed_lines = terminal.used_lines().min(total_lines);
@@ -1705,6 +1714,7 @@ impl Item for TerminalView {
 
         let self_handle = self.self_handle.clone();
         h_flex()
+            .min_w_0()
             .gap_1()
             .group("term-tab-icon")
             .when(!params.selected, |this| {
@@ -1737,9 +1747,10 @@ impl Item for TerminalView {
             .child(
                 div()
                     .relative()
+                    .min_w_0()
                     .child(
                         Label::new(title)
-                            .single_line()
+                            .truncate()
                             .color(params.text_color())
                             .when(self.is_renaming(), |this| this.alpha(0.)),
                     )

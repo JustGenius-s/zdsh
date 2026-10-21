@@ -121,6 +121,9 @@ mod tests {
         assert!(rendered.contains("You are the Zed coding agent"));
         assert!(rendered.contains("Today's Date: 2026-01-01"));
         assert!(rendered.contains("## Fixing Diagnostics"));
+        assert!(rendered.contains("Do not use Markdown headings"));
+        assert!(rendered.contains("Do not use ordered lists"));
+        assert!(rendered.contains("Do not nest lists"));
         assert!(rendered.contains("test-model"));
     }
 

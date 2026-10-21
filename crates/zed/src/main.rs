@@ -623,8 +623,6 @@ fn main() {
         })
         .detach();
 
-        let is_new_install = matches!(&installation_id, Some(IdType::New(_)));
-
         // We should rename these in the future to `first app open`, `first app open for release channel`, and `app open`
         if let (Some(system_id), Some(installation_id)) = (&system_id, &installation_id) {
             match (&system_id, &installation_id) {
@@ -716,7 +714,6 @@ fn main() {
             app_state.fs.clone(),
             prompt_builder,
             app_state.languages.clone(),
-            is_new_install,
             false,
             cx,
         );
