@@ -583,6 +583,7 @@ pub struct ThreadView {
     acknowledged_confusable_warnings: HashSet<acp_v2::ToolCallId>,
     pub subagent_scroll_handles: RefCell<HashMap<acp_v2::SessionId, ScrollHandle>>,
     pub edits_expanded: bool,
+    branch_chip_hovered: bool,
     pub plan_expanded: bool,
     pub queue_expanded: bool,
     pub editor_expanded: bool,
@@ -1065,6 +1066,7 @@ impl ThreadView {
             acknowledged_confusable_warnings: HashSet::default(),
             subagent_scroll_handles: RefCell::new(HashMap::default()),
             edits_expanded: false,
+            branch_chip_hovered: false,
             plan_expanded: false,
             queue_expanded: true,
             editor_expanded: false,
@@ -1220,7 +1222,7 @@ impl ThreadView {
         match command {
             PromptLocalCommand::ThumbsUp => {
                 self.handle_feedback_click(ThreadFeedback::Positive, window, cx);
-                self.show_local_command_toast("Thanks for your feedback!", cx);
+                self.show_success_toast("Thanks for your feedback!", cx);
             }
             PromptLocalCommand::ThumbsDown => {
                 self.handle_feedback_click(ThreadFeedback::Negative, window, cx);
@@ -1228,8 +1230,7 @@ impl ThreadView {
         }
     }
 
-    fn show_local_command_toast(&self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
-        // Shown after positive feedback, replacing the inline button state.
+    fn show_success_toast(&self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };

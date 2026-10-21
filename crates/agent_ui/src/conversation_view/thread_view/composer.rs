@@ -804,7 +804,7 @@ impl ThreadView {
             .pr_1p5()
             .gap_2()
             .justify_between()
-            .child(div().min_w_0().children(self.render_branch_picker(cx)))
+            .child(div().min_w_0().children(self.render_branch_chip(cx)))
             .child(
                 h_flex()
                     .flex_none()
@@ -817,7 +817,7 @@ impl ThreadView {
             .into_any_element()
     }
 
-    fn render_branch_picker(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_branch_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let repository = self.project.upgrade()?.read(cx).active_repository(cx)?;
         let branch_name = {
             let repository = repository.read(cx);
@@ -831,32 +831,35 @@ impl ThreadView {
                     })
                 })?
         };
-        let workspace = self.workspace.clone();
-        let tooltip_label = branch_name.clone();
+        let icon = if self.branch_chip_hovered {
+            IconName::Copy
+        } else {
+            IconName::GitBranch
+        };
 
         Some(
-            PopoverMenu::new("composer-branch-menu")
-                .menu(move |window, cx| {
-                    git_ui_core::build_branch_picker(
-                        workspace.clone(),
-                        Some(repository.clone()),
-                        window,
-                        cx,
-                    )
-                })
-                .trigger(
-                    workspace::PickerTrigger::new("composer-branch", branch_name)
-                        .icon(IconName::GitBranch)
-                        .tooltip(move |_window, cx| {
-                            Tooltip::with_meta(
-                                "Branch & Stash",
-                                Some(&zed_actions::git::Branch),
-                                format!("Currently Checked Out: {}", tooltip_label),
-                                cx,
-                            )
-                        }),
+            // GPUI Kit's own tooltips need its window root, which Zed's windows don't have, so
+            // the tooltip is Zed's, on a wrapper.
+            div()
+                .id("composer-branch")
+                .min_w_0()
+                .tooltip(Tooltip::text("Copy Branch Name"))
+                .child(
+                    KitButton::new("composer-branch-copy")
+                        .ghost()
+                        .label(branch_name.clone())
+                        .icon(KitIcon::empty().path(icon.path()))
+                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                            this.branch_chip_hovered = *hovered;
+                            cx.notify();
+                        }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                branch_name.to_string(),
+                            ));
+                            this.show_success_toast(format!("Copied {branch_name}"), cx);
+                        })),
                 )
-                .anchor(gpui::Anchor::BottomLeft)
                 .into_any_element(),
         )
     }
