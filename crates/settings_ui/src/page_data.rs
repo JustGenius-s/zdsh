@@ -8718,6 +8718,28 @@ fn ai_page(cx: &App) -> SettingsPage {
 
         items.extend([
             SettingsPageItem::SettingItem(SettingItem {
+                title: "Default Permissions",
+                description: "What new threads may do without asking. Read-only can't change files, Workspace can write to the project inside a sandbox, and Full access runs commands without a sandbox.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("agent.default_permissions"),
+                    pick: |settings_content| {
+                        settings_content.agent.as_ref()?.default_permissions.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .agent
+                            .get_or_insert_default()
+                            .default_permissions = value;
+                    },
+                }),
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    should_do_titlecase: Some(false),
+                    ..Default::default()
+                })),
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
                 title: "Single File Review",
                 description: "When enabled, agent edits will also be displayed in single-file buffers for review.",
                 field: Box::new(SettingField {

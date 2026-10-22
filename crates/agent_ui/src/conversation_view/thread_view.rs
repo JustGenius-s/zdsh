@@ -21,6 +21,7 @@ use agent::{
     SandboxStatusKey, SandboxStatusRefresh, SkillLoadingIssue, SkillLoadingIssueKind,
     SkillLoadingIssuesUpdated, ThreadSandbox, VerifiedSandboxStatus,
 };
+use agent_settings::AgentPermissions;
 use agent_skills::MAX_SKILL_DESCRIPTION_LEN;
 use cloud_api_types::{SubmitAgentThreadFeedbackBody, SubmitAgentThreadFeedbackCommentsBody};
 use editor::actions::OpenExcerpts;
@@ -28,7 +29,6 @@ use sandbox::{SandboxFsPolicy, SandboxPolicy};
 
 use crate::completion_provider::{AvailableSkill, PromptLocalCommand, pluralize};
 use crate::message_editor::SharedSessionCapabilities;
-use crate::ui::{SandboxGroup, SandboxRow, SandboxSection, SandboxStatusTooltip};
 use crate::unicode_confusables;
 use tool_calls::TerminalSandboxWarning;
 
@@ -37,13 +37,15 @@ use gpui::List;
 use gpui::Stateful;
 use gpui::TaskExt;
 use gpui_kit::component::{
-    Root as KitRoot, Side, Sizable as _, Size as KitSize, Theme as KitTheme, WindowExt as _,
+    Icon as KitIcon, Root as KitRoot, Side, Sizable as _, Size as KitSize, Theme as KitTheme,
+    WindowExt as _,
     alert::AlertVariant,
     button::{Button as KitButton, ButtonRounded, ButtonVariant, ButtonVariants as _},
     clipboard::Clipboard as KitClipboard,
     menu::{PopupMenu, PopupMenuItem},
     notification::Notification,
     popover::Popover,
+    separator::Separator,
     shimmer::ShimmerText,
     switch::Switch as KitSwitch,
 };
@@ -615,6 +617,9 @@ pub struct ThreadView {
     pub thinking_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
     model_menu: Option<Entity<PopupMenu>>,
     _model_menu_subscription: Option<Subscription>,
+    /// The permissions menu, or the confirmation that replaces it when switching to full access.
+    permissions_menu: Option<Entity<PopupMenu>>,
+    _permissions_menu_subscription: Option<Subscription>,
     pub fast_mode_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub project: WeakEntity<Project>,
     /// Cache + worktree snapshot for resolving paths in markdown code spans.
@@ -1093,6 +1098,8 @@ impl ThreadView {
             thinking_effort_menu_handle: PopoverMenuHandle::default(),
             model_menu: None,
             _model_menu_subscription: None,
+            permissions_menu: None,
+            _permissions_menu_subscription: None,
             fast_mode_menu_handle: PopoverMenuHandle::default(),
             project,
             code_span_resolver,
@@ -4197,78 +4204,207 @@ impl ThreadView {
         }
     }
 
-    pub fn render_sandbox_status(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let status = self.refresh_sandbox_status(cx)?;
-        let settings_sandbox = status.settings_sandbox.clone();
-        let thread_sandbox = status.thread_sandbox.clone();
-        let baseline = status.baseline_writable_paths;
-
-        // The lock is struck only when the *merged* result is unsandboxed (the
-        // agent runs with ambient permissions). A layer that is merely wide open
-        // but still sandboxed keeps the closed lock.
-        let (icon, icon_color) = if settings_sandbox
-            .clone()
-            .merge(thread_sandbox.clone())
-            .is_unsandboxed()
+    /// The thread's permissions, chosen from a menu that also shows what the
+    /// sandbox lets the thread do.
+    pub fn render_permissions_control(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let thread = self.as_native_thread(cx)?;
+        let permissions = thread.read(cx).permissions();
+        let details = self.sandbox_details(&thread, permissions, cx);
+        let icon = if permissions == AgentPermissions::FullAccess
+            || matches!(details, Some(SandboxDetails::UnsandboxedForThread))
         {
-            (IconName::LockOff, Color::Muted)
+            IconName::LockOff
         } else {
-            (IconName::Lock, Color::Default)
+            IconName::Lock
         };
-
-        let tooltip = match (settings_sandbox, thread_sandbox) {
-            // No sandbox at all because the thread has full access: the
-            // per-thread layer is moot, so don't show it.
-            (ThreadSandbox::Unsandboxed, _) => SandboxStatusTooltip::full_access(),
-            // Sandboxed by settings, but disabled for this thread: show the
-            // settings scope (greyed) for context above the disabled status.
-            (ThreadSandbox::Sandboxed(settings_policy), ThreadSandbox::Unsandboxed) => {
-                let settings = augment_settings_sandbox_policy(&settings_policy, baseline);
-                SandboxStatusTooltip::disabled_for_thread(sandbox_section(
-                    "Defined in your settings:",
-                    &settings,
-                    true,
-                ))
-            }
-            (
-                ThreadSandbox::Sandboxed(settings_policy),
-                ThreadSandbox::Sandboxed(thread_policy),
-            ) => {
-                let settings = augment_settings_sandbox_policy(&settings_policy, baseline);
-                let thread = SandboxPolicyDisplay::from_policy(&thread_policy);
-                // Omit the per-thread section when it grants nothing extra.
-                let thread = (!sandbox_policy_grants_nothing(&thread))
-                    .then(|| sandbox_section("Allowed for this thread:", &thread, false));
-                SandboxStatusTooltip::enabled(
-                    sandbox_section("Defined in your settings:", &settings, true),
-                    thread,
-                )
-            }
-        };
+        let menu = self.permissions_menu.clone();
 
         Some(
             h_flex()
                 .gap_1()
                 .child(
-                    IconButton::new("sandbox-status", icon)
-                        .icon_size(IconSize::Small)
-                        .icon_color(icon_color)
-                        .tooltip(Tooltip::element(move |_window, _cx| {
-                            tooltip.clone().into_any_element()
+                    Popover::new("thread-permissions")
+                        .appearance(false)
+                        .overlay_closable(false)
+                        .anchor(gpui::Anchor::BottomRight)
+                        .offset(px(6.))
+                        .open(menu.is_some())
+                        .on_open_change(cx.listener(|this, open: &bool, window, cx| {
+                            if *open {
+                                this.open_permissions_menu(window, cx);
+                            } else {
+                                this.close_permissions_menu(cx);
+                            }
                         }))
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(
-                                Box::new(zed_actions::OpenSettingsAt {
-                                    path: zed_actions::AGENT_SANDBOX_SETTINGS_PATH.to_string(),
-                                    target: None,
-                                }),
-                                cx,
-                            );
+                        .trigger(
+                            KitButton::new("thread-permissions-trigger")
+                                .ghost()
+                                .label(<&'static str>::from(permissions))
+                                .icon(KitIcon::empty().path(icon.path()))
+                                .dropdown_caret(true),
+                        )
+                        .content(move |_, _, _| match &menu {
+                            Some(menu) => menu.clone().into_any_element(),
+                            None => div().into_any_element(),
                         }),
                 )
-                .child(Divider::vertical())
+                .child(Separator::vertical().h_4())
                 .into_any_element(),
         )
+    }
+
+    fn open_permissions_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.permissions_menu.is_some() {
+            return;
+        }
+        let Some(thread) = self.as_native_thread(cx) else {
+            return;
+        };
+        let permissions = thread.read(cx).permissions();
+        let details = self.sandbox_details(&thread, permissions, cx);
+        let this = cx.weak_entity();
+        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+            permissions_menu(menu, permissions, details.as_ref(), &this)
+        });
+        self.show_permissions_menu(menu, window, cx);
+    }
+
+    /// Also swaps the confirmation in for the menu, so the popover stays open
+    /// while the clicked menu dismisses itself.
+    fn show_permissions_menu(
+        &mut self,
+        menu: Entity<PopupMenu>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._permissions_menu_subscription = Some(cx.subscribe_in(
+            &menu,
+            window,
+            |this, menu, _: &gpui::DismissEvent, _, cx| {
+                if this.permissions_menu.as_ref() == Some(menu) {
+                    this.close_permissions_menu(cx);
+                }
+            },
+        ));
+        menu.focus_handle(cx).focus(window, cx);
+        self.permissions_menu = Some(menu);
+        cx.notify();
+    }
+
+    fn close_permissions_menu(&mut self, cx: &mut Context<Self>) {
+        self._permissions_menu_subscription = None;
+        if self.permissions_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn select_permissions(
+        &mut self,
+        permissions: AgentPermissions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(thread) = self.as_native_thread(cx) else {
+            return;
+        };
+        if permissions == AgentPermissions::FullAccess
+            && thread.read(cx).permissions() != AgentPermissions::FullAccess
+            && !full_access_warning_dismissed(cx)
+        {
+            self.confirm_full_access(window, cx);
+            return;
+        }
+        thread.update(cx, |thread, cx| thread.set_permissions(permissions, cx));
+    }
+
+    fn confirm_full_access(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.weak_entity();
+        let allow_full_access = move |cx: &mut App| {
+            this.update(cx, |this, cx| {
+                if let Some(thread) = this.as_native_thread(cx) {
+                    thread.update(cx, |thread, cx| {
+                        thread.set_permissions(AgentPermissions::FullAccess, cx)
+                    });
+                }
+            })
+            .log_err();
+        };
+        let allow_and_dont_ask = allow_full_access.clone();
+        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+            menu.item(
+                PopupMenuItem::element(|_, cx| {
+                    v_flex()
+                        .w(PERMISSIONS_MENU_TEXT_WIDTH)
+                        .py_1()
+                        .gap_0p5()
+                        .child(
+                            div()
+                                .text_color(KitTheme::global(cx).popover_foreground)
+                                .child("Give This Thread Full Access?"),
+                        )
+                        .child(div().text_xs().child(
+                            "Its terminal commands will run without a sandbox and without \
+                                 asking first, so they can change anything you can.",
+                        ))
+                })
+                .disabled(true),
+            )
+            .separator()
+            .item(
+                danger_menu_item("Allow Full Access")
+                    .on_click(move |_, _, cx| allow_full_access(cx)),
+            )
+            .item(
+                danger_menu_item("Allow and Don't Ask Again").on_click(move |_, _, cx| {
+                    allow_and_dont_ask(cx);
+                    set_full_access_warning_dismissed(cx);
+                }),
+            )
+        });
+        self.show_permissions_menu(menu, window, cx);
+    }
+
+    fn sandbox_details(
+        &mut self,
+        thread: &Entity<agent::Thread>,
+        permissions: AgentPermissions,
+        cx: &mut Context<Self>,
+    ) -> Option<SandboxDetails> {
+        if permissions == AgentPermissions::FullAccess {
+            return Some(SandboxDetails::Note(FULL_ACCESS_NOTE));
+        }
+        if !thread.read(cx).sandboxing_available(cx) {
+            return Some(SandboxDetails::Note(match permissions {
+                AgentPermissions::ReadOnly => {
+                    "This project can't be sandboxed, so terminal commands are refused."
+                }
+                AgentPermissions::Workspace | AgentPermissions::FullAccess => {
+                    "This project can't be sandboxed, so each terminal command asks first."
+                }
+            }));
+        }
+
+        let status = self.refresh_sandbox_status(cx)?;
+        Some(match (status.settings_sandbox, status.thread_sandbox) {
+            (ThreadSandbox::Unsandboxed, _) => SandboxDetails::Note(FULL_ACCESS_NOTE),
+            (ThreadSandbox::Sandboxed(_), ThreadSandbox::Unsandboxed) => {
+                SandboxDetails::UnsandboxedForThread
+            }
+            (
+                ThreadSandbox::Sandboxed(settings_policy),
+                ThreadSandbox::Sandboxed(thread_policy),
+            ) => {
+                let thread_grants = SandboxPolicyDisplay::from_policy(&thread_policy).fs;
+                SandboxDetails::Sandboxed {
+                    writable: augment_settings_sandbox_policy(
+                        &settings_policy,
+                        status.baseline_writable_paths,
+                    )
+                    .fs,
+                    thread_grants: (!fs_grants_nothing(&thread_grants)).then_some(thread_grants),
+                }
+            }
+        })
     }
 
     fn render_fast_mode_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -4992,11 +5128,11 @@ impl ThreadView {
     }
 }
 
-/// A display-ready snapshot of a sandbox policy for the status tooltip.
+/// A display-ready snapshot of a sandbox policy for the permissions menu.
 ///
 /// The opaque `HostFilesystemLocation`s in a policy are stringified up front,
-/// when this is built, so the tooltip state (which outlives the build and is
-/// captured by the lazy tooltip closure) never holds the locations' fds open.
+/// when this is built, so the menu state (which outlives the build and is
+/// captured by the lazy menu builder) never holds the locations' fds open.
 #[derive(Clone)]
 struct SandboxPolicyDisplay {
     fs: SandboxFsDisplay,
@@ -5009,7 +5145,7 @@ enum SandboxFsDisplay {
     Restricted(Vec<WritableEntryDisplay>),
 }
 
-/// A single writable entry to display in the sandbox tooltip: either a real host
+/// A single writable entry to display in the permissions menu: either a real host
 /// location (already stringified for display) or the Linux-only host-isolated
 /// `/tmp` overlay, which has no backing host path and is purely a label.
 #[derive(Clone)]
@@ -5056,7 +5192,7 @@ fn augment_settings_sandbox_policy(
         SandboxFsPolicy::Unrestricted { .. } => SandboxFsDisplay::Unrestricted,
         SandboxFsPolicy::Restricted { writable_paths, .. } => {
             // Dedup by display string. We deliberately don't open the locations'
-            // fds to dedup by inode here: this is a display-only tooltip and the
+            // fds to dedup by inode here: this is a display-only menu and the
             // string is the location's identity for that purpose. The string can
             // only diverge from the captured inode while a symlink-swap is
             // actively in progress, and in that case the bind validator refuses
@@ -5089,50 +5225,142 @@ fn augment_settings_sandbox_policy(
     SandboxPolicyDisplay { fs }
 }
 
-fn sandbox_section(title: &str, policy: &SandboxPolicyDisplay, show_empty: bool) -> SandboxSection {
-    let write_empty = fs_grants_nothing(&policy.fs);
-    let mut section = SandboxSection::new(title.to_string());
-
-    if show_empty || !write_empty {
-        section =
-            section.group(SandboxGroup::new("Write Access").rows(sandbox_fs_rows(&policy.fs)));
-    }
-
-    section
-}
-
-/// Whether a policy grants nothing worth surfacing, used to decide whether to
-/// show the per-thread overrides section at all.
-fn sandbox_policy_grants_nothing(policy: &SandboxPolicyDisplay) -> bool {
-    fs_grants_nothing(&policy.fs)
-}
-
 fn fs_grants_nothing(fs: &SandboxFsDisplay) -> bool {
     matches!(fs, SandboxFsDisplay::Restricted(entries) if entries.is_empty())
 }
 
-/// Rows for the write-access group: a message for the "all"/"none" cases, or one
-/// row per granted path.
-fn sandbox_fs_rows(fs: &SandboxFsDisplay) -> Vec<SandboxRow> {
-    match fs {
-        SandboxFsDisplay::Unrestricted => vec![SandboxRow::message(
-            "All paths except protected Git metadata",
-        )],
-        SandboxFsDisplay::Restricted(entries) if entries.is_empty() => {
-            vec![SandboxRow::message("None")]
-        }
-        SandboxFsDisplay::Restricted(entries) => entries
-            .iter()
-            .map(|entry| match entry {
-                // The display string was captured up front.
-                WritableEntryDisplay::Path(path) => SandboxRow::path(PathBuf::from(path)),
-                #[cfg(target_os = "linux")]
-                WritableEntryDisplay::IsolatedTmp => {
-                    SandboxRow::path(PathBuf::from("/tmp (isolated)"))
-                }
-            })
-            .collect(),
+const FULL_ACCESS_NOTE: &str = "Commands run without a sandbox.";
+
+/// What the permissions menu shows under the choices.
+#[derive(Clone)]
+enum SandboxDetails {
+    Sandboxed {
+        writable: SandboxFsDisplay,
+        /// Omitted when the thread was granted nothing beyond `writable`.
+        thread_grants: Option<SandboxFsDisplay>,
+    },
+    UnsandboxedForThread,
+    Note(&'static str),
+}
+
+fn permissions_menu(
+    mut menu: PopupMenu,
+    current: AgentPermissions,
+    details: Option<&SandboxDetails>,
+    this: &WeakEntity<ThreadView>,
+) -> PopupMenu {
+    menu = menu.check_side(Side::Right).min_w(px(240.));
+    for permissions in [
+        AgentPermissions::ReadOnly,
+        AgentPermissions::Workspace,
+        AgentPermissions::FullAccess,
+    ] {
+        let this = this.clone();
+        menu = menu.item(
+            PopupMenuItem::new(<&'static str>::from(permissions))
+                .checked(permissions == current)
+                .on_click(move |_, window, cx| {
+                    this.update(cx, |this, cx| {
+                        this.select_permissions(permissions, window, cx)
+                    })
+                    .log_err();
+                }),
+        );
     }
+
+    match details {
+        Some(SandboxDetails::Sandboxed {
+            writable,
+            thread_grants,
+        }) => {
+            menu = push_writable_items(menu.separator().label("Write Access"), writable);
+            if let Some(thread_grants) = thread_grants {
+                menu = push_writable_items(menu.label("Allowed for This Thread"), thread_grants);
+            }
+            menu.separator()
+                .item(
+                    PopupMenuItem::new("Sandbox Settings…").on_click(|_, window, cx| {
+                        window.dispatch_action(
+                            Box::new(zed_actions::OpenSettingsAt {
+                                path: zed_actions::AGENT_SANDBOX_SETTINGS_PATH.to_string(),
+                                target: None,
+                            }),
+                            cx,
+                        );
+                    }),
+                )
+        }
+        Some(SandboxDetails::UnsandboxedForThread) => menu
+            .separator()
+            .item(permissions_note("Sandboxing is disabled for this thread.")),
+        Some(SandboxDetails::Note(note)) => menu.separator().item(permissions_note(note)),
+        None => menu,
+    }
+}
+
+/// A message for the "all"/"none" cases, or one row per granted path.
+fn push_writable_items(mut menu: PopupMenu, fs: &SandboxFsDisplay) -> PopupMenu {
+    match fs {
+        SandboxFsDisplay::Unrestricted => {
+            menu.item(permissions_note("All paths except protected Git metadata"))
+        }
+        SandboxFsDisplay::Restricted(entries) if entries.is_empty() => {
+            menu.item(permissions_note("None"))
+        }
+        SandboxFsDisplay::Restricted(entries) => {
+            for entry in entries {
+                let path = match entry {
+                    // The display string was captured up front.
+                    WritableEntryDisplay::Path(path) => SharedString::from(path.clone()),
+                    #[cfg(target_os = "linux")]
+                    WritableEntryDisplay::IsolatedTmp => SharedString::from("/tmp (isolated)"),
+                };
+                menu = menu.item(writable_path_item(path));
+            }
+            menu
+        }
+    }
+}
+
+/// The width of the wrapping text in the permissions menus. A menu sizes its items to their
+/// content, and GPUI only wraps text that has been given a width, so the text sets one itself.
+const PERMISSIONS_MENU_TEXT_WIDTH: Pixels = px(248.);
+
+fn permissions_note(note: &'static str) -> PopupMenuItem {
+    PopupMenuItem::element(move |_, _| {
+        div()
+            .w(PERMISSIONS_MENU_TEXT_WIDTH)
+            .py_1()
+            .text_xs()
+            .child(note)
+    })
+    .disabled(true)
+}
+
+fn danger_menu_item(label: &'static str) -> PopupMenuItem {
+    PopupMenuItem::element(move |_, cx| div().text_color(KitTheme::global(cx).danger).child(label))
+}
+
+fn writable_path_item(path: SharedString) -> PopupMenuItem {
+    PopupMenuItem::element(move |_, cx| {
+        let icon = FileIcons::get_icon(Path::new(path.as_ref()), cx)
+            .unwrap_or_else(|| IconName::Folder.path().into());
+        h_flex()
+            .w(PERMISSIONS_MENU_TEXT_WIDTH)
+            .items_start()
+            .gap_1p5()
+            .py_1()
+            .child(KitIcon::empty().path(icon).xsmall())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .font_family(KitTheme::global(cx).mono_font_family.clone())
+                    .child(path.clone()),
+            )
+    })
+    .disabled(true)
 }
 
 impl ThreadView {
@@ -9861,6 +10089,7 @@ mod tests {
 }
 
 const FAST_MODE_WARNING_NAMESPACE: &str = "fast-mode-warning-dismissed";
+const FULL_ACCESS_WARNING_KEY: &str = "full-access-warning-dismissed";
 
 fn fast_mode_warning_id(
     provider_id: &LanguageModelProviderId,
@@ -9892,6 +10121,34 @@ fn set_fast_mode_warning_dismissed(
     cx.background_spawn(async move {
         kvp.scoped(FAST_MODE_WARNING_NAMESPACE)
             .write(key, "1".to_string())
+            .await
+            .log_err();
+    })
+    .detach();
+}
+
+fn full_access_warning_dismissed(cx: &App) -> bool {
+    KeyValueStore::global(cx)
+        .read_kvp(FULL_ACCESS_WARNING_KEY)
+        .log_err()
+        .flatten()
+        .is_some()
+}
+
+fn set_full_access_warning_dismissed(cx: &mut App) {
+    let kvp = KeyValueStore::global(cx);
+    cx.background_spawn(async move {
+        kvp.write_kvp(FULL_ACCESS_WARNING_KEY.to_string(), "1".to_string())
+            .await
+            .log_err();
+    })
+    .detach();
+}
+
+pub(crate) fn reset_full_access_warning(cx: &mut App) {
+    let kvp = KeyValueStore::global(cx);
+    cx.background_spawn(async move {
+        kvp.delete_kvp(FULL_ACCESS_WARNING_KEY.to_string())
             .await
             .log_err();
     })

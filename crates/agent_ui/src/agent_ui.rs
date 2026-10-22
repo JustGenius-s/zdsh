@@ -351,6 +351,8 @@ actions!(
         Follow,
         /// Re-enables the fast mode warning for every provider and model.
         ResetFastModeWarnings,
+        /// Re-enables the warning shown before a thread switches to full access.
+        ResetFullAccessWarning,
         /// Opens the "Add Context" menu in the message editor.
         OpenAddContextMenu,
         /// Interrupts the current generation and sends the message immediately.

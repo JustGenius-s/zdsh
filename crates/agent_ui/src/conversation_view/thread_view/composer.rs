@@ -133,8 +133,8 @@ impl ThreadView {
         } else {
             self.render_composer_pill(cx)
         };
-        let sandbox_status = self.render_sandbox_status(cx);
-        let footer = self.render_composer_footer(sandbox_status, cx);
+        let permissions_control = self.render_permissions_control(cx);
+        let footer = self.render_composer_footer(permissions_control, cx);
 
         let composer = v_flex()
             .flex_none()
@@ -794,7 +794,7 @@ impl ThreadView {
 
     fn render_composer_footer(
         &self,
-        sandbox_status: Option<AnyElement>,
+        permissions_control: Option<AnyElement>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         h_flex()
@@ -809,7 +809,7 @@ impl ThreadView {
                 h_flex()
                     .flex_none()
                     .gap_1()
-                    .children(sandbox_status)
+                    .children(permissions_control)
                     .children(self.render_follow_indicator(cx))
                     .children(self.render_cursor_usage_ring(cx))
                     .children(self.render_context_usage_ring(cx)),

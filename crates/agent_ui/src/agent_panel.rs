@@ -39,9 +39,10 @@ use crate::{
 use crate::{
     AgentDiffPane, ConversationView, CopyThreadToClipboard, Follow, LoadThreadFromClipboard,
     NewTerminalThread, NewThread, OpenActiveThreadAsMarkdown, OpenAgentDiff, ResetFastModeWarnings,
-    ShowAllSidebarThreadMetadata, ShowThreadMetadata,
+    ResetFullAccessWarning, ShowAllSidebarThreadMetadata, ShowThreadMetadata,
     conversation_view::{
         AcpThreadViewEvent, RootThreadUpdated, ThreadView, reset_fast_mode_warnings,
+        reset_full_access_warning,
     },
     ui::{AgentNotification, AgentNotificationEvent},
 };
@@ -459,6 +460,9 @@ pub fn init(cx: &mut App) {
                 })
                 .register_action(|_workspace, _: &ResetFastModeWarnings, _window, cx| {
                     reset_fast_mode_warnings(cx);
+                })
+                .register_action(|_workspace, _: &ResetFullAccessWarning, _window, cx| {
+                    reset_full_access_warning(cx);
                 })
                 .register_action(|workspace, _: &ResetAgentZoom, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {

@@ -1111,7 +1111,19 @@ pub struct ToolRegexRule {
 /// What the agent may do in a thread without asking: how its terminal
 /// commands are sandboxed, and whether it may request more access.
 #[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, MergeFrom,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+    strum::IntoStaticStr,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum AgentPermissions {
@@ -1119,14 +1131,17 @@ pub enum AgentPermissions {
     /// file tools can't modify files, and requests for more access are denied.
     /// Where the project can't be sandboxed (e.g. a remote project), terminal
     /// commands don't run at all.
+    #[strum(serialize = "Read-only")]
     ReadOnly,
     /// Terminal commands run in a sandbox that can write to the project, and
     /// requests for more access ask for approval. Where the project can't be
     /// sandboxed, each terminal command asks for approval unless a rule
     /// allows it.
     #[default]
+    #[strum(serialize = "Workspace")]
     Workspace,
     /// Terminal commands run without a sandbox, and nothing asks for approval.
+    #[strum(serialize = "Full access")]
     FullAccess,
 }
 
