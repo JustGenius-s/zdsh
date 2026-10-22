@@ -13,20 +13,18 @@ use gpui_kit::{
     component::{
         Icon as KitIcon, Theme as KitTheme,
         menu::{DropdownMenu, PopupMenu, PopupMenuItem},
-        separator::Separator,
     },
 };
 use settings::{Settings as _, update_settings_file};
 use theme::{ActiveTheme as _, Appearance, SystemAppearance, ThemeRegistry};
 use theme_settings::{ThemeAppearanceMode, ThemeSelection, ThemeSettings};
-use ui::{IconName, Tooltip, v_flex};
+use ui::{IconName, Tooltip};
 use util::ResultExt as _;
 
 use crate::{ItemHandle, Workspace};
 
-/// A view that an action opens as a tab, listed on the rail in a group of its own below the left
-/// dock's panels. The app adds these, since the views live in crates the workspace doesn't
-/// depend on.
+/// A tool view opened as a tab from the right rail's Action menu. The app adds these because
+/// the views live in crates the workspace doesn't depend on.
 pub struct RailItem {
     pub icon: IconName,
     pub tooltip: &'static str,
@@ -79,40 +77,9 @@ impl Workspace {
                 )
             })
             .collect::<Vec<_>>();
-        let active_item = self.active_item(cx);
-        let item_buttons = self
-            .rail_items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| (item.is_visible)(cx))
-            .map(|(index, item)| {
-                let is_selected = active_item
-                    .as_ref()
-                    .is_some_and(|active_item| (item.is_active)(active_item.as_ref()));
-                let tooltip = item.tooltip;
-                let tooltip_action = item.action.boxed_clone();
-                let action = item.action.boxed_clone();
-                RailButton::new(
-                    SharedString::from(format!("rail-item-{index}")),
-                    item.icon.path(),
-                )
-                .selected(is_selected)
-                .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
-                .tooltip(move |_, cx| Tooltip::for_action(tooltip, &*tooltip_action, cx))
-            })
-            .collect::<Vec<_>>();
         let fs = self.app_state().fs.clone();
 
-        v_flex()
-            .id("rail")
-            .flex_none()
-            .w(rems(3.5))
-            .items_center()
-            .py_3()
-            .gap_2()
-            .overflow_hidden()
-            // The rail is window chrome, continuing the title bar above it.
-            .bg(cx.theme().colors().title_bar_background)
+        rail_container("rail", cx)
             .children(panel_buttons)
             .child(
                 RailButton::new("rail-extensions", IconName::Blocks.path())
@@ -123,10 +90,6 @@ impl Workspace {
                         Tooltip::for_action("Extensions", &zed_actions::Extensions::default(), cx)
                     }),
             )
-            .when(!item_buttons.is_empty(), |rail| {
-                rail.child(Separator::horizontal().w_5())
-                    .children(item_buttons)
-            })
             .child(div().flex_1())
             .child(
                 RailButton::new("rail-theme", KitIconName::Palette.path())
@@ -138,7 +101,10 @@ impl Workspace {
             .child(
                 RailButton::new("rail-settings", KitIconName::Settings.path())
                     .tooltip(Tooltip::text("Settings"))
-                    .dropdown_menu_with_anchor(Anchor::BottomLeft, settings_menu),
+                    .dropdown_menu_with_anchor(Anchor::BottomLeft, |menu, _, _| {
+                        menu.menu("Settings", Box::new(zed_actions::OpenSettings))
+                            .menu("Keymap", Box::new(zed_actions::OpenKeymap))
+                    }),
             )
     }
 
@@ -177,19 +143,34 @@ impl Workspace {
     }
 }
 
+pub(crate) fn rail_container(id: impl Into<ElementId>, cx: &App) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w(rems(3.5))
+        .h_full()
+        .items_center()
+        .py_3()
+        .gap_2()
+        .overflow_hidden()
+        .bg(cx.theme().colors().title_bar_background)
+}
+
 /// An item on the rail, drawn like GPUI Kit's sidebar items: a dimmed icon that lights up while
 /// hovered, pressed or selected. It takes Zed's tooltips, since GPUI Kit's own tooltips need its
 /// window root, which Zed's windows don't have. GPUI Kit's collapsed sidebar is fixed at a width
 /// too narrow for these items, so the rail lays them out itself.
 #[derive(IntoElement)]
-struct RailButton {
+pub(crate) struct RailButton {
     base: Stateful<Div>,
     icon_path: SharedString,
     selected: bool,
 }
 
 impl RailButton {
-    fn new(id: impl Into<ElementId>, icon_path: impl Into<SharedString>) -> Self {
+    pub(crate) fn new(id: impl Into<ElementId>, icon_path: impl Into<SharedString>) -> Self {
         Self {
             base: div().id(id),
             icon_path: icon_path.into(),
@@ -286,26 +267,14 @@ fn theme_menu(menu: PopupMenu, fs: Arc<dyn Fs>, cx: &mut Context<PopupMenu>) -> 
                 .on_click(move |_, _, cx| set_theme(fs.clone(), name.clone(), appearance, cx)),
         );
     }
-    menu.separator().menu(
-        "More Themes…",
-        zed_actions::theme_selector::Toggle::default().boxed_clone(),
-    )
-}
-
-fn settings_menu(menu: PopupMenu, _window: &mut Window, _cx: &mut Context<PopupMenu>) -> PopupMenu {
-    menu.menu("Settings", zed_actions::OpenSettings.boxed_clone())
-        .menu("Keymap", Box::new(zed_actions::OpenKeymap))
+    menu.separator()
         .menu(
-            "Themes…",
+            "More Themes…",
             zed_actions::theme_selector::Toggle::default().boxed_clone(),
         )
         .menu(
             "Icon Themes…",
             zed_actions::icon_theme_selector::Toggle::default().boxed_clone(),
-        )
-        .menu(
-            "Extensions",
-            zed_actions::Extensions::default().boxed_clone(),
         )
 }
 

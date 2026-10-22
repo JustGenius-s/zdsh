@@ -1,6 +1,6 @@
 use crate::{
-    CloseWindow, NewFile, NewTerminal, OpenInTerminal, OpenOptions, OpenTerminal, OpenVisible,
-    SplitDirection, ToggleZoom, Workspace, WorkspaceItemBuilder, ZoomIn, ZoomOut,
+    CloseWindow, OpenInTerminal, OpenOptions, OpenTerminal, OpenVisible, SplitDirection,
+    ToggleZoom, Workspace, WorkspaceItemBuilder, ZoomIn, ZoomOut,
     focus_follows_mouse::FocusFollowsMouse as _,
     invalid_item_view::InvalidItemView,
     item::{
@@ -14,7 +14,6 @@ use crate::{
     toolbar::Toolbar,
     workspace_settings::{AutosaveSetting, FocusFollowsMouse, TabBarSettings, WorkspaceSettings},
 };
-use agent_settings::AgentSettings;
 use anyhow::Result;
 use collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use futures::{StreamExt, stream::FuturesUnordered};
@@ -4607,13 +4606,6 @@ fn default_render_tab_bar_buttons(
     cx: &mut Context<Pane>,
 ) -> (Option<AnyElement>, Option<AnyElement>) {
     let focus_handle = pane.focus_handle(cx);
-    let agent_enabled = AgentSettings::get_global(cx).enabled(cx);
-    let has_project = pane
-        .project
-        .read_with(cx, |project, cx| {
-            project.visible_worktrees(cx).next().is_some()
-        })
-        .unwrap_or(false);
     let (can_clone, can_split_move) = match pane.active_item() {
         Some(active_item) if active_item.can_split(cx) => (true, false),
         Some(_) => (false, pane.items_len() > 1),
@@ -4625,19 +4617,7 @@ fn default_render_tab_bar_buttons(
         .tooltip("More…")
         .debug_selector(|| "ICON-Ellipsis".into())
         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-            let mut menu = menu.action_context(focus_handle.clone()).label("Create");
-            if agent_enabled {
-                menu = menu.menu_with_disabled(
-                    "New Agent Tab",
-                    zed_actions::agent::NewThread.boxed_clone(),
-                    !has_project,
-                );
-            }
-            let menu = menu
-                .menu("New File", NewFile.boxed_clone())
-                .menu("New Terminal", NewTerminal::default().boxed_clone())
-                .separator()
-                .label("Split");
+            let menu = menu.action_context(focus_handle.clone()).label("Split");
             let cannot_split = !can_clone && !can_split_move;
             // Items that can't be cloned into the new pane are moved there instead.
             let mode = if can_split_move {
@@ -5373,7 +5353,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        Member,
+        Member, NewFile,
         item::test::{TestItem, TestProjectItem},
     };
     use gpui::{

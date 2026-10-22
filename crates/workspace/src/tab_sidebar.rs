@@ -1,22 +1,28 @@
+use agent_settings::AgentSettings;
 use gpui::{
-    App, ElementId, Entity, EntityId, Focusable as _, IntoElement, ParentElement, SharedString,
-    Styled, TaskExt, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
+    Anchor, App, ElementId, Entity, EntityId, Focusable as _, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement as _, Styled, TaskExt, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, rems,
 };
 use gpui_kit::{
     assets::IconName as KitIconName,
     component::{
-        Collapsible, Side, Sizable as _,
+        Collapsible, Icon, Side, Sizable as _,
         button::{Button, ButtonVariants as _},
         h_flex,
-        menu::{DropdownMenu, PopupMenuItem},
-        sidebar::{
-            Sidebar, SidebarCollapsible, SidebarGroup, SidebarItem, SidebarMenu, SidebarMenuItem,
-        },
+        menu::{DropdownMenu, PopupMenu},
+        sidebar::{Sidebar, SidebarCollapsible, SidebarItem, SidebarMenu, SidebarMenuItem},
     },
 };
+use settings::Settings as _;
+use ui::Tooltip;
 use util::ResultExt as _;
 
-use crate::{ItemHandle, Pane, SaveIntent, Workspace, item::TabCategory};
+use crate::{
+    ItemHandle, Pane, SaveIntent, Workspace,
+    item::TabCategory,
+    rail::{RailButton, rail_container},
+};
 
 impl Workspace {
     /// Tab list fixed to the right of the content block.
@@ -28,6 +34,13 @@ impl Workspace {
         _window: &mut Window,
         cx: &mut App,
     ) -> impl IntoElement {
+        if self
+            .panes()
+            .iter()
+            .all(|pane| pane.read(cx).items_len() == 0)
+        {
+            return self.render_empty_tab_rail(cx).into_any_element();
+        }
         let workspace = self.weak_handle();
         let active_item_id = self.active_item(cx).map(|item| item.item_id());
         let mut agent_items = Vec::new();
@@ -53,15 +66,10 @@ impl Workspace {
         }
 
         let groups = [
-            tab_group(TabCategory::Agent, agent_items, &workspace, false),
-            tab_group(
-                TabCategory::Terminal,
-                terminal_items,
-                &workspace,
-                self.terminal_provider.is_some(),
-            ),
-            tab_group(TabCategory::File, file_items, &workspace, false),
-            tab_group(TabCategory::Action, action_items, &workspace, false),
+            tab_group(TabCategory::Agent, agent_items, &workspace),
+            tab_group(TabCategory::Terminal, terminal_items, &workspace),
+            tab_group(TabCategory::File, file_items, &workspace),
+            tab_group(TabCategory::Action, action_items, &workspace),
         ];
 
         Sidebar::new("tab-sidebar")
@@ -73,7 +81,79 @@ impl Workspace {
             .w(px(240.))
             .h_full()
             .flex_none()
-            .children(groups.into_iter().flatten())
+            .children(groups)
+            .into_any_element()
+    }
+
+    fn render_empty_tab_rail(&self, cx: &App) -> impl IntoElement + use<> {
+        let categories = [
+            TabCategory::Agent,
+            TabCategory::Terminal,
+            TabCategory::File,
+            TabCategory::Action,
+        ];
+        rail_container("tab-sidebar-rail", cx).children(categories.into_iter().map(|category| {
+            let workspace = self.weak_handle();
+            RailButton::new(category.label(), category_icon(category).path())
+                .tooltip(Tooltip::text(category.label()))
+                .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+                    let Some(workspace) = workspace.upgrade() else {
+                        return menu;
+                    };
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.tab_creation_menu(category, menu, cx)
+                    })
+                })
+        }))
+    }
+
+    fn tab_creation_menu(&self, category: TabCategory, menu: PopupMenu, cx: &mut App) -> PopupMenu {
+        let menu = menu.action_context(self.active_pane.read(cx).focus_handle(cx));
+        match category {
+            TabCategory::Agent => {
+                let has_project = self.project.read(cx).visible_worktrees(cx).next().is_some();
+                menu.menu_with_disabled(
+                    "New Agent Tab",
+                    Box::new(zed_actions::agent::NewThread),
+                    !has_project || !AgentSettings::get_global(cx).enabled(cx),
+                )
+                .when(!has_project, |menu| {
+                    menu.separator()
+                        .menu("Open Folder…", Box::new(crate::Open::default()))
+                })
+            }
+            TabCategory::Terminal => {
+                let mut menu = menu.menu_with_disabled(
+                    "New Terminal",
+                    Box::new(crate::NewTerminal::default()),
+                    self.terminal_provider.is_none(),
+                );
+                if let Some(provider) = self.terminal_provider.as_ref() {
+                    let actions = provider.quick_actions(cx);
+                    if !actions.is_empty() {
+                        menu = menu.separator();
+                        for (label, action) in actions {
+                            menu = menu.menu(label, action);
+                        }
+                    }
+                    menu = menu.separator().menu(
+                        "Manage quick actions…",
+                        Box::new(crate::OpenTerminalQuickActions),
+                    );
+                }
+                menu
+            }
+            TabCategory::File => menu
+                .menu("New File", Box::new(crate::NewFile))
+                .menu("Open File…", Box::new(crate::Open::default())),
+            TabCategory::Action => {
+                let mut menu = menu;
+                for item in self.rail_items.iter().filter(|item| (item.is_visible)(cx)) {
+                    menu = menu.menu(item.tooltip, item.action.boxed_clone());
+                }
+                menu
+            }
+        }
     }
 }
 
@@ -82,7 +162,6 @@ struct TabGroup {
     category: TabCategory,
     items: Vec<SidebarMenuItem>,
     workspace: WeakEntity<Workspace>,
-    quick_actions: bool,
     collapsed: bool,
 }
 
@@ -104,76 +183,43 @@ impl SidebarItem for TabGroup {
         cx: &mut App,
     ) -> impl IntoElement {
         let id = id.into();
-        let menu = SidebarMenu::new().children(self.items);
-        if !self.quick_actions {
-            return SidebarGroup::new(self.category.label())
-                .child(menu)
-                .collapsed(self.collapsed)
-                .render(id, window, cx)
-                .into_any_element();
-        }
+        let menu = SidebarMenu::new()
+            .children(self.items)
+            .collapsed(self.collapsed)
+            .pl(if self.collapsed { rems(0.) } else { rems(1.) });
+        let category_color = theme::ActiveTheme::theme(cx).colors().text_accent;
         let workspace = self.workspace;
         div()
             .flex()
             .flex_col()
-            .child(
-                h_flex()
-                    .h_8()
-                    .px_2()
-                    .justify_between()
-                    .child(div().text_xs().opacity(0.7).child(self.category.label()))
-                    .child(
-                        Button::new("terminal-quick-actions")
-                            .ghost()
-                            .xsmall()
-                            .icon(KitIconName::Command)
-                            .tooltip("Terminal quick actions")
-                            .accessibility_label("Terminal quick actions")
-                            .dropdown_menu(move |mut menu, _, cx| {
-                                let actions = workspace
-                                    .update(cx, |workspace, cx| {
-                                        workspace
-                                            .terminal_provider
-                                            .as_ref()
-                                            .map(|provider| provider.quick_actions(cx))
-                                            .unwrap_or_default()
-                                    })
-                                    .log_err()
-                                    .unwrap_or_default();
-                                let has_actions = !actions.is_empty();
-                                for (label, action) in actions {
-                                    let workspace = workspace.clone();
-                                    menu = menu.item(PopupMenuItem::new(label).on_click(
-                                        move |_, window, cx| {
-                                            workspace
-                                                .update(cx, |workspace, cx| {
-                                                    workspace.focus_handle(cx).focus(window, cx);
-                                                    window
-                                                        .dispatch_action(action.boxed_clone(), cx);
-                                                })
-                                                .log_err();
-                                        },
-                                    ));
-                                }
-                                let workspace = workspace.clone();
-                                menu.when(has_actions, |menu| menu.separator()).item(
-                                    PopupMenuItem::new("Manage quick actions…").on_click(
-                                        move |_, window, cx| {
-                                            workspace
-                                                .update(cx, |workspace, cx| {
-                                                    workspace.focus_handle(cx).focus(window, cx);
-                                                    window.dispatch_action(
-                                                        Box::new(crate::OpenTerminalQuickActions),
-                                                        cx,
-                                                    );
-                                                })
-                                                .log_err();
-                                        },
-                                    ),
-                                )
-                            }),
-                    ),
-            )
+            .when(!self.collapsed, |group| {
+                group.child(
+                    Button::new(self.category.label())
+                        .ghost()
+                        .w_full()
+                        .h_8()
+                        .px_2()
+                        .accessibility_label(format!("{} actions", self.category.label()))
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .gap_2()
+                                .text_base()
+                                .text_color(category_color)
+                                .child(Icon::new(category_icon(self.category)).size(rems(1.)))
+                                .child(self.category.label()),
+                        )
+                        .child(Icon::new(KitIconName::Ellipsis).size(rems(1.)))
+                        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+                            let Some(workspace) = workspace.upgrade() else {
+                                return menu;
+                            };
+                            workspace.update(cx, |workspace, cx| {
+                                workspace.tab_creation_menu(self.category, menu, cx)
+                            })
+                        }),
+                )
+            })
             .child(menu.render(id, window, cx))
             .into_any_element()
     }
@@ -183,18 +229,13 @@ fn tab_group(
     category: TabCategory,
     items: Vec<SidebarMenuItem>,
     workspace: &WeakEntity<Workspace>,
-    quick_actions: bool,
-) -> Option<TabGroup> {
-    if items.is_empty() && !quick_actions {
-        return None;
-    }
-    Some(TabGroup {
+) -> TabGroup {
+    TabGroup {
         category,
         items,
         workspace: workspace.clone(),
-        quick_actions,
         collapsed: false,
-    })
+    }
 }
 
 fn tab_menu_item(

@@ -9786,7 +9786,6 @@ impl Render for Workspace {
                                     .relative()
                                     .flex_1()
                                     .min_w_0()
-                                    .mr_1()
                                     .mb_1()
                                     // Room for the block's edge, which is drawn over its content.
                                     .p_px()
