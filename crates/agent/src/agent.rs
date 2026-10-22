@@ -902,7 +902,7 @@ impl NativeAgent {
         let title = thread.title();
         let draft_prompt = thread.draft_prompt().map(Vec::from);
         let scroll_position = thread.ui_scroll_position();
-        let token_usage = thread.latest_token_usage();
+        let token_usage = thread.latest_token_usage(cx);
         let project = thread.project.clone();
         let action_log = thread.action_log.clone();
         let prompt_capabilities_rx = thread.prompt_capabilities_rx.clone();
@@ -3630,7 +3630,7 @@ impl acp_thread::AgentSessionTruncate for NativeAgentSessionTruncate {
             cancellation.await?;
             let usage = thread.update(cx, |thread, cx| {
                 thread.truncate(client_user_message_id, cx)?;
-                anyhow::Ok(thread.latest_token_usage())
+                anyhow::Ok(thread.latest_token_usage(cx))
             })?;
             acp_thread
                 .update(cx, |thread, cx| thread.update_token_usage(usage, cx))
@@ -3985,7 +3985,7 @@ impl SubagentHandle for NativeSubagentHandle {
 
                 let ratio_before_prompt = thread
                     .read(cx)
-                    .latest_token_usage()
+                    .latest_token_usage(cx)
                     .map_or(TokenUsageRatio::Normal, |usage| usage.ratio());
                 let (token_limit_tx, token_limit_rx) = oneshot::channel();
                 let mut token_limit_tx = Some(token_limit_tx);

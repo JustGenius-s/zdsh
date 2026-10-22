@@ -144,6 +144,10 @@ pub struct LanguageModel {
     /// Whether this model/provider reports accurate split input/output token
     /// counts. When true, the UI may show separate input/output token indicators.
     pub supports_split_token_display: bool,
+    /// Whether the usage this model reports covers a single request, so that it measures that
+    /// request's context. Providers that run their own agent loop report one count for all the
+    /// model calls in a turn instead.
+    pub reports_per_request_usage: bool,
     /// The model's context-window capacity.
     pub max_token_count: u64,
     /// The input ceiling before reserving output from any shared window.
@@ -214,6 +218,7 @@ impl LanguageModel {
             tool_choice_support: LanguageModelToolChoiceSupport::default(),
             supports_streaming_tools: false,
             supports_split_token_display: false,
+            reports_per_request_usage: true,
             max_token_count,
             max_input_tokens: max_token_count,
             max_output_tokens: None,
@@ -348,6 +353,10 @@ impl LanguageModel {
 
     pub fn supports_split_token_display(&self) -> bool {
         self.supports_split_token_display
+    }
+
+    pub fn reports_per_request_usage(&self) -> bool {
+        self.reports_per_request_usage
     }
 
     pub fn max_token_count(&self) -> u64 {

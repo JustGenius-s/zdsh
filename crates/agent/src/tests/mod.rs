@@ -3745,7 +3745,7 @@ async fn test_truncate_first_message(cx: &mut TestAppContext) {
         })
         .unwrap();
     cx.run_until_parked();
-    thread.read_with(cx, |thread, _| {
+    thread.read_with(cx, |thread, cx| {
         assert_eq!(
             thread.to_markdown(),
             indoc! {"
@@ -3754,7 +3754,7 @@ async fn test_truncate_first_message(cx: &mut TestAppContext) {
                 Hello
             "}
         );
-        assert_eq!(thread.latest_token_usage(), None);
+        assert_eq!(thread.latest_token_usage(cx), None);
     });
 
     fake.send_last_text(&model, "Hey!");
@@ -3768,7 +3768,7 @@ async fn test_truncate_first_message(cx: &mut TestAppContext) {
         }),
     );
     cx.run_until_parked();
-    thread.read_with(cx, |thread, _| {
+    thread.read_with(cx, |thread, cx| {
         assert_eq!(
             thread.to_markdown(),
             indoc! {"
@@ -3782,7 +3782,7 @@ async fn test_truncate_first_message(cx: &mut TestAppContext) {
             "}
         );
         assert_eq!(
-            thread.latest_token_usage(),
+            thread.latest_token_usage(cx),
             Some(acp_thread::TokenUsage {
                 used_tokens: 32_000 + 16_000,
                 max_tokens: 1_000_000,
@@ -3797,9 +3797,9 @@ async fn test_truncate_first_message(cx: &mut TestAppContext) {
         .update(cx, |thread, cx| thread.truncate(message_id, cx))
         .unwrap();
     cx.run_until_parked();
-    thread.read_with(cx, |thread, _| {
+    thread.read_with(cx, |thread, cx| {
         assert_eq!(thread.to_markdown(), "");
-        assert_eq!(thread.latest_token_usage(), None);
+        assert_eq!(thread.latest_token_usage(cx), None);
     });
 
     // Ensure we can still send a new message after truncation.
@@ -3830,7 +3830,7 @@ async fn test_truncate_first_message(cx: &mut TestAppContext) {
         }),
     );
     cx.run_until_parked();
-    thread.read_with(cx, |thread, _| {
+    thread.read_with(cx, |thread, cx| {
         assert_eq!(
             thread.to_markdown(),
             indoc! {"
@@ -3845,7 +3845,7 @@ async fn test_truncate_first_message(cx: &mut TestAppContext) {
         );
 
         assert_eq!(
-            thread.latest_token_usage(),
+            thread.latest_token_usage(cx),
             Some(acp_thread::TokenUsage {
                 used_tokens: 40_000 + 20_000,
                 max_tokens: 1_000_000,
@@ -3887,9 +3887,9 @@ async fn test_latest_token_usage_counts_cached_input_tokens(cx: &mut TestAppCont
     fake.end_last(&model);
     cx.run_until_parked();
 
-    thread.read_with(cx, |thread, _| {
+    thread.read_with(cx, |thread, cx| {
         assert_eq!(
-            thread.latest_token_usage(),
+            thread.latest_token_usage(cx),
             Some(acp_thread::TokenUsage {
                 used_tokens: 250,
                 max_tokens: 1_000_000,
@@ -3941,9 +3941,9 @@ async fn test_prompt_too_large_marks_token_usage_exceeded(cx: &mut TestAppContex
     fake.end_last(&model);
     cx.run_until_parked();
 
-    thread.read_with(cx, |thread, _| {
+    thread.read_with(cx, |thread, cx| {
         assert_eq!(
-            thread.latest_token_usage().unwrap().ratio(),
+            thread.latest_token_usage(cx).unwrap().ratio(),
             acp_thread::TokenUsageRatio::Normal
         );
     });
@@ -3967,8 +3967,8 @@ async fn test_prompt_too_large_marks_token_usage_exceeded(cx: &mut TestAppContex
     fake.end_last(&model);
     cx.run_until_parked();
 
-    thread.read_with(cx, |thread, _| {
-        let usage = thread.latest_token_usage().unwrap();
+    thread.read_with(cx, |thread, cx| {
+        let usage = thread.latest_token_usage(cx).unwrap();
         assert_eq!(usage.used_tokens, 1_000_000);
         assert_eq!(usage.max_tokens, 1_000_000);
         assert_eq!(usage.ratio(), acp_thread::TokenUsageRatio::Exceeded);
@@ -4003,8 +4003,8 @@ async fn test_prompt_too_large_uses_reported_token_count(cx: &mut TestAppContext
     fake.end_last(&model);
     cx.run_until_parked();
 
-    thread.read_with(cx, |thread, _| {
-        let usage = thread.latest_token_usage().unwrap();
+    thread.read_with(cx, |thread, cx| {
+        let usage = thread.latest_token_usage(cx).unwrap();
         assert_eq!(usage.used_tokens, 1_500_000);
         assert_eq!(usage.ratio(), acp_thread::TokenUsageRatio::Exceeded);
     });
@@ -4190,7 +4190,7 @@ async fn test_truncate_second_message(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let assert_first_message_state = |cx: &mut TestAppContext| {
-        thread.clone().read_with(cx, |thread, _| {
+        thread.clone().read_with(cx, |thread, cx| {
             assert_eq!(
                 thread.to_markdown(),
                 indoc! {"
@@ -4205,7 +4205,7 @@ async fn test_truncate_second_message(cx: &mut TestAppContext) {
             );
 
             assert_eq!(
-                thread.latest_token_usage(),
+                thread.latest_token_usage(cx),
                 Some(acp_thread::TokenUsage {
                     used_tokens: 32_000 + 16_000,
                     max_tokens: 1_000_000,
@@ -4240,7 +4240,7 @@ async fn test_truncate_second_message(cx: &mut TestAppContext) {
     fake.end_last(&model);
     cx.run_until_parked();
 
-    thread.read_with(cx, |thread, _| {
+    thread.read_with(cx, |thread, cx| {
         assert_eq!(
             thread.to_markdown(),
             indoc! {"
@@ -4263,7 +4263,7 @@ async fn test_truncate_second_message(cx: &mut TestAppContext) {
         );
 
         assert_eq!(
-            thread.latest_token_usage(),
+            thread.latest_token_usage(cx),
             Some(acp_thread::TokenUsage {
                 used_tokens: 40_000 + 20_000,
                 max_tokens: 1_000_000,

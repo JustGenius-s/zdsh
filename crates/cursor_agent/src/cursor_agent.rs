@@ -576,6 +576,9 @@ pub fn language_model(model: &CursorModel) -> LanguageModel {
             none: false,
         },
         supports_streaming_tools: false,
+        // A Run spans every tool round of a turn, and its usage arrives once, summed over the
+        // model calls the Run made.
+        reports_per_request_usage: false,
         supports_thinking: !effort_levels.is_empty(),
         supported_effort_levels: effort_levels,
         max_output_tokens: Some(model.max_output_tokens),
