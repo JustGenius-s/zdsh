@@ -547,6 +547,15 @@ impl PermissionSelection {
     }
 }
 
+struct MessageEditSession {
+    entry_index: usize,
+    client_id: acp_thread::ClientUserMessageId,
+    source_version: acp_thread::MessageContentVersion,
+    editor: Entity<MessageEditor>,
+    error: Option<SharedString>,
+    _subscription: Subscription,
+}
+
 pub struct ThreadView {
     pub(crate) root_thread_id: ThreadId,
     pub session_id: acp_v2::SessionId,
@@ -593,7 +602,7 @@ pub struct ThreadView {
     pub queue_expanded: bool,
     pub editor_expanded: bool,
     pub should_be_following: bool,
-    pub editing_message: Option<usize>,
+    editing_message: Option<MessageEditSession>,
     pub message_queue: MessageQueue,
     pub turn_fields: TurnFields,
     pub discarded_partial_edits: HashSet<acp_v2::ToolCallId>,
@@ -1347,19 +1356,148 @@ impl ThreadView {
 
     /// Returns the currently active editor, either for a message that is being
     /// edited or the editor for a new message.
-    pub(crate) fn active_editor(&self, cx: &App) -> Entity<MessageEditor> {
-        if let Some(index) = self.editing_message
-            && let Some(editor) = self
+    pub(crate) fn active_editor(&self, _cx: &App) -> Entity<MessageEditor> {
+        self.editing_message
+            .as_ref()
+            .map(|session| session.editor.clone())
+            .unwrap_or_else(|| self.message_editor.clone())
+    }
+
+    pub(super) fn editing_message_index(&self) -> Option<usize> {
+        self.editing_message
+            .as_ref()
+            .map(|session| session.entry_index)
+    }
+
+    pub(super) fn sync_message_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.editing_message.as_mut() else {
+            return;
+        };
+        if let Some(entry_index) = self.thread.read(cx).entries().iter().position(|entry| {
+            entry
+                .user_message()
+                .is_some_and(|message| message.client_id.as_ref() == Some(&session.client_id))
+        }) {
+            session.entry_index = entry_index;
+        } else if !self.is_loading_contents {
+            self.end_message_edit(cx);
+        }
+    }
+
+    fn begin_message_edit(
+        &mut self,
+        entry_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_loading_contents || !self.can_edit_user_message(entry_index, cx) {
+            return;
+        }
+        if self.editing_message_index() == Some(entry_index) {
+            return;
+        }
+        let Some(message) = self
+            .thread
+            .read(cx)
+            .entries()
+            .get(entry_index)
+            .and_then(|entry| entry.user_message())
+        else {
+            return;
+        };
+        let Some(client_id) = message.client_id.clone() else {
+            return;
+        };
+        let source_version = message.content.source_version();
+        let source_blocks = message.content.source_blocks().to_vec();
+        self.end_message_edit(cx);
+
+        let max_lines = AgentSettings::get_global(cx).set_message_editor_max_lines();
+        let editor = self.entry_view_state.update(cx, |state, cx| {
+            state.create_message_editor(
+                source_blocks,
+                EditorMode::AutoHeight {
+                    min_lines: 1,
+                    max_lines: Some(max_lines),
+                },
+                window,
+                cx,
+            )
+        });
+        let local_commands = self.available_local_commands(cx);
+        editor.update(cx, |editor, cx| {
+            editor.set_placeholder_text("Edit message — @ to include context", window, cx);
+            editor.set_local_commands(local_commands);
+        });
+        let subscription = cx.subscribe_in(
+            &editor,
+            window,
+            move |this, editor, event: &MessageEditorEvent, window, cx| {
+                let Some(session) = this
+                    .editing_message
+                    .as_ref()
+                    .filter(|session| session.editor == *editor)
+                else {
+                    return;
+                };
+                let entry_index = session.entry_index;
+                let entry_view_state = this.entry_view_state.clone();
+                this.handle_entry_view_event(
+                    &entry_view_state,
+                    &EntryViewEvent {
+                        entry_index,
+                        view_event: ViewEvent::MessageEditorEvent(editor.clone(), event.clone()),
+                    },
+                    window,
+                    cx,
+                );
+            },
+        );
+        self.editing_message = Some(MessageEditSession {
+            entry_index,
+            client_id,
+            source_version,
+            editor: editor.clone(),
+            error: None,
+            _subscription: subscription,
+        });
+        let scroll_top = self.list_state.logical_scroll_top();
+        self.list_state.splice_focusable(
+            entry_index..entry_index + 1,
+            [Some(editor.focus_handle(cx))],
+        );
+        self.list_state.scroll_to(scroll_top);
+        editor.focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    fn end_message_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.editing_message.take() else {
+            return;
+        };
+        self.add_menu.take();
+        self._add_menu_subscriptions.clear();
+        self.close_model_menu(cx);
+        let source_still_exists = self
+            .thread
+            .read(cx)
+            .entries()
+            .get(session.entry_index)
+            .and_then(|entry| entry.user_message())
+            .is_some_and(|message| message.client_id.as_ref() == Some(&session.client_id));
+        if source_still_exists {
+            let focus_handle = self
                 .entry_view_state
                 .read(cx)
-                .entry(index)
+                .entry(session.entry_index)
                 .and_then(|entry| entry.message_editor())
-                .cloned()
-        {
-            editor
-        } else {
-            self.message_editor.clone()
+                .map(|editor| editor.focus_handle(cx));
+            let scroll_top = self.list_state.logical_scroll_top();
+            self.list_state
+                .splice_focusable(session.entry_index..session.entry_index + 1, [focus_handle]);
+            self.list_state.scroll_to(scroll_top);
         }
+        cx.notify();
     }
 
     pub fn has_queued_messages(&self) -> bool {
@@ -1396,25 +1534,18 @@ impl ThreadView {
                 });
             }
             ViewEvent::MessageEditorEvent(_editor, MessageEditorEvent::Focus) => {
-                if self.can_edit_user_message(event.entry_index, cx) {
-                    self.editing_message = Some(event.entry_index);
-                    cx.notify();
-                }
+                self.begin_message_edit(event.entry_index, window, cx);
             }
-            ViewEvent::MessageEditorEvent(editor, MessageEditorEvent::LostFocus) => {
-                if let Some(AgentThreadEntry::UserMessage(user_message)) =
-                    self.thread.read(cx).entries().get(event.entry_index)
-                    && self.can_edit_user_message(event.entry_index, cx)
+            ViewEvent::MessageEditorEvent(_, MessageEditorEvent::LostFocus) => {}
+            ViewEvent::MessageEditorEvent(
+                editor,
+                MessageEditorEvent::SendImmediately | MessageEditorEvent::Send,
+            ) => {
+                if self
+                    .editing_message
+                    .as_ref()
+                    .is_some_and(|session| session.editor == *editor)
                 {
-                    if editor.read(cx).text(cx).as_str() == user_message.content.to_markdown(cx) {
-                        self.editing_message = None;
-                        cx.notify();
-                    }
-                }
-            }
-            ViewEvent::MessageEditorEvent(_editor, MessageEditorEvent::SendImmediately) => {}
-            ViewEvent::MessageEditorEvent(editor, MessageEditorEvent::Send) => {
-                if self.can_edit_user_message(event.entry_index, cx) {
                     self.regenerate(event.entry_index, editor.clone(), window, cx);
                 }
             }
@@ -1423,8 +1554,19 @@ impl ThreadView {
             }
             ViewEvent::MessageEditorEvent(_editor, MessageEditorEvent::SlashAutocompleteOpened) => {
             }
-            ViewEvent::MessageEditorEvent(_editor, MessageEditorEvent::LocalCommandInvoked(_)) => {}
-            ViewEvent::MessageEditorEvent(_editor, MessageEditorEvent::Edited) => {}
+            ViewEvent::MessageEditorEvent(_, MessageEditorEvent::LocalCommandInvoked(command)) => {
+                self.run_local_command(*command, window, cx);
+            }
+            ViewEvent::MessageEditorEvent(editor, MessageEditorEvent::Edited) => {
+                if let Some(session) = self.editing_message.as_mut()
+                    && session.editor == *editor
+                {
+                    session.error = None;
+                    self.list_state
+                        .remeasure_items(event.entry_index..event.entry_index + 1);
+                    cx.notify();
+                }
+            }
             ViewEvent::MessageEditorEvent(_editor, MessageEditorEvent::InputAttempted { .. }) => {}
             ViewEvent::OpenDiffLocation {
                 path,
@@ -1983,7 +2125,7 @@ impl ThreadView {
         let contents = self.resolve_message_contents(&message_editor, cx);
         self.thread_error.take();
         self.thread_feedback.clear();
-        self.editing_message.take();
+        self.end_message_edit(cx);
 
         cx.spawn_in(window, async move |this, cx| {
             let (mut content, tracked_buffers) = contents.await?;
@@ -2038,7 +2180,7 @@ impl ThreadView {
 
         self.thread_error.take();
         self.thread_feedback.clear();
-        self.editing_message.take();
+        self.end_message_edit(cx);
         // Sending a message is active engagement: un-freeze the queue if it
         // was paused by a manual stop.
         self.message_queue.resume();
@@ -2470,23 +2612,43 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.is_loading_contents || !self.can_edit_user_message(entry_ix, cx) {
+        if self.is_loading_contents || message_editor.read(cx).is_empty(cx) {
             return;
         }
-        let thread = self.thread.clone();
-
-        let Some(client_id) = thread.update(cx, |thread, _| {
-            thread
-                .entries()
-                .get(entry_ix)?
-                .user_message()?
-                .client_id
-                .clone()
-        }) else {
+        let Some(session) = self
+            .editing_message
+            .as_mut()
+            .filter(|session| session.entry_index == entry_ix && session.editor == message_editor)
+        else {
             return;
         };
+        let client_id = session.client_id.clone();
+        let source_version = session.source_version;
+        session.error = None;
+        let thread = self.thread.clone();
+        let contents = self.resolve_message_contents(&message_editor, cx);
+        self.close_add_menu(window, cx);
+        self.close_model_menu(cx);
+        // Context resolution reads the editor asynchronously. Freeze the draft until the
+        // complete payload has been validated, before rewinding any conversation state.
+        message_editor.update(cx, |editor, cx| editor.set_read_only(true, cx));
+        self.is_loading_contents = true;
+        cx.notify();
 
-        cx.spawn_in(window, async move |this, cx| {
+        let submission = cx.spawn_in(window, async move |this, cx| {
+            let (contents, tracked_buffers) = contents.await?;
+            anyhow::ensure!(!contents.is_empty(), "Enter a message or add an attachment before sending.");
+            this.read_with(cx, |this, cx| {
+                let unchanged = this.thread.read(cx).entries().get(entry_ix)
+                    .and_then(|entry| entry.user_message())
+                    .is_some_and(|message| {
+                        message.client_id.as_ref() == Some(&client_id)
+                            && message.content.source_version() == source_version
+                    });
+                anyhow::ensure!(unchanged && this.can_edit_user_message(entry_ix, cx),
+                    "The original message changed or is no longer editable. Your draft has been kept; cancel and reopen the message to try again.");
+                anyhow::Ok(())
+            })??;
             // Check if there are any edits from prompts before the one being regenerated.
             //
             // If there are, we keep/accept them since we're not regenerating the prompt that created them.
@@ -2519,24 +2681,47 @@ impl ThreadView {
             thread
                 .update(cx, |thread, cx| thread.rewind(client_id, cx))
                 .await?;
-            this.update_in(cx, |thread, window, cx| {
-                // Rewind can outlive a source update that replaces the editor with a fallback.
-                if message_editor.read(cx).editor().read(cx).read_only(cx) {
-                    thread.handle_thread_error(
-                        anyhow!(
-                            "The conversation was rewound, but the message became read-only and was not resent."
-                        ),
-                        cx,
-                    );
-                    return;
+            this.update_in(cx, |this, window, cx| {
+                this.end_message_edit(cx);
+                this.thread_error.take();
+                this.thread_feedback.clear();
+                this.message_queue.resume();
+                if this.should_be_following {
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.follow(CollaboratorId::Agent, window, cx);
+                    }).log_err();
                 }
                 cx.emit(AcpThreadViewEvent::Interacted);
-                thread.send_impl(message_editor, window, cx);
-                thread.activation_focus_handle(cx).focus(window, cx);
+                this.send_content(
+                    Task::ready(Ok(Some((contents, tracked_buffers)))),
+                    false,
+                    window,
+                    cx,
+                );
+                this.message_editor.focus_handle(cx).focus(window, cx);
             })?;
             anyhow::Ok(())
+        });
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = submission.await {
+                this.update(cx, |this, cx| {
+                    this.is_loading_contents = false;
+                    if let Some(session) = this.editing_message.as_mut()
+                        && session.editor == message_editor
+                    {
+                        session.error = Some(error.to_string().into());
+                        message_editor.update(cx, |editor, cx| editor.set_read_only(false, cx));
+                        this.list_state
+                            .remeasure_items(session.entry_index..session.entry_index + 1);
+                    } else {
+                        this.handle_thread_error(error, cx);
+                    }
+                    cx.notify();
+                })
+                .log_err();
+            }
         })
-        .detach_and_log_err(cx);
+        .detach();
     }
 
     // message queueing
@@ -3029,30 +3214,10 @@ impl ThreadView {
     }
 
     pub fn cancel_editing(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(index) = self.editing_message.take()
-            && let Some(editor) = &self
-                .entry_view_state
-                .read(cx)
-                .entry(index)
-                .and_then(|e| e.message_editor())
-                .cloned()
-        {
-            editor.update(cx, |editor, cx| {
-                if let Some(user_message) = self
-                    .thread
-                    .read(cx)
-                    .entries()
-                    .get(index)
-                    .and_then(|e| e.user_message())
-                {
-                    editor.set_source_message(
-                        user_message.content.source_blocks().to_vec(),
-                        window,
-                        cx,
-                    );
-                }
-            })
-        };
+        if self.is_loading_contents && self.editing_message.is_some() {
+            return;
+        }
+        self.end_message_edit(cx);
         self.message_editor.focus_handle(cx).focus(window, cx);
         cx.notify();
     }
@@ -4630,7 +4795,7 @@ impl ThreadView {
     /// Renders the model and thinking effort as a single control. The trigger
     /// shows the active model and effort; the menu exposes effort, model, and
     /// thinking as one panel instead of separate toolbar entries.
-    fn render_model_and_effort_control(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_model_and_effort_control(&self, cx: &Context<Self>) -> AnyElement {
         if self.model_selector.is_none() {
             return self
                 .render_thinking_control(cx)
@@ -4716,7 +4881,7 @@ impl ThreadView {
             .read(cx)
             .active_model(cx)
             .map(|model| model.id.clone());
-        let focus_handle = self.message_editor.focus_handle(cx);
+        let focus_handle = self.active_editor(cx).focus_handle(cx);
         let weak_self = cx.weak_entity();
 
         let menu = PopupMenu::build(window, cx, move |mut menu, window, cx| {
@@ -4901,7 +5066,7 @@ impl ThreadView {
             })
     }
 
-    fn render_thinking_control(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_thinking_control(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let (model, thinking_enabled, selected_effort) = self.thinking_state(cx)?;
 
         let supports_thinking = model.supports_thinking();
@@ -4947,7 +5112,7 @@ impl ThreadView {
             )
         };
 
-        let focus_handle = self.message_editor.focus_handle(cx);
+        let focus_handle = self.active_editor(cx).focus_handle(cx);
 
         let thinking_toggle = IconButton::new("thinking-mode", icon)
             .icon_size(IconSize::Small)
@@ -5024,7 +5189,7 @@ impl ThreadView {
             (Color::Muted, IconName::ChevronDown)
         };
 
-        let focus_handle = self.message_editor.focus_handle(cx);
+        let focus_handle = self.active_editor(cx).focus_handle(cx);
         let show_cycle_row = supported_effort_levels.len() > 1;
 
         let tooltip = Tooltip::element({
@@ -5583,7 +5748,12 @@ impl ThreadView {
     // editor so they appear in its slash-command popup.
     pub(crate) fn sync_local_commands(&self, cx: &App) {
         let commands = self.available_local_commands(cx);
-        self.message_editor.read(cx).set_local_commands(commands);
+        self.message_editor
+            .read(cx)
+            .set_local_commands(commands.clone());
+        if let Some(session) = &self.editing_message {
+            session.editor.read(cx).set_local_commands(commands);
+        }
     }
 
     fn render_request_elicitations(&self, cx: &Context<Self>) -> Vec<AnyElement> {

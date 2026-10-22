@@ -136,8 +136,8 @@ impl ThreadView {
         )
         .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
         .flex_grow_1()
-        // A medium button's height plus the gap the row keeps from the last entry.
-        .when(has_tool_row, |list| list.pb(rems(2.5)))
+        // The floating tools need their own space in addition to the gap below the conversation.
+        .pb(rems(3. + if has_tool_row { 2.5 } else { 0. }))
     }
 
     /// The prompt of the turn at the top of the transcript, once the prompt itself has scrolled
@@ -198,7 +198,7 @@ impl ThreadView {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let rendered = match TurnFold::containing(self.thread.read(cx), entry_ix, cx) {
+        match TurnFold::containing(self.thread.read(cx), entry_ix, cx) {
             Some(fold) => {
                 let expanded = self.entry_view_state.read(cx).is_turn_fold_expanded(&fold);
                 let header = (entry_ix == fold.entries.start)
@@ -216,30 +216,6 @@ impl ThreadView {
                     .into_any_element()
             }
             None => self.render_unfolded_entry(entry_ix, total_entries, entry, window, cx),
-        };
-
-        if let Some(editing_index) = self.editing_message
-            && editing_index < entry_ix
-        {
-            let is_subagent = self.is_subagent();
-
-            let backdrop = div()
-                .id(("backdrop", entry_ix))
-                .size_full()
-                .absolute()
-                .inset_0()
-                .bg(cx.theme().colors().panel_background)
-                .opacity(0.8)
-                .block_mouse_except_scroll()
-                .on_click(cx.listener(Self::cancel_editing));
-
-            div()
-                .relative()
-                .child(rendered)
-                .when(!is_subagent, |this| this.child(backdrop))
-                .into_any_element()
-        } else {
-            rendered
         }
     }
 
@@ -536,7 +512,11 @@ impl ThreadView {
         window: &Window,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
-        if message.content.source_blocks().is_empty() {
+        let edit_session = self
+            .editing_message
+            .as_ref()
+            .filter(|session| session.entry_index == entry_ix);
+        if message.content.source_blocks().is_empty() && edit_session.is_none() {
             return None;
         }
         let editor = self
@@ -546,7 +526,6 @@ impl ThreadView {
             .and_then(|entry| entry.message_editor())
             .cloned()?;
 
-        let editing = self.editing_message == Some(entry_ix);
         let editor_focus = editor.focus_handle(cx).is_focused(window);
         let has_checkpoint_button = message
             .checkpoint
@@ -570,42 +549,8 @@ impl ThreadView {
             self.agent_id.clone()
         };
 
-        let actions = if editor_focus {
-            Some(if is_editable {
-                let is_loading_contents = self.is_loading_contents;
-                h_flex()
-                    .gap_0p5()
-                    .child(
-                        PillButton::new("cancel")
-                            .size(KitSize::XSmall)
-                            .icon(IconName::Close)
-                            .disabled(is_loading_contents)
-                            .tooltip(Tooltip::text("Cancel Editing"))
-                            .on_click(cx.listener(Self::cancel_editing)),
-                    )
-                    .child(if is_loading_contents {
-                        div()
-                            .id("loading-edited-message-content")
-                            .tooltip(Tooltip::text("Loading Added Context…"))
-                            .child(loading_contents_spinner(IconSize::XSmall))
-                            .into_any_element()
-                    } else {
-                        PillButton::new("regenerate")
-                            .size(KitSize::XSmall)
-                            .icon(IconName::Return)
-                            .tooltip(Tooltip::text(
-                                "Editing will restart the thread from this point.",
-                            ))
-                            .on_click(cx.listener({
-                                let editor = editor.clone();
-                                move |this, _, window, cx| {
-                                    this.regenerate(entry_ix, editor.clone(), window, cx);
-                                }
-                            }))
-                            .into_any_element()
-                    })
-                    .into_any_element()
-            } else {
+        let actions = if editor_focus && !is_editable {
+            Some(
                 PillButton::new("non_editable")
                     .size(KitSize::XSmall)
                     .icon(IconName::PencilUnavailable)
@@ -630,7 +575,7 @@ impl ThreadView {
                             .into_any_element()
                     }))
                     .into_any_element()
-            })
+            )
         } else {
             (can_restore_checkpoint && has_checkpoint_button)
                 .then(|| message.client_id.clone())
@@ -662,17 +607,18 @@ impl ThreadView {
                 })
                 .px(COLUMN_INSET)
                 .w_full()
-                .child(
+                .child(if let Some(session) = edit_session {
+                    self.render_message_edit_card(session, window, cx)
+                } else {
                     PromptCard::new(("user-prompt", entry_ix), editor.into_any_element())
                         .editable(is_editable)
-                        .editing(editing)
-                        .focused(editor_focus)
                         .subagent(is_subagent)
                         .compact(is_indented)
                         .when_some(actions, |card, actions| {
                             card.actions(actions, !editor_focus)
-                        }),
-                )
+                        })
+                        .into_any_element()
+                })
                 .into_any(),
         )
     }
@@ -1357,8 +1303,6 @@ pub(super) struct PromptCard {
     id: ElementId,
     content: AnyElement,
     editable: bool,
-    editing: bool,
-    focused: bool,
     subagent: bool,
     compact: bool,
     actions: Option<AnyElement>,
@@ -1371,8 +1315,6 @@ impl PromptCard {
             id: id.into(),
             content,
             editable: false,
-            editing: false,
-            focused: false,
             subagent: false,
             compact: false,
             actions: None,
@@ -1382,16 +1324,6 @@ impl PromptCard {
 
     pub(super) fn editable(mut self, editable: bool) -> Self {
         self.editable = editable;
-        self
-    }
-
-    pub(super) fn editing(mut self, editing: bool) -> Self {
-        self.editing = editing;
-        self
-    }
-
-    pub(super) fn focused(mut self, focused: bool) -> Self {
-        self.focused = focused;
         self
     }
 
@@ -1448,10 +1380,6 @@ impl RenderOnce for PromptCard {
                             } else {
                                 this
                             }
-                        } else if self.editing && self.focused {
-                            this.border_color(focus_border)
-                        } else if self.editing {
-                            this.border_dashed()
                         } else {
                             this.hover(|style| style.border_color(focus_border.opacity(0.8)))
                         }

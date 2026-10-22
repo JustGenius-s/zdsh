@@ -7,7 +7,7 @@ use editor::{actions::ConfirmCompletion, code_context_menus::CompletionsMenuRow}
 use fuzzy::{StringMatchCandidate, match_strings};
 use gpui::{AnyView, ListSizingBehavior, anchored, canvas, deferred, relative, uniform_list};
 use gpui_kit::{
-    base::Selectable as _,
+    base::{Selectable as _, h_flex, v_flex},
     component::{
         Disableable as _, Icon as KitIcon, IndexPath, Size as KitSize, Theme as KitTheme,
         button::{Button as KitButton, ButtonRounded, ButtonVariant, DropdownButton},
@@ -50,28 +50,13 @@ impl ThreadView {
             .cursor_usage_expanded
             .then(|| self.render_cursor_usage_card(cx))
             .flatten();
-        let add_menu_card = self.add_menu.clone().map(|list| {
-            composer_card(cx)
-                // A press in the menu would otherwise move focus off its search field, which
-                // closes the menu before the click lands.
-                .capture_any_mouse_down(|_, window, _| window.prevent_default())
-                // The list passes Escape on, and Zed's `menu::Cancel` would then cancel the
-                // running turn.
-                .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
-                    this.close_add_menu(window, cx);
-                }))
-                .child(
-                    KitList::new(&list)
-                        .search_placeholder("Search modes, context, skills…")
-                        .max_h(rems(24.))
-                        .px_1()
-                        .pb_1(),
-                )
-        });
+        let add_menu_card = self
+            .add_menu_for_editor(&self.message_editor, cx)
+            .map(|list| add_menu_card(&list, cx.weak_entity(), cx));
         let completions_menu_card = self.render_completions_menu(window, cx);
         let composer_bounds = self.composer_bounds.clone();
         let is_empty_thread = !self.has_visible_conversation(cx);
-        let add_menu_docked = self.add_menu.is_some() && !is_empty_thread;
+        let add_menu_docked = add_menu_card.is_some() && !is_empty_thread;
         let (floating_menus, docked_menus) = if is_empty_thread {
             let menu_width = composer_bounds.get().map(|bounds| bounds.size.width);
             let floating_add_menu = add_menu_card.map(|card| {
@@ -211,7 +196,7 @@ impl ThreadView {
             .border_color(border)
             .bg(background)
             .child(self.render_add_menu_button(cx))
-            .children(self.render_mode_chip(cx))
+            .children(self.render_mode_chip(self.message_editor.clone(), cx))
             .child(
                 div()
                     .flex_1()
@@ -261,9 +246,131 @@ impl ThreadView {
                             .min_w_0()
                             .gap_1()
                             .child(self.render_add_menu_button(cx))
-                            .children(self.render_mode_chip(cx)),
+                            .children(self.render_mode_chip(self.message_editor.clone(), cx)),
                     )
                     .child(self.render_trailing_controls(cx)),
+            )
+            .into_any_element()
+    }
+
+    pub(super) fn render_message_edit_card(
+        &self,
+        session: &MessageEditSession,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let (background, border) = composer_surface(cx);
+        let editor = session.editor.clone();
+        let entry_index = session.entry_index;
+        let focus_handle = editor.focus_handle(cx);
+        let can_send = !self.is_loading_contents && !editor.read(cx).is_empty(cx);
+        let add_menu = self.add_menu_for_editor(&editor, cx);
+        let menu_focus = add_menu.as_ref().map(|list| list.focus_handle(cx));
+        let thread_view = cx.weak_entity();
+        let add_context = Popover::new(("edited-message-context", entry_index))
+            .appearance(false)
+            .overlay_closable(false)
+            .anchor(gpui::Anchor::TopLeft)
+            .offset(px(6.))
+            .open(add_menu.is_some())
+            .when_some(menu_focus, |popover, focus| popover.track_focus(&focus))
+            .on_open_change(cx.listener({
+                let editor = editor.clone();
+                move |this, open: &bool, window, cx| {
+                    if *open {
+                        if this.add_menu_for_editor(&editor, cx).is_none() {
+                            this.toggle_add_menu_for_editor(editor.clone(), window, cx);
+                        }
+                    } else if this.add_menu_for_editor(&editor, cx).is_some() {
+                        this.close_add_menu(window, cx);
+                    }
+                }
+            }))
+            .trigger(
+                KitButton::new("add-edited-message-context")
+                    .ghost()
+                    .small()
+                    .rounded(ButtonRounded::Size(px(12.)))
+                    .icon(KitIcon::empty().path(IconName::Plus.path()))
+                    .disabled(self.is_loading_contents)
+                    .tooltip("Add Context"),
+            )
+            .content(move |_, window, cx| {
+                add_menu
+                    .as_ref()
+                    .map(|list| {
+                        add_menu_card(list, thread_view.clone(), cx)
+                            .w(px(360.))
+                            .max_w(window.viewport_size().width - px(24.))
+                            .into_any_element()
+                    })
+                    .unwrap_or_else(|| div().into_any_element())
+            });
+
+        v_flex()
+            .id(("edited-user-message", entry_index))
+            .w_full()
+            .min_w_0()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(if focus_handle.is_focused(window) {
+                KitTheme::global(cx).ring
+            } else {
+                border
+            })
+            .bg(background)
+            .child(div().w_full().min_w_0().px_3().py_2().child(editor.clone()))
+            .when_some(session.error.clone(), |this, error| {
+                this.child(
+                    div()
+                        .px_3()
+                        .pb_2()
+                        .text_sm()
+                        .text_color(KitTheme::global(cx).danger)
+                        .child(error),
+                )
+            })
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .px_2()
+                    .pb_2()
+                    .gap_2()
+                    .justify_between()
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(add_context)
+                            .children(self.render_mode_chip(editor.clone(), cx))
+                            .child(h_flex().flex_1().min_w_0().gap_1().overflow_hidden().map(
+                                |this| {
+                                    match self.config_options_view.clone() {
+                                        Some(config_view) => this.child(config_view),
+                                        None => this
+                                            .children(self.mode_selector.clone())
+                                            .child(self.render_model_and_effort_control(cx)),
+                                    }
+                                },
+                            )),
+                    )
+                    .child(
+                        h_flex().flex_none().child(
+                            KitButton::new("send-edited-message")
+                                .primary()
+                                .small()
+                                .rounded(ButtonRounded::Size(px(12.)))
+                                .icon(KitIcon::empty().path(IconName::ArrowUp.path()))
+                                .loading(self.is_loading_contents)
+                                .disabled(!can_send)
+                                .tooltip("Send and restart from this message")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.regenerate(entry_index, editor.clone(), window, cx);
+                                })),
+                        ),
+                    ),
             )
             .into_any_element()
     }
@@ -314,6 +421,9 @@ impl ThreadView {
     }
 
     fn render_trailing_controls(&self, cx: &mut Context<Self>) -> Div {
+        if self.editing_message.is_some() {
+            return h_flex().flex_none().child(self.render_send_button(cx));
+        }
         let focus_handle = self.message_editor.focus_handle(cx);
         let editor_expanded = self.editor_expanded;
         let (expand_icon, expand_tooltip) = if editor_expanded {
@@ -531,7 +641,7 @@ impl ThreadView {
                 PillButton::new("add-context")
                     .variant(ButtonVariant::Secondary)
                     .icon(IconName::Plus)
-                    .toggle_state(self.add_menu.is_some())
+                    .toggle_state(self.add_menu_for_editor(&self.message_editor, cx).is_some())
                     .tooltip(move |_window, cx| {
                         Tooltip::for_action_in(
                             "Add Context",
@@ -541,7 +651,7 @@ impl ThreadView {
                         )
                     })
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_add_menu(window, cx);
+                        this.toggle_add_menu_for_editor(this.message_editor.clone(), window, cx);
                     })),
             )
     }
@@ -549,7 +659,11 @@ impl ThreadView {
     /// Mirrors Cursor: the default mode stays implicit, any other mode is shown as a tag next
     /// to the add button so it is obvious the agent behaves differently. Removing the tag
     /// returns to the default mode.
-    fn render_mode_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_mode_chip(
+        &self,
+        message_editor: Entity<MessageEditor>,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
         let profile_selector = self.profile_selector.as_ref()?.read(cx);
         if !profile_selector.profiles_available(cx) {
             return None;
@@ -572,8 +686,8 @@ impl ThreadView {
                 .flex_none()
                 .cursor_pointer()
                 .tooltip(Tooltip::text("Change Mode"))
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.toggle_add_menu(window, cx);
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.toggle_add_menu_for_editor(message_editor.clone(), window, cx);
                 }))
                 .child(
                     Tag::custom(tint.opacity(0.15), tint, gpui::transparent_black())
@@ -612,12 +726,41 @@ impl ThreadView {
     }
 
     pub(super) fn toggle_add_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.add_menu.is_some() {
-            self.close_add_menu(window, cx);
+        self.toggle_add_menu_for_editor(self.active_editor(cx), window, cx);
+    }
+
+    fn add_menu_for_editor(
+        &self,
+        editor: &Entity<MessageEditor>,
+        cx: &App,
+    ) -> Option<Entity<ListState<AddMenuDelegate>>> {
+        self.add_menu
+            .as_ref()
+            .filter(|list| list.read(cx).delegate().message_editor == *editor)
+            .cloned()
+    }
+
+    fn toggle_add_menu_for_editor(
+        &mut self,
+        message_editor: Entity<MessageEditor>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_loading_contents {
             return;
         }
+        if self.add_menu.is_some() {
+            let same_editor = self.add_menu_for_editor(&message_editor, cx).is_some();
+            self.close_add_menu(window, cx);
+            if same_editor {
+                return;
+            }
+        }
+        if message_editor == self.message_editor {
+            self.end_message_edit(cx);
+        }
 
-        let list = self.build_add_menu(window, cx);
+        let list = self.build_add_menu(message_editor, window, cx);
         let search_focus = list.focus_handle(cx);
         self._add_menu_subscriptions = vec![
             cx.subscribe_in(&list, window, |this, _, event: &ListEvent, window, cx| {
@@ -636,7 +779,7 @@ impl ThreadView {
         cx.notify();
     }
 
-    fn close_add_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_add_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(list) = self.add_menu.take() else {
             return;
         };
@@ -644,13 +787,18 @@ impl ThreadView {
         // Only reclaim focus when the menu had it; a click elsewhere already
         // moved focus where the user wants it.
         if list.focus_handle(cx).is_focused(window) {
-            self.message_editor.focus_handle(cx).focus(window, cx);
+            list.read(cx)
+                .delegate()
+                .message_editor
+                .focus_handle(cx)
+                .focus(window, cx);
         }
         cx.notify();
     }
 
     fn build_add_menu(
         &mut self,
+        message_editor: Entity<MessageEditor>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<ListState<AddMenuDelegate>> {
@@ -682,7 +830,7 @@ impl ThreadView {
 
         let mut delegate = AddMenuDelegate {
             thread_view: cx.weak_entity(),
-            message_editor: self.message_editor.clone(),
+            message_editor,
             profile_selector: self.profile_selector.clone(),
             context_server_store: context_server_store.clone(),
             modes,
@@ -1389,6 +1537,29 @@ fn composer_card(cx: &App) -> Div {
         .border_color(border)
         .bg(background)
         .overflow_hidden()
+}
+
+fn add_menu_card(
+    list: &Entity<ListState<AddMenuDelegate>>,
+    thread_view: WeakEntity<ThreadView>,
+    cx: &App,
+) -> Div {
+    composer_card(cx)
+        // Keep the search field focused until the selected item has handled the click.
+        .capture_any_mouse_down(|_, window, _| window.prevent_default())
+        .on_action(move |_: &menu::Cancel, window, cx| {
+            cx.stop_propagation();
+            thread_view
+                .update(cx, |this, cx| this.close_add_menu(window, cx))
+                .log_err();
+        })
+        .child(
+            KitList::new(list)
+                .search_placeholder("Search modes, context, skills…")
+                .max_h(rems(24.))
+                .px_1()
+                .pb_1(),
+        )
 }
 
 /// Shows `card` below the composer without taking up room in its column, since a centered

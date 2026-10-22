@@ -541,6 +541,30 @@ impl EntryViewState {
         self.entries.get(index)
     }
 
+    pub(crate) fn create_message_editor(
+        &self,
+        source_blocks: Vec<acp_v2::ContentBlock>,
+        mode: EditorMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<MessageEditor> {
+        cx.new(|cx| {
+            let mut editor = MessageEditor::new(
+                self.workspace.clone(),
+                self.project.clone(),
+                self.thread_store.clone(),
+                self.session_capabilities.clone(),
+                self.agent_id.clone(),
+                "",
+                mode,
+                window,
+                cx,
+            );
+            editor.set_source_message(source_blocks, window, cx);
+            editor
+        })
+    }
+
     pub fn sync_entry(
         &mut self,
         index: usize,
@@ -554,56 +578,32 @@ impl EntryViewState {
 
         match thread_entry {
             AgentThreadEntry::UserMessage(message) => {
-                let can_rewind = thread
-                    .read(cx)
-                    .can_rewind_to(message.client_id.as_ref(), cx);
                 let source_blocks = message.content.source_blocks();
                 let source_version = message.content.source_version();
-                let source_is_representable = source_blocks
-                    .iter()
-                    .all(acp_thread::content::can_convert_to_v1);
-                let is_editable = can_rewind && source_is_representable;
                 if let Some(Entry::UserMessage {
                     editor,
                     synced_source_version,
                 }) = self.entries.get_mut(index)
                 {
-                    // Read-only messages cannot hold drafts, so focus must not
-                    // block new content, nor should unchanged content reset their selection.
-                    let was_read_only = editor.read(cx).editor().read(cx).read_only(cx);
-                    let refreshed_source = ((!was_read_only
-                        || *synced_source_version != source_version)
-                        && (!is_editable || !editor.focus_handle(cx).is_focused(window)))
-                    .then(|| source_blocks.to_vec());
-                    editor.update(cx, |editor, cx| editor.set_read_only(!is_editable, cx));
-                    if let Some(source_blocks) = refreshed_source {
+                    if *synced_source_version != source_version {
+                        let source_blocks = source_blocks.to_vec();
                         editor.update(cx, |editor, cx| {
                             editor.set_source_message(source_blocks, window, cx);
                         });
                         *synced_source_version = source_version;
                     }
                 } else {
-                    let source_blocks = source_blocks.to_vec();
-                    let message_editor = cx.new(|cx| {
-                        let mut editor = MessageEditor::new(
-                            self.workspace.clone(),
-                            self.project.clone(),
-                            self.thread_store.clone(),
-                            self.session_capabilities.clone(),
-                            self.agent_id.clone(),
-                            "Edit message － @ to include context",
-                            editor::EditorMode::AutoHeight {
-                                min_lines: 1,
-                                max_lines: None,
-                            },
-                            window,
-                            cx,
-                        );
-                        if !is_editable {
-                            editor.set_read_only(true, cx);
-                        }
-                        editor.set_source_message(source_blocks, window, cx);
-                        editor
+                    let message_editor = self.create_message_editor(
+                        source_blocks.to_vec(),
+                        EditorMode::AutoHeight {
+                            min_lines: 1,
+                            max_lines: None,
+                        },
+                        window,
+                        cx,
+                    );
+                    message_editor.update(cx, |editor, cx| {
+                        editor.set_read_only(true, cx);
                     });
                     cx.subscribe(&message_editor, move |_, editor, event, cx| {
                         cx.emit(EntryViewEvent {

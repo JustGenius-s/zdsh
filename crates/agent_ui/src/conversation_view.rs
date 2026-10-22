@@ -1914,12 +1914,6 @@ impl ConversationView {
                     });
                     active.update(cx, |active, cx| {
                         active.remeasure_turn(*index, cx);
-                        if active.editing_message == Some(*index)
-                            && !active.can_edit_user_message(*index, cx)
-                        {
-                            active.editing_message = None;
-                            cx.notify();
-                        }
                         active.sync_elicitation_state_for_entry(*index, window, cx);
                         active.auto_expand_streaming_thought(cx);
                         active.sync_generating_indicator(cx);
@@ -1933,6 +1927,7 @@ impl ConversationView {
                     entry_view_state.update(cx, |view_state, _cx| view_state.remove(range.clone()));
                     list_state.splice(range.clone(), 0);
                     active.update(cx, |active, cx| {
+                        active.sync_message_edit(cx);
                         active.sync_editor_mode(cx);
                         active.sync_placeholder(window, cx);
                     });
@@ -9968,6 +9963,9 @@ pub(crate) mod tests {
                 .unwrap()
                 .clone()
         });
+        cx.focus(&user_message_editor);
+        let user_message_editor =
+            active_thread(&conversation_view, cx).read_with(cx, |view, cx| view.active_editor(cx));
         user_message_editor.update_in(cx, |editor, window, cx| {
             editor.set_text("Edited follow-up", window, cx);
         });
@@ -13118,7 +13116,7 @@ pub(crate) mod tests {
         let user_message_editor = conversation_view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.active_thread()
-                    .and_then(|active| active.read(cx).editing_message),
+                    .and_then(|active| active.read(cx).editing_message_index()),
                 None
             );
 
@@ -13136,28 +13134,30 @@ pub(crate) mod tests {
 
         // Focus
         cx.focus(&user_message_editor);
+        let editing_message_editor =
+            active_thread(&conversation_view, cx).read_with(cx, |view, cx| view.active_editor(cx));
         conversation_view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.active_thread()
-                    .and_then(|active| active.read(cx).editing_message),
+                    .and_then(|active| active.read(cx).editing_message_index()),
                 Some(0)
             );
         });
 
         // Edit
-        user_message_editor.update_in(cx, |editor, window, cx| {
+        editing_message_editor.update_in(cx, |editor, window, cx| {
             editor.set_text("Edited message content", window, cx);
         });
 
         // Cancel
-        user_message_editor.update_in(cx, |_editor, window, cx| {
+        editing_message_editor.update_in(cx, |_editor, window, cx| {
             window.dispatch_action(Box::new(editor::actions::Cancel), cx);
         });
 
         conversation_view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.active_thread()
-                    .and_then(|active| active.read(cx).editing_message),
+                    .and_then(|active| active.read(cx).editing_message_index()),
                 None
             );
         });
@@ -13398,13 +13398,18 @@ pub(crate) mod tests {
                 .expect("user message editor")
         });
         cx.focus(&editor);
-        thread_view.read_with(cx, |view, _| assert_eq!(view.editing_message, Some(index)));
+        thread_view.read_with(cx, |view, _| {
+            assert_eq!(view.editing_message_index(), Some(index))
+        });
+        let draft_editor = thread_view.read_with(cx, |view, cx| view.active_editor(cx));
         thread.update(cx, |thread, cx| {
             thread.push_user_content_block(Some(client_id), unsupported.clone(), cx);
         });
         cx.run_until_parked();
 
-        thread_view.read_with(cx, |view, _| assert_eq!(view.editing_message, None));
+        thread_view.read_with(cx, |view, _| {
+            assert_eq!(view.editing_message_index(), Some(index))
+        });
         let rendered = editor.update(cx, |editor, cx| editor.text(cx));
         assert!(rendered.contains("still visible"));
         assert!(rendered.contains("Unsupported message content"));
@@ -13417,15 +13422,16 @@ pub(crate) mod tests {
                 &EntryViewEvent {
                     entry_index: index,
                     view_event: ViewEvent::MessageEditorEvent(
-                        editor.clone(),
+                        draft_editor.clone(),
                         MessageEditorEvent::Send,
                     ),
                 },
                 window,
                 cx,
             );
-            view.regenerate(index, editor.clone(), window, cx);
+            view.regenerate(index, draft_editor.clone(), window, cx);
         });
+        cx.run_until_parked();
         let other_editor = entry_view_state.read_with(cx, |state, _| {
             state
                 .entry(0)
@@ -13434,13 +13440,13 @@ pub(crate) mod tests {
                 .expect("original editor")
         });
         cx.focus(&other_editor);
-        other_editor.update_in(cx, |editor, window, cx| {
-            assert!(editor.focus_handle(cx).is_focused(window));
+        thread_view.update_in(cx, |view, window, cx| {
+            assert!(view.active_editor(cx).focus_handle(cx).is_focused(window));
         });
         let composer = message_editor(&conversation_view, cx);
         cx.focus(&composer);
         cx.run_until_parked();
-        thread_view.read_with(cx, |view, _| assert_eq!(view.editing_message, None));
+        thread_view.read_with(cx, |view, _| assert_eq!(view.editing_message_index(), None));
         thread.read_with(cx, |thread, _| {
             assert_eq!(
                 thread.entries()[index]
@@ -13482,9 +13488,7 @@ pub(crate) mod tests {
     }
 
     #[gpui::test]
-    async fn test_regenerate_does_not_resend_fallback_after_delayed_rewind(
-        cx: &mut TestAppContext,
-    ) {
+    async fn test_regenerate_uses_frozen_draft_after_delayed_rewind(cx: &mut TestAppContext) {
         use agent_client_protocol::schema::v2 as acp_v2;
 
         init_test(cx);
@@ -13521,12 +13525,13 @@ pub(crate) mod tests {
                     .expect("initial message editor")
             });
             cx.focus(&editor);
-            editor.update_in(cx, |editor, window, cx| {
+            let draft_editor = thread_view.read_with(cx, |view, cx| view.active_editor(cx));
+            draft_editor.update_in(cx, |editor, window, cx| {
                 editor.set_text("edited", window, cx);
             });
             let finish_truncate = connection.defer_next_truncate();
             thread_view.update_in(cx, |view, window, cx| {
-                view.regenerate(0, editor.clone(), window, cx);
+                view.regenerate(0, draft_editor.clone(), window, cx);
             });
             cx.run_until_parked();
             assert_eq!(thread.read_with(cx, |thread, _| thread.entries().len()), 1);
@@ -13568,9 +13573,19 @@ pub(crate) mod tests {
                 connection.end_turn(session_id, acp_v1::StopReason::EndTurn);
                 cx.run_until_parked();
             }
-            assert!(!resent, "regeneration must not submit a read-only fallback");
-            thread.read_with(cx, |thread, _| assert!(thread.entries().is_empty()));
-            thread_view.read_with(cx, |view, _| assert!(view.thread_error.is_some()));
+            assert!(resent, "regeneration must submit the validated draft");
+            thread.read_with(cx, |thread, cx| {
+                assert_eq!(thread.entries().len(), 1);
+                assert_eq!(
+                    thread
+                        .entries()
+                        .first()
+                        .expect("resent user message")
+                        .to_markdown(cx),
+                    "## User\n\nedited\n\n"
+                );
+            });
+            thread_view.read_with(cx, |view, _| assert!(view.thread_error.is_none()));
         }
     }
 
@@ -13600,7 +13615,7 @@ pub(crate) mod tests {
         let user_message_editor = conversation_view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.active_thread()
-                    .and_then(|active| active.read(cx).editing_message),
+                    .and_then(|active| active.read(cx).editing_message_index()),
                 None
             );
             assert_eq!(
@@ -13628,6 +13643,8 @@ pub(crate) mod tests {
 
         // Focus
         cx.focus(&user_message_editor);
+        let user_message_editor =
+            active_thread(&conversation_view, cx).read_with(cx, |view, cx| view.active_editor(cx));
 
         // Edit
         user_message_editor.update_in(cx, |editor, window, cx| {
@@ -13648,7 +13665,7 @@ pub(crate) mod tests {
         conversation_view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.active_thread()
-                    .and_then(|active| active.read(cx).editing_message),
+                    .and_then(|active| active.read(cx).editing_message_index()),
                 None
             );
 
@@ -13722,11 +13739,13 @@ pub(crate) mod tests {
 
         // Focus
         cx.focus(&user_message_editor);
+        let user_message_editor =
+            active_thread(&conversation_view, cx).read_with(cx, |view, cx| view.active_editor(cx));
 
         conversation_view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.active_thread()
-                    .and_then(|active| active.read(cx).editing_message),
+                    .and_then(|active| active.read(cx).editing_message_index()),
                 Some(0)
             );
         });
@@ -13739,7 +13758,7 @@ pub(crate) mod tests {
         conversation_view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.active_thread()
-                    .and_then(|active| active.read(cx).editing_message),
+                    .and_then(|active| active.read(cx).editing_message_index()),
                 Some(0)
             );
         });
@@ -13759,7 +13778,7 @@ pub(crate) mod tests {
         conversation_view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.active_thread()
-                    .and_then(|active| active.read(cx).editing_message),
+                    .and_then(|active| active.read(cx).editing_message_index()),
                 Some(0)
             );
         });
@@ -13773,7 +13792,7 @@ pub(crate) mod tests {
                 conversation_view
                     .read(cx)
                     .active_thread()
-                    .and_then(|active| active.read(cx).editing_message),
+                    .and_then(|active| active.read(cx).editing_message_index()),
                 Some(0)
             );
             assert_eq!(
@@ -13818,6 +13837,8 @@ pub(crate) mod tests {
         });
 
         cx.focus(&user_message_editor);
+        let user_message_editor =
+            active_thread(&conversation_view, cx).read_with(cx, |view, cx| view.active_editor(cx));
         user_message_editor.update_in(cx, |editor, window, cx| {
             editor.set_text("Edited message content", window, cx);
         });
@@ -14146,16 +14167,16 @@ pub(crate) mod tests {
         });
 
         cx.focus(&user_message_editor);
+        let user_message_editor =
+            active_thread(&conversation_view, cx).read_with(cx, |view, cx| view.active_editor(cx));
         conversation_view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.active_thread()
-                    .and_then(|active| active.read(cx).editing_message),
+                    .and_then(|active| active.read(cx).editing_message_index()),
                 Some(0)
             );
         });
 
-        // Ensure to edit the focused message before proceeding otherwise, since
-        // its content is not different from what was sent, focus will be lost.
         user_message_editor.update_in(cx, |editor, window, cx| {
             editor.set_text("Original message to edit with ", window, cx)
         });
@@ -14191,7 +14212,7 @@ pub(crate) mod tests {
         conversation_view.update_in(cx, |view, window, cx| {
             assert_eq!(
                 view.active_thread()
-                    .and_then(|active| active.read(cx).editing_message),
+                    .and_then(|active| active.read(cx).editing_message_index()),
                 Some(0)
             );
             let workspace = workspace.upgrade().unwrap();
@@ -14261,7 +14282,7 @@ pub(crate) mod tests {
         conversation_view.update_in(cx, |view, window, cx| {
             assert_eq!(
                 view.active_thread()
-                    .and_then(|active| active.read(cx).editing_message),
+                    .and_then(|active| active.read(cx).editing_message_index()),
                 None
             );
             let workspace = view.workspace.upgrade().unwrap();
