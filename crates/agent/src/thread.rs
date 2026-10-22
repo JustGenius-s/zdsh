@@ -1037,7 +1037,10 @@ pub struct AvailableModel {
 pub enum ThreadEvent {
     UserMessage(UserMessage),
     AgentText(String),
-    AgentThinking(String),
+    AgentThinking {
+        text: String,
+        message_id: acp_v2::MessageId,
+    },
     ToolCallUpdate(acp_thread::ToolCallUpdate),
     ToolCallAuthorization(ToolCallAuthorization),
     ToolCallAuthorizationResolved {
@@ -1733,15 +1736,16 @@ impl Thread {
     ) -> mpsc::UnboundedReceiver<Result<ThreadEvent>> {
         let (tx, rx) = mpsc::unbounded();
         let stream = ThreadEventStream::new(tx);
+        let mut agent_message_index = 0;
         for (message_ix, message) in self.messages.iter().enumerate() {
             match &**message {
                 Message::User(user_message) => stream.send_user_message(user_message),
                 Message::Agent(assistant_message) => {
-                    for content in &assistant_message.content {
+                    for (content_index, content) in assistant_message.content.iter().enumerate() {
                         match content {
                             AgentMessageContent::Text(text) => stream.send_text(text),
                             AgentMessageContent::Thinking { text, .. } => {
-                                stream.send_thinking(text)
+                                stream.send_thinking(text, agent_message_index, content_index)
                             }
                             AgentMessageContent::RedactedThinking(_) => {}
                             AgentMessageContent::ToolUse(tool_use) => {
@@ -1755,6 +1759,7 @@ impl Thread {
                             }
                         }
                     }
+                    agent_message_index += 1;
                 }
                 Message::Resume | Message::PermissionsChanged(_) => {}
                 Message::Compaction(info) => {
@@ -4132,9 +4137,21 @@ impl Thread {
         new_signature: Option<String>,
         event_stream: &ThreadEventStream,
     ) {
-        event_stream.send_thinking(&new_text);
-
+        let agent_message_index = self
+            .messages
+            .iter()
+            .filter(|message| matches!(&***message, Message::Agent(_)))
+            .count();
         let last_message = self.pending_message();
+        let content_index = if matches!(
+            last_message.content.last(),
+            Some(AgentMessageContent::Thinking { .. })
+        ) {
+            last_message.content.len().saturating_sub(1)
+        } else {
+            last_message.content.len()
+        };
+        event_stream.send_thinking(&new_text, agent_message_index, content_index);
         if let Some(AgentMessageContent::Thinking { text, signature }) =
             last_message.content.last_mut()
         {
@@ -6238,10 +6255,18 @@ impl ThreadEventStream {
             .ok();
     }
 
-    fn send_thinking(&self, text: &str) {
+    fn send_thinking(&self, text: &str, agent_message_index: usize, content_index: usize) {
+        // Count only persisted agent messages: inserted compaction markers and skipped
+        // canceled tools must not change a thought's identity when history is replayed.
+        let message_id = acp_v2::MessageId::new(format!(
+            "native-thought:{agent_message_index}:{content_index}"
+        ));
         self.sender
-            .unbounded_send(Ok(ThreadEvent::AgentThinking(text.to_string())))
-            .ok();
+            .unbounded_send(Ok(ThreadEvent::AgentThinking {
+                text: text.to_string(),
+                message_id,
+            }))
+            .log_err();
     }
 
     fn send_tool_call(

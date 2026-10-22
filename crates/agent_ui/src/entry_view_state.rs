@@ -1,8 +1,4 @@
-use std::{
-    ops::Range,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{ops::Range, sync::Arc};
 
 use acp_thread::{
     AcpThread, AgentThreadEntry, AssistantMessage, AssistantMessageChunk, ThreadStatus, ToolCall,
@@ -331,13 +327,7 @@ pub struct EntryViewState {
     expanded_activity_groups: HashSet<acp_v2::ToolCallId>,
     /// Turn folds the user opened or closed, by their prompt's entry index.
     toggled_turn_folds: HashMap<usize, bool>,
-    /// How long the turns that ran in this view took, by their prompt's entry index.
-    turn_durations: HashMap<usize, Duration>,
     saw_live_turn: bool,
-    /// The thinking streaming in now, by its entry and chunk index, and when it started.
-    streaming_thought: Option<((usize, usize), Instant)>,
-    /// How long the thinking that streamed in this view took, by its entry and chunk index.
-    thought_durations: HashMap<(usize, usize), Duration>,
 }
 
 impl EntryViewState {
@@ -362,10 +352,7 @@ impl EntryViewState {
             expanded_tool_calls: HashSet::default(),
             expanded_activity_groups: HashSet::default(),
             toggled_turn_folds: HashMap::default(),
-            turn_durations: HashMap::default(),
             saw_live_turn: false,
-            streaming_thought: None,
-            thought_durations: HashMap::default(),
         }
     }
 
@@ -416,33 +403,6 @@ impl EntryViewState {
 
     pub(crate) fn note_live_turn(&mut self) {
         self.saw_live_turn = true;
-    }
-
-    pub(crate) fn turn_duration(&self, prompt_entry_ix: usize) -> Option<Duration> {
-        self.turn_durations.get(&prompt_entry_ix).copied()
-    }
-
-    pub(crate) fn record_turn_duration(&mut self, prompt_entry_ix: usize, duration: Duration) {
-        self.turn_durations.insert(prompt_entry_ix, duration);
-    }
-
-    /// Times thinking as it streams in, since agents don't report how long it took. Thinking
-    /// ends when anything else arrives after it, or when the turn ends.
-    pub(crate) fn sync_thought_timing(&mut self, thread: &AcpThread) {
-        let streaming = (thread.status() == ThreadStatus::Generating)
-            .then(|| streaming_thought_key(thread))
-            .flatten();
-        if self.streaming_thought.map(|(key, _)| key) == streaming {
-            return;
-        }
-        if let Some((key, started_at)) = self.streaming_thought.take() {
-            self.thought_durations.insert(key, started_at.elapsed());
-        }
-        self.streaming_thought = streaming.map(|key| (key, Instant::now()));
-    }
-
-    pub(crate) fn thought_duration(&self, key: (usize, usize)) -> Option<Duration> {
-        self.thought_durations.get(&key).copied()
     }
 
     /// Whether the entry at `entry_ix` is folded away, into a collapsed turn or activity group.
@@ -859,27 +819,6 @@ impl EntryViewState {
                 reindex_after_removal(entry_ix, &range).map(|entry_ix| (entry_ix, expanded))
             })
             .collect();
-        self.turn_durations = self
-            .turn_durations
-            .iter()
-            .filter_map(|(&entry_ix, &duration)| {
-                reindex_after_removal(entry_ix, &range).map(|entry_ix| (entry_ix, duration))
-            })
-            .collect();
-        self.thought_durations = self
-            .thought_durations
-            .iter()
-            .filter_map(|(&(entry_ix, chunk_ix), &duration)| {
-                reindex_after_removal(entry_ix, &range)
-                    .map(|entry_ix| ((entry_ix, chunk_ix), duration))
-            })
-            .collect();
-        self.streaming_thought =
-            self.streaming_thought
-                .and_then(|((entry_ix, chunk_ix), started_at)| {
-                    reindex_after_removal(entry_ix, &range)
-                        .map(|entry_ix| ((entry_ix, chunk_ix), started_at))
-                });
         self.expanded_thinking_blocks = self
             .expanded_thinking_blocks
             .iter()

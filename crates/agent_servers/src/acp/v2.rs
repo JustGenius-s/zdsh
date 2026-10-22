@@ -739,6 +739,7 @@ impl AcpV2Connection {
                 Ok(thread) => thread,
                 Err(error) => return Task::ready(Err(error)),
             };
+        thread.update(cx, |thread, _| thread.set_replaying_history(true));
         let request = self.connection.prepare_request(request);
         let request_id = request.id().clone();
         let cancellation = request.cancellation_handle();
@@ -760,6 +761,7 @@ impl AcpV2Connection {
                     let this = this.upgrade().context("Connection was released")?;
                     let thread = thread.upgrade().context("Session was released")?;
                     cx.update(|cx| {
+                        thread.update(cx, |thread, _| thread.set_replaying_history(false));
                         this.apply_initial_state(
                             &thread,
                             response.config_options,

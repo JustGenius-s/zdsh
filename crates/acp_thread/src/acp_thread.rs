@@ -12,6 +12,7 @@ pub mod notices;
 pub mod prompt_capabilities;
 mod submission;
 mod terminal;
+pub mod timing;
 pub use ::terminal::HeadlessTerminal;
 use action_log::{ActionLog, ActionLogTelemetry};
 use agent_client_protocol::schema::{MaybeUndefined, v1 as acp_v1, v2 as acp_v2};
@@ -3495,6 +3496,7 @@ pub struct AcpThread {
     connection: Rc<dyn AgentConnection>,
     submissions: SessionSubmissions,
     activity: SessionActivity,
+    timings: Option<timing::ThreadTimings>,
     token_usage: Option<TokenUsage>,
     cost: Option<SessionCost>,
     prompt_capabilities: acp_v2::PromptCapabilities,
@@ -3805,6 +3807,25 @@ impl AcpThread {
         });
 
         let receipt_submissions = connection.receipt_submissions(&session_id, cx);
+        let (timings, notices) =
+            match timing::ThreadTimings::load(&connection.agent_id(), &session_id, cx) {
+                Ok(timings) => (Some(timings), Vec::new()),
+                Err(error) => {
+                    log::error!("Loading agent timing data: {error:#}");
+                    (
+                        None,
+                        vec![(
+                            0,
+                            acp_v2::Notice::new(
+                                acp_v2::NoticeSeverity::Warning,
+                                "Could not load conversation durations",
+                            )
+                            .description(format!("{error:#}")),
+                        )],
+                    )
+                }
+            };
+        let next_notice_id = notices.len();
         Self {
             parent_session_id,
             session_info: AgentSessionInfo {
@@ -3820,8 +3841,8 @@ impl AcpThread {
             update_last_checkpoint_if_changed_task: None,
             shared_buffers: Default::default(),
             entries: Default::default(),
-            notices: Vec::new(),
-            next_notice_id: 0,
+            notices,
+            next_notice_id,
             elicitations: ElicitationStore::default(),
             permission_requests: IndexMap::default(),
             plans: HashMap::default(),
@@ -3832,6 +3853,7 @@ impl AcpThread {
             turn_id: 0,
             submissions: SessionSubmissions::new(receipt_submissions),
             activity: SessionActivity::default(),
+            timings,
             connection,
             token_usage: None,
             cost: None,
@@ -4311,8 +4333,11 @@ impl AcpThread {
             .update(state, self.entries.len().saturating_sub(1));
         let current = self.foreground_activity();
         if previous == ForegroundActivity::Idle && current != ForegroundActivity::Idle {
+            self.begin_turn_timing();
             self.had_error = false;
             self.local_execution_error = None;
+        } else if previous != ForegroundActivity::Idle && current == ForegroundActivity::Idle {
+            self.finish_turn_timing(cx);
         }
         cx.notify();
     }
@@ -4823,6 +4848,7 @@ impl AcpThread {
         previous_entry_count: usize,
         cx: &mut Context<Self>,
     ) {
+        self.observe_timing_content(cx);
         if self.uses_reported_activity()
             && let Some(AgentThreadEntry::UserMessage(message)) =
                 self.entries.get(location.entry_index())
@@ -4971,6 +4997,7 @@ impl AcpThread {
                     let source_index = content.append_deferred_text(text);
                     cx.emit(AcpThreadEvent::EntryUpdated(target.entry_index));
                     self.buffer_streaming_text(target, source_index, text_len, cx);
+                    self.observe_timing_content(cx);
                     return;
                 }
                 acp_v2::ContentBlock::Text(text)
@@ -5055,6 +5082,7 @@ impl AcpThread {
                 cx,
             );
         }
+        self.observe_timing_content(cx);
     }
 
     fn streaming_content_target(
@@ -5202,10 +5230,12 @@ impl AcpThread {
     fn push_entry(&mut self, entry: AgentThreadEntry, cx: &mut Context<Self>) {
         self.flush_streaming_text(cx);
         self.entries.push(entry);
+        self.observe_timing_content(cx);
         cx.emit(AcpThreadEvent::NewEntry);
     }
 
     fn truncate_entries(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.remove_timings_after(index, cx);
         let removed_requests = self
             .entries
             .iter()

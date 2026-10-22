@@ -1142,6 +1142,7 @@ impl ThreadMetadataStore {
         if let Some(thread) = self.threads.get(&thread_id) {
             if let Some(sid) = &thread.session_id {
                 self.threads_by_session.remove(sid);
+                acp_thread::timing::delete(&thread.agent_id, sid, cx).detach_and_log_err(cx);
             }
             if let Some(thread_ids) = self.threads_by_paths.get_mut(thread.folder_paths()) {
                 thread_ids.remove(&thread_id);

@@ -1899,7 +1899,6 @@ impl ConversationView {
                     });
                     active.update(cx, |active, cx| {
                         active.remeasure_turn(index, cx);
-                        active.sync_thought_timing(cx);
                         active.sync_elicitation_state_for_entry(index, window, cx);
                         active.sync_editor_mode(cx);
                         active.sync_placeholder(window, cx);
@@ -1915,7 +1914,6 @@ impl ConversationView {
                     });
                     active.update(cx, |active, cx| {
                         active.remeasure_turn(*index, cx);
-                        active.sync_thought_timing(cx);
                         if active.editing_message == Some(*index)
                             && !active.can_edit_user_message(*index, cx)
                         {
@@ -1979,7 +1977,6 @@ impl ConversationView {
                     let is_generating =
                         matches!(thread.read(cx).status(), ThreadStatus::Generating);
                     active.update(cx, |active, cx| {
-                        active.sync_thought_timing(cx);
                         if !is_generating {
                             // The last turn folds once it's done.
                             let entry_count = thread.read(cx).entries().len();
@@ -2132,7 +2129,6 @@ impl ConversationView {
                     let is_generating =
                         matches!(thread.read(cx).status(), ThreadStatus::Generating);
                     active.update(cx, |active, cx| {
-                        active.sync_thought_timing(cx);
                         if !is_generating {
                             active.thread_retry_status.take();
                             if active.list_state.is_following_tail() {

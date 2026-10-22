@@ -13,7 +13,7 @@ path = "src/acp_thread.rs"
 doctest = false
 
 [features]
-test-support = ["gpui/test-support", "project/test-support", "dep:parking_lot"]
+test-support = ["db/test-support", "gpui/test-support", "project/test-support", "dep:parking_lot"]
 
 [dependencies]
 action_log.workspace = true
@@ -25,6 +25,7 @@ anyhow.workspace = true
 buffer_diff.workspace = true
 chrono.workspace = true
 collections.workspace = true
+db.workspace = true
 diffy.workspace = true
 feature_flags.workspace = true
 multi_buffer.workspace = true
@@ -45,6 +46,7 @@ sandbox.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 settings.workspace = true
+sha2.workspace = true
 task.workspace = true
 telemetry.workspace = true
 terminal.workspace = true
@@ -57,6 +59,7 @@ watch.workspace = true
 urlencoding.workspace = true
 
 [dev-dependencies]
+db = { workspace = true, features = ["test-support"] }
 env_logger.workspace = true
 gpui = { workspace = true, "features" = ["test-support"] }
 indoc.workspace = true

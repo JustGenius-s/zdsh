@@ -930,6 +930,7 @@ impl AcpConnection {
             )
         });
         self.register_session(session_id.clone(), &thread, None, None, None, cx);
+        thread.update(cx, |thread, _| thread.set_replaying_history(true));
 
         // The connection owns this task, so retaining the thread (which owns the
         // connection) here would keep both alive after all callers abandon the load.
@@ -971,7 +972,8 @@ impl AcpConnection {
                         }
                     };
 
-                    if let Some(_thread) = thread.upgrade() {
+                    if let Some(loaded_thread) = thread.upgrade() {
+                        loaded_thread.update(cx, |thread, _| thread.set_replaying_history(false));
                         {
                             let mut sessions = connection_state.sessions.borrow_mut();
                             let Some(session) = sessions

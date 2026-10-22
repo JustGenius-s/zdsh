@@ -1852,6 +1852,7 @@ impl NativeAgent {
                             this.register_session(thread.clone(), project_id, cx)
                         })
                         .map_err(Arc::new)?;
+                    acp_thread.update(cx, |thread, _| thread.set_replaying_history(true));
                     let events = thread.update(cx, |thread, cx| thread.replay(cx));
                     cx.update(|cx| {
                         NativeAgentConnection::handle_thread_events(
@@ -1863,6 +1864,7 @@ impl NativeAgent {
                     })
                     .await
                     .map_err(Arc::new)?;
+                    acp_thread.update(cx, |thread, _| thread.set_replaying_history(false));
                     Ok(acp_thread)
                 }
             })
@@ -2785,10 +2787,14 @@ impl NativeAgentConnection {
                                     thread.push_assistant_content_block(text.into(), false, cx)
                                 })?;
                             }
-                            ThreadEvent::AgentThinking(text) => {
+                            ThreadEvent::AgentThinking { text, message_id } => {
                                 acp_thread.update(cx, |thread, cx| {
-                                    thread.push_assistant_content_block(text.into(), true, cx)
-                                })?;
+                                    thread.append_message_chunk(
+                                        acp_thread::MessageKind::Thought,
+                                        acp_v2::ContentChunk::new(text.into(), message_id),
+                                        cx,
+                                    )
+                                })??;
                             }
                             ThreadEvent::ToolCallAuthorization(ToolCallAuthorization {
                                 tool_call,

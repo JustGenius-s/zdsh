@@ -251,11 +251,7 @@ impl ThreadView {
     ) -> impl IntoElement {
         let duration = fold
             .starts_at_prompt()
-            .then(|| {
-                self.entry_view_state
-                    .read(cx)
-                    .turn_duration(fold.prompt_entry_ix)
-            })
+            .then(|| self.thread.read(cx).turn_duration(fold.prompt_entry_ix))
             .flatten();
         let fold_start = fold.entries.start;
 
@@ -827,8 +823,9 @@ impl ThreadView {
 
         let last_turn_clock = show_stats
             .then(|| {
-                self.turn_fields
-                    .last_turn_duration
+                user_message_index
+                    .and_then(|index| self.thread.read(cx).turn_duration(index))
+                    .or(self.turn_fields.last_turn_duration)
                     .filter(|&duration| duration > STOPWATCH_THRESHOLD)
                     .map(duration_alt_display)
             })
@@ -1083,7 +1080,7 @@ impl ThreadView {
         }
 
         let duration = (!is_streaming)
-            .then(|| entry_view_state.thought_duration(key))
+            .then(|| self.thread.read(cx).thought_duration(entry_ix, chunk_ix))
             .flatten();
 
         let panel_bg = cx.theme().colors().panel_background;

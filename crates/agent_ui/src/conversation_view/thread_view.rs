@@ -1528,22 +1528,7 @@ impl ThreadView {
             .map(|started| started.elapsed());
         self.turn_fields.last_turn_tokens = self.turn_fields.turn_tokens.take();
         self.turn_fields._turn_timer_task = None;
-        self.record_last_turn_duration(cx);
-    }
-
-    /// Keeps the last turn's duration for its "Worked for" line.
-    fn record_last_turn_duration(&mut self, cx: &mut Context<Self>) {
-        let Some(duration) = self.turn_fields.last_turn_duration else {
-            return;
-        };
-        let prompt_entry_ix = self.thread.read(cx).entries().iter().rposition(
-            |entry| matches!(entry, AgentThreadEntry::UserMessage(message) if !message.indented),
-        );
-        if let Some(prompt_entry_ix) = prompt_entry_ix {
-            self.entry_view_state.update(cx, |state, _cx| {
-                state.record_turn_duration(prompt_entry_ix, duration);
-            });
-        }
+        cx.notify();
     }
 
     /// Re-measures the turn holding the entry at `entry_ix`, and the turn before it. How an
@@ -1587,7 +1572,6 @@ impl ThreadView {
             }
             self.turn_fields.reported_activity_generation = Some(activity_generation);
             self.turn_fields.last_turn_duration = duration;
-            self.record_last_turn_duration(cx);
         }
         cx.notify();
     }
@@ -5943,13 +5927,6 @@ impl ThreadView {
         if changed {
             cx.notify();
         }
-    }
-
-    pub(crate) fn sync_thought_timing(&mut self, cx: &mut Context<Self>) {
-        let thread = self.thread.clone();
-        self.entry_view_state.update(cx, |state, cx| {
-            state.sync_thought_timing(thread.read(cx));
-        });
     }
 
     pub(crate) fn clear_auto_expand_tracking(&mut self, cx: &mut Context<Self>) {
