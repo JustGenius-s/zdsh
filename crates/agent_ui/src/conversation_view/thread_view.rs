@@ -4018,26 +4018,22 @@ impl ThreadView {
         cx.notify();
     }
 
+    /// Call before expanding or collapsing something in the transcript. While
+    /// tail-following, the list keeps its bottom pinned, so a row that grows in
+    /// place pushes itself up under the cursor instead of opening downward.
+    /// Collapsing at the bottom lands in the same place either way, and the list
+    /// resumes following on its own once it is back at the bottom.
+    pub(super) fn hold_scroll_position_for_toggle(&self) {
+        self.list_state.pause_following_tail();
+    }
+
     pub(super) fn toggle_compaction_expansion(
         &mut self,
         entry_ix: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // If tail following is active and the entry is not yet expanded, we'll
-        // want to anchor the list's scroll position, to prevent it from
-        // automatically scrolling to the end of the compaction context element,
-        // which would feel off, as we assume the user is trying to read it from
-        // top to bottom.
-        if self.list_state.is_following_tail()
-            && !self
-                .entry_view_state
-                .read(cx)
-                .is_compaction_expanded(entry_ix)
-        {
-            self.list_state.pause_following_tail();
-        }
-
+        self.hold_scroll_position_for_toggle();
         self.entry_view_state.update(cx, |state, _cx| {
             state.toggle_compaction_expansion(entry_ix);
         });
@@ -5675,6 +5671,7 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.hold_scroll_position_for_toggle();
         self.entry_view_state.update(cx, |state, cx| {
             state.toggle_thinking_block_expansion(key, cx);
         });

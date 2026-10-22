@@ -214,6 +214,7 @@ impl ThreadView {
                     row.expanded(is_open).on_click(cx.listener({
                         let id = tool_call.id.clone();
                         move |this, _, window, cx| {
+                            this.hold_scroll_position_for_toggle();
                             this.entry_view_state.update(cx, |state, _cx| {
                                 state.toggle_tool_call_expansion(&id);
                             });
@@ -347,6 +348,7 @@ impl ThreadView {
                 row.expanded(is_open).on_click(cx.listener({
                     let id = tool_call.id.clone();
                     move |this, _, window, cx| {
+                        this.hold_scroll_position_for_toggle();
                         this.entry_view_state.update(cx, |state, _cx| {
                             state.toggle_tool_call_expansion(&id);
                         });
@@ -435,6 +437,7 @@ impl ThreadView {
                         .on_click(cx.listener({
                             let tool_call_id = tool_call.id.clone();
                             move |this, _, window, cx| {
+                                this.hold_scroll_position_for_toggle();
                                 this.entry_view_state.update(cx, |state, _cx| {
                                     state.collapse_tool_call(&tool_call_id);
                                 });
@@ -578,6 +581,7 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.hold_scroll_position_for_toggle();
         self.entry_view_state.update(cx, |state, _cx| {
             state.toggle_activity_group_expansion(group);
         });
@@ -1015,6 +1019,7 @@ impl ThreadView {
                 header.expanded(is_open).on_click(cx.listener({
                     let id = tool_call.id.clone();
                     move |this, _, window, cx| {
+                        this.hold_scroll_position_for_toggle();
                         this.entry_view_state.update(cx, |state, _cx| {
                             state.toggle_tool_call_expansion(&id);
                         });
@@ -1558,6 +1563,7 @@ impl ThreadView {
         .on_click(cx.listener({
             let id = tool_call.id.clone();
             move |this, _event, window, cx| {
+                this.hold_scroll_position_for_toggle();
                 this.entry_view_state.update(cx, |state, _cx| {
                     state.toggle_tool_call_expansion(&id);
                 });
@@ -2454,6 +2460,7 @@ impl ThreadView {
             header.expanded(is_expanded).on_click(cx.listener({
                 let tool_call_id = tool_call.id.clone();
                 move |this, _, window, cx| {
+                    this.hold_scroll_position_for_toggle();
                     let expanded = this.entry_view_state.update(cx, |state, _cx| {
                         state.toggle_tool_call_expansion(&tool_call_id);
                         state.is_tool_call_expanded(&tool_call_id)

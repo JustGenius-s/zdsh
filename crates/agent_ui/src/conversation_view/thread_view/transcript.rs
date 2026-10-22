@@ -275,6 +275,7 @@ impl ThreadView {
     }
 
     fn toggle_turn_fold(&mut self, fold: &TurnFold, window: &mut Window, cx: &mut Context<Self>) {
+        self.hold_scroll_position_for_toggle();
         self.entry_view_state.update(cx, |state, _cx| {
             state.toggle_turn_fold_expansion(fold);
         });
