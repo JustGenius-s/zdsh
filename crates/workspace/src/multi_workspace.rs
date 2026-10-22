@@ -406,7 +406,10 @@ impl MultiWorkspace {
     ) -> Result<MultiWorkspaceWindow> {
         let window = cx.open_window(options, |window, cx| {
             let multi_workspace = build(window, cx);
-            cx.new(|cx| Root::new(multi_workspace, window, cx))
+            cx.new(|cx| {
+                // Workspace owns the backdrop; Kit's default opaque root would hide native blur.
+                Root::new(multi_workspace, window, cx).bg(gpui::transparent_black())
+            })
         })?;
         Ok(MultiWorkspaceWindow(window.into()))
     }

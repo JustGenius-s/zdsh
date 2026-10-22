@@ -77,7 +77,9 @@ impl PlatformTitleBar {
     }
 
     pub fn title_bar_color(&self, window: &mut Window, cx: &mut Context<Self>) -> Hsla {
-        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+        if self.multi_workspace.is_some() && cx.theme().has_translucent_chrome() {
+            gpui::transparent_black()
+        } else if cfg!(any(target_os = "linux", target_os = "freebsd")) {
             if window.is_window_active() {
                 cx.theme().colors().title_bar_background
             } else {

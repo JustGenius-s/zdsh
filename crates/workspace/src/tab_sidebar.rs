@@ -19,7 +19,7 @@ use ui::Tooltip;
 use util::ResultExt as _;
 
 use crate::{
-    ItemHandle, Pane, SaveIntent, Workspace,
+    ItemHandle, Pane, SaveIntent, Workspace, ghost_button_style,
     item::TabCategory,
     rail::{RailButton, rail_container},
 };
@@ -71,6 +71,8 @@ impl Workspace {
             tab_group(TabCategory::File, file_items, &workspace),
             tab_group(TabCategory::Action, action_items, &workspace),
         ];
+        let theme = theme::ActiveTheme::theme(cx);
+        let background = theme.sidebar_backdrop();
 
         Sidebar::new("tab-sidebar")
             .side(Side::Right)
@@ -81,6 +83,7 @@ impl Workspace {
             .w(px(240.))
             .h_full()
             .flex_none()
+            .bg(background)
             .children(groups)
             .into_any_element()
     }
@@ -195,7 +198,7 @@ impl SidebarItem for TabGroup {
             .when(!self.collapsed, |group| {
                 group.child(
                     Button::new(self.category.label())
-                        .ghost()
+                        .custom(ghost_button_style(cx))
                         .w_full()
                         .h_8()
                         .px_2()
@@ -271,7 +274,7 @@ fn tab_menu_item(
                 })
                 .log_err();
         })
-        .suffix(move |_window, _cx| {
+        .suffix(move |_window, cx| {
             let workspace_for_close = workspace_for_close.clone();
             let close_id = close_id.clone();
             h_flex()
@@ -282,7 +285,7 @@ fn tab_menu_item(
                 })
                 .child(
                     Button::new(close_id)
-                        .ghost()
+                        .custom(ghost_button_style(cx))
                         .xsmall()
                         .icon(KitIconName::Close)
                         .on_click(move |_, window, cx| {

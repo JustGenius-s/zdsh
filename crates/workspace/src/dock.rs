@@ -1339,7 +1339,11 @@ impl Render for Dock {
                 .track_focus(&self.focus_handle(cx))
                 .focus_follows_mouse(self.focus_follows_mouse, cx)
                 .flex()
-                .bg(cx.theme().colors().panel_background)
+                .bg(if self.position() == DockPosition::Bottom {
+                    cx.theme().colors().panel_background
+                } else {
+                    cx.theme().panel_backdrop()
+                })
                 .border_color(cx.theme().colors().border)
                 .overflow_hidden()
                 .map(|this| match self.position().axis() {

@@ -10,7 +10,7 @@ use crate::{
     },
     move_item,
     notifications::NotifyResultExt,
-    panel_header::KitIconButton,
+    panel_header::{KitIconButton, ghost_button_style},
     toolbar::Toolbar,
     workspace_settings::{AutosaveSetting, FocusFollowsMouse, TabBarSettings, WorkspaceSettings},
 };
@@ -2854,7 +2854,10 @@ impl Pane {
         };
 
         let knockout_item_color = if is_active {
-            Self::active_tab_background(cx)
+            cx.theme()
+                .colors()
+                .tab_bar_background
+                .blend(Self::active_tab_background(cx))
         } else {
             cx.theme().colors().tab_bar_background
         };
@@ -2969,7 +2972,7 @@ impl Pane {
         }
         .map(|(button, action, tooltip)| {
             button
-                .ghost()
+                .custom(ghost_button_style(cx))
                 .xsmall()
                 .tab_stop(false)
                 .map(|button| {
@@ -3026,7 +3029,10 @@ impl Pane {
                 tab.bg(Self::active_tab_background(cx))
                     .text_color(cx.theme().colors().text)
             })
-            .hover(|tab| tab.text_color(cx.theme().colors().text))
+            .hover(|tab| {
+                tab.bg(Self::active_tab_background(cx))
+                    .text_color(cx.theme().colors().text)
+            })
             .debug_selector(|| format!("TAB-{ix}"))
             // Close buttons shown on hover reveal themselves for the hovered tab.
             .group("")
@@ -3723,6 +3729,7 @@ impl Pane {
     }
 
     fn render_tab_bar_row(
+        &self,
         start_children: Vec<AnyElement>,
         tab_bars: impl IntoIterator<Item = AnyElement>,
         end_children: Vec<AnyElement>,
@@ -3736,7 +3743,10 @@ impl Pane {
             .h(ui::utils::platform_title_bar_height(window))
             .px_1()
             .gap_1()
-            .bg(cx.theme().colors().tab_bar_background)
+            .when(
+                !(self.tab_bar_in_title_bar && cx.theme().has_translucent_chrome()),
+                |row| row.bg(cx.theme().colors().tab_bar_background),
+            )
             .when(!start_children.is_empty(), |row| {
                 row.child(h_flex().flex_none().gap_1().children(start_children))
             })
@@ -3747,19 +3757,11 @@ impl Pane {
     }
 
     fn active_tab_background(cx: &App) -> gpui::Hsla {
-        if cx.theme().appearance().is_light() {
-            cx.theme().colors().tab_active_background
-        } else {
-            cx.theme()
-                .colors()
-                .tab_bar_background
-                .blend(gpui::white().opacity(0.14))
-        }
+        cx.theme().colors().tab_active_background
     }
 
     fn segmented_tab_bar(id: &'static str) -> Tabs {
-        // Kit's segmented component uses the page background for its indicator;
-        // the base tabs let this bar provide a contrasting selection in dark themes.
+        // Kit's segmented indicator uses the page background; these tabs use the tab token.
         Tabs::new(id)
             .flex()
             .items_center()
@@ -3837,7 +3839,7 @@ impl Pane {
     fn render_tab_overflow_menu(&self, pinned: bool, cx: &Context<Self>) -> impl IntoElement {
         let pane = cx.entity().downgrade();
         Button::new("tab-overflow-menu")
-            .ghost()
+            .custom(ghost_button_style(cx))
             .small()
             .flex_none()
             .icon(KitIconName::ChevronDown)
@@ -3919,7 +3921,7 @@ impl Pane {
         let tab_bars = pinned_tab_bar.into_iter().chain([self
             .render_unpinned_tab_bar(unpinned_tabs, tab_count, cx)
             .into_any_element()]);
-        Self::render_tab_bar_row(start_children, tab_bars, end_children, window, cx)
+        self.render_tab_bar_row(start_children, tab_bars, end_children, window, cx)
             .into_any_element()
     }
 
@@ -3953,7 +3955,7 @@ impl Pane {
                     .id("pinned_tabs_row")
                     .debug_selector(|| "pinned_tabs_row".into())
                     .w_full()
-                    .child(Self::render_tab_bar_row(
+                    .child(self.render_tab_bar_row(
                         start_children,
                         [pinned_tab_bar.into_any_element()],
                         end_children,
@@ -3961,15 +3963,17 @@ impl Pane {
                         cx,
                     )),
             )
-            .child(Self::render_tab_bar_row(
-                Vec::new(),
-                [self
-                    .render_unpinned_tab_bar(unpinned_tabs, tab_count, cx)
-                    .into_any_element()],
-                Vec::new(),
-                window,
-                cx,
-            ))
+            .child(
+                self.render_tab_bar_row(
+                    Vec::new(),
+                    [self
+                        .render_unpinned_tab_bar(unpinned_tabs, tab_count, cx)
+                        .into_any_element()],
+                    Vec::new(),
+                    window,
+                    cx,
+                ),
+            )
             .into_any_element()
     }
 
@@ -4612,7 +4616,7 @@ fn default_render_tab_bar_buttons(
         None => (false, false),
     };
     let more_menu = Button::new("pane-tab-bar-more")
-        .ghost()
+        .custom(ghost_button_style(cx))
         .icon(KitIconName::Ellipsis)
         .tooltip("More…")
         .debug_selector(|| "ICON-Ellipsis".into())
@@ -4640,7 +4644,7 @@ fn default_render_tab_bar_buttons(
         })
         .into_any_element();
     let search = Button::new("pane-tab-bar-search")
-        .ghost()
+        .custom(ghost_button_style(cx))
         .icon(KitIconName::Search)
         .tooltip_with_action(
             "Search…",

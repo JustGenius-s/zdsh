@@ -3892,7 +3892,9 @@ impl Render for ConversationView {
         v_flex()
             .track_focus(&self.focus_handle)
             .size_full()
-            .bg(cx.theme().colors().toolbar_background)
+            .when(!cx.theme().has_translucent_chrome(), |this| {
+                this.bg(cx.theme().colors().toolbar_background)
+            })
             .child(v_flex().flex_1().min_h_0().child(content))
             .when(!active_thread_renders_request_elicitations, |this| {
                 this.children(request_elicitation_connection.as_ref().map_or_else(

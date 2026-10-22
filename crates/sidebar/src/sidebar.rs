@@ -7704,7 +7704,11 @@ impl Render for Sidebar {
         let sticky_header = self.render_sticky_header(window, cx);
 
         let color = cx.theme().colors();
-        let bg = color.background.blend(color.panel_background);
+        let background = if cx.theme().has_translucent_chrome() {
+            gpui::transparent_black()
+        } else {
+            color.background.blend(color.panel_background)
+        };
 
         let no_open_projects = !self.contents.has_open_projects;
         let no_search_results = self.contents.entries.is_empty();
@@ -7744,7 +7748,7 @@ impl Render for Sidebar {
             .size_full()
             .min_w_0()
             .min_h_0()
-            .bg(bg)
+            .bg(background)
             .map(|this| match &self.view {
                 SidebarView::ThreadList => this.map(|this| {
                     if no_open_projects {

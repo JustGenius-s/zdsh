@@ -294,6 +294,82 @@ impl Theme {
         self.styles.window_background_appearance
     }
 
+    /// Whether the workspace chrome exposes the macOS window backdrop.
+    pub fn has_translucent_chrome(&self) -> bool {
+        cfg!(target_os = "macos")
+            && matches!(
+                self.window_background_appearance(),
+                WindowBackgroundAppearance::Blurred | WindowBackgroundAppearance::Transparent
+            )
+    }
+
+    /// The tint painted once behind the workspace's chrome.
+    pub fn window_chrome_background(&self) -> Hsla {
+        let background = self.colors().title_bar_background;
+        if self.has_translucent_chrome() && background.a == 1.0 {
+            if self.appearance().is_light() {
+                gpui::white().opacity(0.16)
+            } else {
+                gpui::black().opacity(0.42)
+            }
+        } else {
+            background
+        }
+    }
+
+    /// The shared tint for both rails and the tab sidebar.
+    pub fn sidebar_backdrop(&self) -> Hsla {
+        if self.has_translucent_chrome() {
+            self.colors()
+                .panel_background
+                .opacity(if self.appearance().is_light() {
+                    0.42
+                } else {
+                    0.36
+                })
+        } else {
+            self.colors().title_bar_background
+        }
+    }
+
+    /// The stronger tint painted once behind a docked panel's contents.
+    pub fn panel_backdrop(&self) -> Hsla {
+        if self.has_translucent_chrome() {
+            self.colors()
+                .panel_background
+                .opacity(if self.appearance().is_light() {
+                    0.84
+                } else {
+                    0.72
+                })
+        } else {
+            self.colors().panel_background
+        }
+    }
+
+    /// The shared backdrop beneath central panes; editors paint their own opaque surface.
+    pub fn content_backdrop(&self) -> Hsla {
+        let background = self.colors().toolbar_background;
+        if self.has_translucent_chrome() {
+            background.opacity(if self.appearance().is_light() {
+                0.84
+            } else {
+                0.72
+            })
+        } else {
+            background
+        }
+    }
+
+    /// The background for panel contents, transparent when the dock paints their backdrop.
+    pub fn panel_background(&self) -> Hsla {
+        if self.has_translucent_chrome() {
+            gpui::transparent_black()
+        } else {
+            self.colors().panel_background
+        }
+    }
+
     /// Darkens the color by reducing its lightness.
     /// The resulting lightness is clamped to ensure it doesn't go below 0.0.
     ///

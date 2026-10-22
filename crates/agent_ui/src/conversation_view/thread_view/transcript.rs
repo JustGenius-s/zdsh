@@ -65,7 +65,7 @@ impl ThreadView {
         // The row itself has no background, so the transcript scrolls on behind it. At the live
         // edge nothing is behind it, so the fade only shows while scrolled up, where it dissolves
         // the transcript into the thread's surface, which the composer below shares.
-        let surface_bg = cx.theme().colors().surface_background;
+        let surface_bg = cx.theme().colors().toolbar_background;
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
         Some(
             div()

@@ -155,7 +155,7 @@ pub(crate) fn rail_container(id: impl Into<ElementId>, cx: &App) -> Stateful<Div
         .py_3()
         .gap_2()
         .overflow_hidden()
-        .bg(cx.theme().colors().title_bar_background)
+        .bg(cx.theme().sidebar_backdrop())
 }
 
 /// An item on the rail, drawn like GPUI Kit's sidebar items: a dimmed icon that lights up while
@@ -210,8 +210,8 @@ impl RenderOnce for RailButton {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = KitTheme::global(cx);
         let radius = theme.radius;
-        let muted_foreground = theme.muted_foreground;
-        let hover_background = theme.sidebar_accent.opacity(0.8);
+        let muted_foreground = cx.theme().colors().icon_muted;
+        let hover_background = cx.theme().colors().ghost_element_hover;
         let selected_background = theme.tokens.sidebar_accent;
         let accent_foreground = theme.sidebar_accent_foreground;
         self.base

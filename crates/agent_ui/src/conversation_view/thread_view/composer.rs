@@ -1525,7 +1525,7 @@ struct ContextUsage {
 /// inputs.
 pub(super) fn composer_surface(cx: &App) -> (Hsla, Hsla) {
     let theme = KitTheme::global(cx);
-    (theme.sidebar, theme.input)
+    (theme.group_box, theme.input)
 }
 
 fn composer_card(cx: &App) -> Div {

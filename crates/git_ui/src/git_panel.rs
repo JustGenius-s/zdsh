@@ -9164,7 +9164,7 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::activate_history_tab))
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().colors().panel_background)
+            .bg(cx.theme().panel_background())
             .child(self.render_view_title(
                 "changes-view-title",
                 "CHANGES",

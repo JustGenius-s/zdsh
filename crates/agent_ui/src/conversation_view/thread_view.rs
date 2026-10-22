@@ -8918,7 +8918,9 @@ impl Render for ThreadView {
             }))
             .size_full()
             .when(!has_docked_composer, |this| this.pb_2())
-            .bg(cx.theme().colors().surface_background)
+            .when(!cx.theme().has_translucent_chrome(), |this| {
+                this.bg(cx.theme().colors().toolbar_background)
+            })
             .children(self.render_subagent_titlebar(cx))
             .when_some(
                 self.thread_search_visible

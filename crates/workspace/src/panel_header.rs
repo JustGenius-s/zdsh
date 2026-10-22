@@ -10,14 +10,26 @@ use gpui_kit::{
     base::Selectable as _,
     component::{
         Disableable as _, Icon as KitIcon,
-        button::{Button, ButtonVariants as _},
+        button::{Button, ButtonCustomVariant, ButtonVariants as _},
     },
 };
+use theme::ActiveTheme as _;
 use ui::{Clickable, IconName, Toggleable, h_flex};
 
 /// The row atop a dock panel, naming what the panel shows.
 pub fn panel_header() -> Div {
     h_flex().w_full().flex_none().h_10().px_2().gap_1()
+}
+
+/// A transparent button whose hover tint matches the workspace's other icon controls.
+pub fn ghost_button_style(cx: &App) -> ButtonCustomVariant {
+    let colors = cx.theme().colors();
+    // Kit halves its ghost hover tint in dark mode. A custom variant keeps icon controls
+    // consistent without doubling the accent token shared by menus and lists.
+    ButtonCustomVariant::new(cx)
+        .foreground(colors.text)
+        .hover(colors.ghost_element_hover)
+        .active(colors.ghost_element_selected)
 }
 
 /// A GPUI Kit button with a dropdown caret that opens one of Zed's pickers, as the trigger of a
@@ -83,9 +95,9 @@ impl Toggleable for PickerTrigger {
 }
 
 impl RenderOnce for PickerTrigger {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let button = Button::new(self.id.clone())
-            .ghost()
+            .custom(ghost_button_style(cx))
             .label(self.label)
             .dropdown_caret(true)
             .loading(self.loading)
@@ -160,9 +172,9 @@ impl Toggleable for KitIconButton {
 }
 
 impl RenderOnce for KitIconButton {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let button = Button::new(self.id.clone())
-            .ghost()
+            .custom(ghost_button_style(cx))
             .icon(KitIcon::empty().path(assets::kit_icon_path(self.icon)))
             .selected(self.selected)
             .disabled(self.disabled)

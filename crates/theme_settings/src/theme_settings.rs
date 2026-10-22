@@ -382,7 +382,13 @@ pub fn refine_theme(theme: &ThemeContent) -> Theme {
         .style
         .window_background_appearance
         .map(|w| w.into_gpui())
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                gpui::WindowBackgroundAppearance::Blurred
+            } else {
+                gpui::WindowBackgroundAppearance::Opaque
+            }
+        });
 
     Theme {
         id: uuid::Uuid::new_v4().to_string(),

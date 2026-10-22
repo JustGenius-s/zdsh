@@ -2,6 +2,26 @@
 
 How zdsh behaves differently from Zed.
 
+## Window backdrop
+
+On macOS, themes without an explicit `background.appearance` use a blurred window backdrop with the native Sidebar material. Its system tint and contrast layers are preserved beneath the workspace tint. Both rails and the right-hand tab sidebar use the same additional sidebar layer; docked panels use a stronger layer for readability. Other platforms keep the theme's existing background behavior.
+
+The default window tint is 42% pure black for dark themes and 16% pure white for light themes. A `title_bar.background` color with alpha below 100% overrides both the tint color and its opacity. For example, use `"title_bar.background": "#00000099"` in a theme override for a 60% black tint.
+
+Rails and the tab sidebar add the theme's panel color at 36% opacity in dark themes or 42% in light themes. Docked side panels use that color at 72% or 84%, respectively. Central panes use the toolbar color at 72% or 84%; nested Agent views remain transparent so that layer is painted only once. Editors and terminals paint their own opaque background, and zoom overlays stay opaque to cover the underlying panes.
+
+Z Dark uses `#181818` for editor, terminal, and popup surfaces, `#141414` beneath conversations, and `#212121` with a `#313131` border for message and composer cards. State highlights use translucent `#f0f0f0`: top tabs use 6%, rail and workspace icon controls use 8%, and secondary buttons use 8% normally and 14% on hover. Sidebar rows use about 6% on hover and 8% when selected. The final glass color also depends on the wallpaper and macOS material.
+
+To return to an opaque window, add this to your settings (or set `background.appearance` in a named `theme_overrides` entry):
+
+```json
+{
+  "experimental.theme_overrides": {
+    "background.appearance": "opaque"
+  }
+}
+```
+
 ## Agent tabs
 
 Each Agent conversation opens in a central editor tab. The project file tree can stay open beside it. This applies to the Zed Agent and external ACP agents; terminal entries open in separate central terminal tabs.

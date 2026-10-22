@@ -649,7 +649,7 @@ fn row_surface_color(is_sticky: bool, cx: &App) -> Hsla {
     if is_sticky {
         colors.panel_overlay_background
     } else {
-        colors.panel_background
+        cx.theme().panel_background()
     }
 }
 
@@ -8072,7 +8072,7 @@ impl ProjectPanel {
                         if horizontal_scroll {
                             scrollbars = scrollbars.with_track_along(
                                 ScrollAxes::Horizontal,
-                                cx.theme().colors().panel_background,
+                                cx.theme().panel_background(),
                             );
                         }
                         scrollbars.notify_content()

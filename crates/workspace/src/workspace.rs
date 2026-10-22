@@ -40,7 +40,7 @@ pub use multi_workspace::{
     ProjectGroup, ProjectGroupKey, RemovalIntent, SerializedProjectGroupState, Sidebar,
     SidebarEvent, SidebarHandle, SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar,
 };
-pub use panel_header::{KitIconButton, PickerTrigger, panel_header};
+pub use panel_header::{KitIconButton, PickerTrigger, ghost_button_style, panel_header};
 pub use path_list::{PathList, SerializedPathList};
 pub use rail::RailItem;
 pub use remote::{
@@ -8977,6 +8977,10 @@ impl Workspace {
         cx: &mut App,
     ) -> impl IntoElement {
         let is_a11y_active = window.is_a11y_active();
+        let background = cx
+            .theme()
+            .has_translucent_chrome()
+            .then(|| cx.theme().content_backdrop());
         let center = self.center.render(
             self.zoomed.as_ref(),
             self.maximized_pane.as_ref(),
@@ -8992,6 +8996,7 @@ impl Workspace {
                 this.track_focus(&self.region_focus_handles.editor)
             })
             .size_full()
+            .when_some(background, |this, background| this.bg(background))
             .child(center)
     }
 
@@ -9722,6 +9727,7 @@ impl Render for Workspace {
 
         let theme = cx.theme().clone();
         let colors = theme.colors();
+        let translucent_chrome = theme.has_translucent_chrome();
         let notification_entities = self
             .notifications
             .iter()
@@ -9750,6 +9756,11 @@ impl Render for Workspace {
         div()
             .relative()
             .size_full()
+            .bg(if translucent_chrome {
+                theme.window_chrome_background()
+            } else {
+                colors.background
+            })
             .flex()
             .flex_col()
             .font(ui_font)
@@ -9777,12 +9788,14 @@ impl Render for Workspace {
                             .min_h_0()
                             .w_full()
                             .items_stretch()
-                            .bg(colors.title_bar_background)
+                            .when(!translucent_chrome, |this| {
+                                this.bg(colors.title_bar_background)
+                            })
                             .child(self.render_rail(window, cx))
                             .child(
                                 div()
                                     .id("workspace")
-                                    .bg(colors.background)
+                                    .when(!translucent_chrome, |this| this.bg(colors.background))
                                     .relative()
                                     .flex_1()
                                     .min_w_0()
@@ -10159,39 +10172,58 @@ impl Render for Workspace {
                                             .absolute()
                                             .overflow_hidden()
                                             .border_color(colors.border)
-                                            .bg(colors.background)
+                                            .bg(if translucent_chrome {
+                                                colors.background.alpha(1.0)
+                                            } else {
+                                                colors.background
+                                            })
                                             .child(zoomed_element)
                                             .inset_0()
                                             .shadow_lg();
 
-                                        if !WorkspaceSettings::get_global(cx).zoomed_padding {
-                                            return Some(overlay);
-                                        }
-
-                                        Some(match self.zoomed_position {
-                                            Some(DockPosition::Left) => {
-                                                overlay.right_2().border_r_1()
-                                            }
-                                            Some(DockPosition::Right) => {
-                                                overlay.left_2().border_l_1()
-                                            }
-                                            Some(DockPosition::Bottom) => {
-                                                overlay.top_2().border_t_1()
-                                            }
-                                            None => overlay
-                                                .top_2()
-                                                .bottom_2()
-                                                .left_2()
-                                                .right_2()
-                                                .border_1(),
-                                        })
+                                        let overlay =
+                                            if WorkspaceSettings::get_global(cx).zoomed_padding {
+                                                match self.zoomed_position {
+                                                    Some(DockPosition::Left) => {
+                                                        overlay.right_2().border_r_1()
+                                                    }
+                                                    Some(DockPosition::Right) => {
+                                                        overlay.left_2().border_l_1()
+                                                    }
+                                                    Some(DockPosition::Bottom) => {
+                                                        overlay.top_2().border_t_1()
+                                                    }
+                                                    None => overlay
+                                                        .top_2()
+                                                        .bottom_2()
+                                                        .left_2()
+                                                        .right_2()
+                                                        .border_1(),
+                                                }
+                                            } else {
+                                                overlay
+                                            };
+                                        Some(overlay)
                                     }))
                                     .children(self.render_notifications(window, cx))
-                                    .children(content_block_edge(
-                                        content_block_radius,
-                                        colors.title_bar_background,
-                                        colors.border,
-                                    )),
+                                    .map(|this| {
+                                        if translucent_chrome {
+                                            this.child(
+                                                div()
+                                                    .absolute()
+                                                    .inset_0()
+                                                    .rounded(content_block_radius)
+                                                    .border_1()
+                                                    .border_color(colors.border),
+                                            )
+                                        } else {
+                                            this.children(content_block_edge(
+                                                content_block_radius,
+                                                colors.title_bar_background,
+                                                colors.border,
+                                            ))
+                                        }
+                                    }),
                             )
                             .child(self.render_tab_sidebar(window, cx)),
                     )
