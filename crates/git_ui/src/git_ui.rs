@@ -12,16 +12,21 @@ use git::{
     repository::{Branch, CommitDetails, Upstream, UpstreamTracking, UpstreamTrackingStatus},
     status::{FileStatus, StatusCode, UnmergedStatus, UnmergedStatusCode},
 };
+use gpui::{Action, AnyView, Div, Stateful};
 use gpui::{
     App, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
+};
+use gpui_kit::component::{
+    Icon as KitIcon, Theme as KitTheme, kbd::Kbd, tooltip::Tooltip as KitTooltip,
+    v_flex as kit_v_flex,
 };
 use menu::{Cancel, Confirm};
 use notifications::status_toast::StatusToast;
 use project::git_store::Repository;
 use project_diff::ProjectDiff;
 use time::OffsetDateTime;
-use ui::{ButtonLike, ContextMenu, ElevationIndex, PopoverMenuHandle, TintColor, prelude::*};
+use ui::{ButtonLike, ElevationIndex, TintColor, prelude::*};
 use util::ResultExt as _;
 use workspace::{
     ModalView, OpenMode, Workspace,
@@ -947,7 +952,6 @@ fn render_remote_button(
     keybinding_target: Option<FocusHandle>,
     show_fetch_button: bool,
     in_progress_operation: Option<RemoteOperationKind>,
-    menu_handle: PopoverMenuHandle<ContextMenu>,
 ) -> Option<impl IntoElement> {
     let id = id.into();
     let upstream = branch.upstream.as_ref();
@@ -960,7 +964,6 @@ fn render_remote_button(
                 keybinding_target,
                 id,
                 in_progress_operation,
-                menu_handle,
             )),
             (0, 0) => None,
             (ahead, 0) => Some(remote_button::render_push_button(
@@ -968,7 +971,6 @@ fn render_remote_button(
                 id,
                 ahead,
                 in_progress_operation,
-                menu_handle,
             )),
             (ahead, behind) => Some(remote_button::render_pull_button(
                 keybinding_target,
@@ -976,7 +978,6 @@ fn render_remote_button(
                 ahead,
                 behind,
                 in_progress_operation,
-                menu_handle,
             )),
         },
         Some(Upstream {
@@ -986,51 +987,50 @@ fn render_remote_button(
             keybinding_target,
             id,
             in_progress_operation,
-            menu_handle,
         )),
         None => Some(remote_button::render_publish_button(
             keybinding_target,
             id,
             in_progress_operation,
-            menu_handle,
         )),
     }
 }
 
 mod remote_button {
     use crate::git_panel::RemoteOperationKind;
-    use gpui::{Action, Anchor, AnyView, ClickEvent, FocusHandle};
-    use ui::{
-        ButtonLike, CommonAnimationExt, ContextMenu, ElevationIndex, PopoverMenu,
-        PopoverMenuHandle, SplitButton, Tooltip, prelude::*,
+    use crate::{git_tooltip, kit_icon, with_tooltip};
+    use gpui::{
+        Action, Anchor, App, ClickEvent, Div, FocusHandle, ParentElement as _, SharedString,
+        Stateful, Styled as _, Window, prelude::FluentBuilder as _,
     };
+    use gpui_kit::component::{
+        Disableable as _, Sizable as _,
+        button::{Button, DropdownButton},
+        h_flex,
+        label::Label,
+        menu::PopupMenu,
+        tooltip::Tooltip,
+    };
+    use icons::IconName;
 
     pub fn render_fetch_button(
         keybinding_target: Option<FocusHandle>,
         id: SharedString,
         in_progress_operation: Option<RemoteOperationKind>,
-        menu_handle: PopoverMenuHandle<ContextMenu>,
-    ) -> SplitButton {
+    ) -> Stateful<Div> {
         split_button(
             id,
             "Fetch",
             0,
             0,
             Some(IconName::ArrowCircle),
-            keybinding_target.clone(),
+            keybinding_target,
             in_progress_operation,
-            menu_handle,
-            move |_, window, cx| {
-                window.dispatch_action(Box::new(git::Fetch), cx);
-            },
-            move |_window, cx| {
-                git_action_tooltip(
-                    "Fetch updates from remote",
-                    &git::Fetch,
-                    "git fetch",
-                    keybinding_target.clone(),
-                    cx,
-                )
+            |_, window, cx| window.dispatch_action(Box::new(git::Fetch), cx),
+            RemoteTooltip {
+                title: "Fetch updates from remote",
+                action: Box::new(git::Fetch),
+                command: "git fetch",
             },
         )
     }
@@ -1040,28 +1040,20 @@ mod remote_button {
         id: SharedString,
         ahead: u32,
         in_progress_operation: Option<RemoteOperationKind>,
-        menu_handle: PopoverMenuHandle<ContextMenu>,
-    ) -> SplitButton {
+    ) -> Stateful<Div> {
         split_button(
             id,
             "Push",
             ahead as usize,
             0,
             None,
-            keybinding_target.clone(),
+            keybinding_target,
             in_progress_operation,
-            menu_handle,
-            move |_, window, cx| {
-                window.dispatch_action(Box::new(git::Push), cx);
-            },
-            move |_window, cx| {
-                git_action_tooltip(
-                    "Push committed changes to remote",
-                    &git::Push,
-                    "git push",
-                    keybinding_target.clone(),
-                    cx,
-                )
+            |_, window, cx| window.dispatch_action(Box::new(git::Push), cx),
+            RemoteTooltip {
+                title: "Push committed changes to remote",
+                action: Box::new(git::Push),
+                command: "git push",
             },
         )
     }
@@ -1072,28 +1064,20 @@ mod remote_button {
         ahead: u32,
         behind: u32,
         in_progress_operation: Option<RemoteOperationKind>,
-        menu_handle: PopoverMenuHandle<ContextMenu>,
-    ) -> SplitButton {
+    ) -> Stateful<Div> {
         split_button(
             id,
             "Pull",
             ahead as usize,
             behind as usize,
             None,
-            keybinding_target.clone(),
+            keybinding_target,
             in_progress_operation,
-            menu_handle,
-            move |_, window, cx| {
-                window.dispatch_action(Box::new(git::Pull), cx);
-            },
-            move |_window, cx| {
-                git_action_tooltip(
-                    "Pull",
-                    &git::Pull,
-                    "git pull",
-                    keybinding_target.clone(),
-                    cx,
-                )
+            |_, window, cx| window.dispatch_action(Box::new(git::Pull), cx),
+            RemoteTooltip {
+                title: "Pull",
+                action: Box::new(git::Pull),
+                command: "git pull",
             },
         )
     }
@@ -1102,28 +1086,20 @@ mod remote_button {
         keybinding_target: Option<FocusHandle>,
         id: SharedString,
         in_progress_operation: Option<RemoteOperationKind>,
-        menu_handle: PopoverMenuHandle<ContextMenu>,
-    ) -> SplitButton {
+    ) -> Stateful<Div> {
         split_button(
             id,
             "Publish",
             0,
             0,
             Some(IconName::ExpandUp),
-            keybinding_target.clone(),
+            keybinding_target,
             in_progress_operation,
-            menu_handle,
-            move |_, window, cx| {
-                window.dispatch_action(Box::new(git::Push), cx);
-            },
-            move |_window, cx| {
-                git_action_tooltip(
-                    "Publish branch to remote",
-                    &git::Push,
-                    "git push --set-upstream",
-                    keybinding_target.clone(),
-                    cx,
-                )
+            |_, window, cx| window.dispatch_action(Box::new(git::Push), cx),
+            RemoteTooltip {
+                title: "Publish branch to remote",
+                action: Box::new(git::Push),
+                command: "git push --set-upstream",
             },
         )
     }
@@ -1132,30 +1108,28 @@ mod remote_button {
         keybinding_target: Option<FocusHandle>,
         id: SharedString,
         in_progress_operation: Option<RemoteOperationKind>,
-        menu_handle: PopoverMenuHandle<ContextMenu>,
-    ) -> SplitButton {
+    ) -> Stateful<Div> {
         split_button(
             id,
             "Republish",
             0,
             0,
             Some(IconName::ExpandUp),
-            keybinding_target.clone(),
+            keybinding_target,
             in_progress_operation,
-            menu_handle,
-            move |_, window, cx| {
-                window.dispatch_action(Box::new(git::Push), cx);
-            },
-            move |_window, cx| {
-                git_action_tooltip(
-                    "Re-publish branch to remote",
-                    &git::Push,
-                    "git push --set-upstream",
-                    keybinding_target.clone(),
-                    cx,
-                )
+            |_, window, cx| window.dispatch_action(Box::new(git::Push), cx),
+            RemoteTooltip {
+                title: "Re-publish branch to remote",
+                action: Box::new(git::Push),
+                command: "git push --set-upstream",
             },
         )
+    }
+
+    struct RemoteTooltip {
+        title: &'static str,
+        action: Box<dyn Action>,
+        command: &'static str,
     }
 
     fn in_progress_tooltip(operation: RemoteOperationKind) -> &'static str {
@@ -1166,144 +1140,130 @@ mod remote_button {
         }
     }
 
-    fn git_action_tooltip(
-        label: impl Into<SharedString>,
-        action: &dyn Action,
-        command: impl Into<SharedString>,
-        focus_handle: Option<FocusHandle>,
-        cx: &mut App,
-    ) -> AnyView {
-        let label = label.into();
-        let command = command.into();
-
-        if let Some(handle) = focus_handle {
-            Tooltip::with_meta_in(label, Some(action), command, &handle, cx)
-        } else {
-            Tooltip::with_meta(label, Some(action), command, cx)
-        }
-    }
-
-    fn render_git_action_menu(
-        id: impl Into<ElementId>,
-        keybinding_target: Option<FocusHandle>,
-        menu_handle: PopoverMenuHandle<ContextMenu>,
-    ) -> impl IntoElement {
-        let menu_open = menu_handle.is_deployed();
-
-        PopoverMenu::new(id.into())
-            .trigger(crate::render_split_button_chevron_trigger(
-                "split-button-right",
-                menu_open,
-            ))
-            .with_handle(menu_handle)
-            .menu(move |window, cx| {
-                Some(ContextMenu::build(window, cx, |context_menu, _, _| {
-                    context_menu
-                        .when_some(keybinding_target.clone(), |el, keybinding_target| {
-                            el.context(keybinding_target)
-                        })
-                        .action("Fetch", git::Fetch.boxed_clone())
-                        .action("Fetch From", git::FetchFrom.boxed_clone())
-                        .action("Pull", git::Pull.boxed_clone())
-                        .action("Pull (Rebase)", git::PullRebase.boxed_clone())
-                        .separator()
-                        .action("Push", git::Push.boxed_clone())
-                        .action("Push To", git::PushTo.boxed_clone())
-                        .action("Force Push", git::ForcePush.boxed_clone())
-                }))
-            })
-            .anchor(Anchor::TopRight)
-            .offset(gpui::Point {
-                x: px(0.),
-                y: px(2.),
-            })
+    fn git_action_menu(menu: PopupMenu, keybinding_target: Option<FocusHandle>) -> PopupMenu {
+        menu.when_some(keybinding_target, |menu, keybinding_target| {
+            menu.action_context(keybinding_target)
+        })
+        .menu("Fetch", git::Fetch.boxed_clone())
+        .menu("Fetch From", git::FetchFrom.boxed_clone())
+        .menu("Pull", git::Pull.boxed_clone())
+        .menu("Pull (Rebase)", git::PullRebase.boxed_clone())
+        .separator()
+        .menu("Push", git::Push.boxed_clone())
+        .menu("Push To", git::PushTo.boxed_clone())
+        .menu("Force Push", git::ForcePush.boxed_clone())
     }
 
     #[allow(clippy::too_many_arguments)]
     fn split_button(
         id: SharedString,
-        left_label: impl Into<SharedString>,
+        label: &'static str,
         ahead_count: usize,
         behind_count: usize,
-        left_icon: Option<IconName>,
+        icon: Option<IconName>,
         keybinding_target: Option<FocusHandle>,
         in_progress_operation: Option<RemoteOperationKind>,
-        menu_handle: PopoverMenuHandle<ContextMenu>,
-        left_on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-        tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
-    ) -> SplitButton {
-        fn count(count: usize) -> impl IntoElement {
-            h_flex()
-                .ml_neg_px()
-                .h(rems(0.875))
-                .overflow_hidden()
-                .px_0p5()
-                .child(
-                    Label::new(count.to_string())
-                        .size(LabelSize::XSmall)
-                        .line_height_style(LineHeightStyle::UiLabel),
-                )
-        }
-
-        let should_render_counts = left_icon.is_none() && (ahead_count > 0 || behind_count > 0);
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        tooltip: RemoteTooltip,
+    ) -> Stateful<Div> {
+        let should_render_counts = icon.is_none() && (ahead_count > 0 || behind_count > 0);
         let is_in_progress = in_progress_operation.is_some();
 
-        let left = ButtonLike::new_rounded_left(format!("split-button-left-{}", id))
-            .layer(ElevationIndex::ModalSurface)
-            .size(ButtonSize::Compact)
+        let count = |arrow: IconName, count: usize| {
+            h_flex()
+                .child(kit_icon(arrow).xsmall())
+                .child(Label::new(count.to_string()).text_xs())
+        };
+
+        let button = Button::new(SharedString::from(format!("split-button-left-{id}")))
+            .xsmall()
             .disabled(is_in_progress)
+            .when_some(icon, |this, icon| {
+                this.icon(kit_icon(icon)).loading(is_in_progress)
+            })
             .when(should_render_counts, |this| {
                 this.child(
                     h_flex()
-                        .ml_neg_0p5()
                         .when(behind_count > 0, |this| {
-                            this.child(Icon::new(IconName::ArrowDown).size(IconSize::XSmall))
-                                .child(count(behind_count))
+                            this.child(count(IconName::ArrowDown, behind_count))
                         })
                         .when(ahead_count > 0, |this| {
-                            this.child(Icon::new(IconName::ArrowUp).size(IconSize::XSmall))
-                                .child(count(ahead_count))
+                            this.child(count(IconName::ArrowUp, ahead_count))
                         }),
                 )
             })
-            .when_some(left_icon, |this, left_icon| {
-                this.map(|this| {
-                    if is_in_progress {
-                        this.child(
-                            Icon::new(IconName::LoadCircle)
-                                .size(IconSize::XSmall)
-                                .color(Color::Disabled)
-                                .with_rotate_animation(2),
-                        )
-                    } else {
-                        this.child(Icon::new(left_icon).size(IconSize::XSmall))
-                    }
-                })
-            })
-            .child(
-                Label::new(left_label)
-                    .size(LabelSize::Small)
-                    .when(is_in_progress, |this| this.color(Color::Disabled))
-                    .mr_0p5(),
-            )
-            .on_click(left_on_click)
-            .tooltip(move |window, cx| {
-                if let Some(operation) = in_progress_operation {
-                    Tooltip::simple(in_progress_tooltip(operation), cx)
-                } else {
-                    tooltip(window, cx)
-                }
+            .child(label)
+            .on_click(on_click);
+
+        let dropdown = DropdownButton::new(SharedString::from(format!("split-button-{id}")))
+            .button(button)
+            .dropdown_menu_with_anchor(Anchor::TopRight, {
+                let keybinding_target = keybinding_target.clone();
+                move |menu, _, _| git_action_menu(menu, keybinding_target.clone())
             });
 
-        let right = render_git_action_menu(
-            format!("split-button-right-{}", id),
-            keybinding_target,
-            menu_handle,
+        with_tooltip(
+            SharedString::from(format!("split-button-tooltip-{id}")),
+            dropdown,
+            move |window, cx| {
+                if let Some(operation) = in_progress_operation {
+                    Tooltip::new(in_progress_tooltip(operation)).build(window, cx)
+                } else {
+                    git_tooltip(
+                        tooltip.title,
+                        Some(tooltip.action.as_ref()),
+                        keybinding_target.as_ref(),
+                        Some(tooltip.command.into()),
+                        window,
+                        cx,
+                    )
+                }
+            },
         )
-        .into_any_element();
-
-        SplitButton::new(left, right)
     }
+}
+
+pub(crate) fn kit_icon(icon: IconName) -> KitIcon {
+    KitIcon::empty().path(icon.path())
+}
+
+/// A GPUI Kit tooltip for a git control: its title, the shortcut for `action` as resolved from
+/// `focus_handle`, and the git command it runs, if given, on a muted line below.
+pub(crate) fn git_tooltip(
+    title: impl Into<SharedString>,
+    action: Option<&dyn Action>,
+    focus_handle: Option<&FocusHandle>,
+    command: Option<SharedString>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyView {
+    let title = title.into();
+    let key_binding = action.and_then(|action| match focus_handle {
+        Some(focus_handle) => Kbd::binding_for_action_in(action, focus_handle, window),
+        None => Kbd::binding_for_action(action, None, window),
+    });
+    let tooltip = match command {
+        Some(command) => KitTooltip::element(move |_, cx| {
+            kit_v_flex().child(title.clone()).child(
+                div()
+                    .text_xs()
+                    .text_color(KitTheme::global(cx).muted_foreground)
+                    .child(command.clone()),
+            )
+        }),
+        None => KitTooltip::new(title),
+    };
+    tooltip.key_binding(key_binding).build(window, cx)
+}
+
+/// GPUI Kit buttons only take a text tooltip, so a control whose tooltip is built by
+/// [`git_tooltip`] gets it from this wrapper.
+pub(crate) fn with_tooltip(
+    id: impl Into<ElementId>,
+    child: impl IntoElement,
+    tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+) -> Stateful<Div> {
+    div().id(id).flex_none().child(child).tooltip(tooltip)
 }
 
 pub(crate) fn render_split_button_chevron_trigger(

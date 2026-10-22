@@ -1090,8 +1090,8 @@
     "status_style": "icon",
     // Whether to show file icons in the git panel.
     //
-    // Default: false
-    "file_icons": false,
+    // Default: true
+    "file_icons": true,
     // What to show for directories in the git panel.
     //
     // 1. A folder icon:
@@ -1140,8 +1140,8 @@
     },
     // Whether to show the addition/deletion change count next to each file in the Git panel.
     //
-    // Default: true
-    "diff_stats": true,
+    // Default: false
+    "diff_stats": false,
     // Maximum length of the commit message title before a warning is shown.
     // Set to 0 to disable.
     //
@@ -1152,11 +1152,6 @@
     // Choices: project_diff, file_diff, view_file
     // Default: project_diff
     "entry_primary_click_action": "project_diff",
-    // Whether the commit message editor is shown in the git panel by default.
-    //
-    // Choices: expanded, collapsed
-    // Default: expanded
-    "commit_editor": "expanded",
   },
   "agent": {
     // Whether the inline assistant should use streaming tools, when available

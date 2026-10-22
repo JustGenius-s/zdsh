@@ -750,7 +750,7 @@ pub struct GitPanelSettingsContent {
 
     /// Whether to show file icons in the git panel.
     ///
-    /// Default: false
+    /// Default: true
     pub file_icons: Option<bool>,
 
     /// What to show for directories in the git panel.
@@ -791,7 +791,7 @@ pub struct GitPanelSettingsContent {
 
     /// Whether to show the addition/deletion change count next to each file in the Git panel.
     ///
-    /// Default: true
+    /// Default: false
     pub diff_stats: Option<bool>,
 
     /// Whether to show a badge on the git panel icon with the count of uncommitted changes.
@@ -814,34 +814,6 @@ pub struct GitPanelSettingsContent {
     ///
     /// Default: project_diff
     pub entry_primary_click_action: Option<GitPanelClickBehavior>,
-
-    /// Whether the commit message editor is shown in the Git panel by default.
-    ///
-    /// Default: expanded
-    pub commit_editor: Option<GitPanelCommitEditor>,
-}
-
-#[derive(
-    Copy,
-    Clone,
-    Debug,
-    Default,
-    Serialize,
-    Deserialize,
-    JsonSchema,
-    MergeFrom,
-    PartialEq,
-    Eq,
-    strum::VariantArray,
-    strum::VariantNames,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum GitPanelCommitEditor {
-    /// Show the commit message editor.
-    #[default]
-    Expanded,
-    /// Hide the commit message editor, leaving only the commit button row.
-    Collapsed,
 }
 
 #[derive(
