@@ -9156,6 +9156,72 @@ async fn test_user_rules_apply_with_full_access(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+async fn test_permissions_change_is_announced_before_the_next_request(cx: &mut TestAppContext) {
+    let ThreadTest {
+        model,
+        fake,
+        thread,
+        ..
+    } = setup(cx, TestModel::Fake).await;
+    let send = async |text: &str, cx: &mut TestAppContext| {
+        thread
+            .update(cx, |thread, cx| {
+                thread.send(ClientUserMessageId::new(), [text], cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let completion = fake.pending_completions().pop().unwrap();
+        fake.send_last_event(&model, LanguageModelCompletionEvent::Text("Done".into()));
+        fake.end_last(&model);
+        cx.run_until_parked();
+        completion
+            .messages
+            .iter()
+            .map(|message| message.string_contents())
+            .collect::<Vec<_>>()
+    };
+    let notices = |messages: &[String]| {
+        messages
+            .iter()
+            .filter(|message| message.contains("changed this thread's permissions"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    // The first request's system prompt already describes the permissions.
+    thread.update(cx, |thread, cx| {
+        thread.set_permissions(AgentPermissions::ReadOnly, cx)
+    });
+    let messages = send("Message 1", cx).await;
+    assert!(notices(&messages).is_empty());
+
+    // Switching away and back before the next request changes nothing for the model.
+    thread.update(cx, |thread, cx| {
+        thread.set_permissions(AgentPermissions::FullAccess, cx);
+        thread.set_permissions(AgentPermissions::ReadOnly, cx);
+    });
+    let messages = send("Message 2", cx).await;
+    assert!(notices(&messages).is_empty());
+
+    thread.update(cx, |thread, cx| {
+        thread.set_permissions(AgentPermissions::FullAccess, cx)
+    });
+    let messages = send("Message 3", cx).await;
+    let notice = notices(&messages);
+    assert_eq!(notice.len(), 1);
+    assert!(notice[0].contains("permissions to full access"));
+    assert_eq!(
+        messages[messages.len() - 2..],
+        ["Message 3", notice[0].as_str()]
+    );
+
+    // Later requests keep the notice in the history without adding another.
+    let messages = send("Message 4", cx).await;
+    assert_eq!(notices(&messages), notice);
+    assert_eq!(messages.last().map(String::as_str), Some("Message 4"));
+}
+
 /// Runs `FileModifyingTool` once in a thread with `permissions`, returning its
 /// result and whether the user was asked about it.
 async fn run_file_modifying_tool(

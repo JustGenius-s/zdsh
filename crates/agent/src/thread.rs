@@ -271,6 +271,60 @@ pub enum Message {
     Agent(AgentMessage),
     Resume,
     Compaction(CompactionInfo),
+    PermissionsChanged(PermissionsChange),
+}
+
+/// Tells the model that the user changed the thread's permissions since its last request.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct PermissionsChange {
+    pub permissions: AgentPermissions,
+    /// Whether terminal commands run in a sandbox with the new permissions.
+    pub sandboxed: bool,
+}
+
+impl PermissionsChange {
+    fn label(&self) -> String {
+        <&'static str>::from(self.permissions).to_lowercase()
+    }
+
+    fn to_request(&self) -> LanguageModelRequestMessage {
+        let effect = match (self.permissions, self.sandboxed) {
+            (AgentPermissions::ReadOnly, true) => {
+                "Tools that modify files now fail, `terminal` commands run in a sandbox that \
+                 can't write to the project, and you can't request more access."
+            }
+            (AgentPermissions::ReadOnly, false) => {
+                "Tools that modify files now fail, and `terminal` commands are refused."
+            }
+            (AgentPermissions::Workspace, true) => {
+                "You can modify files in the project, `terminal` commands run in a sandbox that \
+                 can write to the project, and you can request more access for a command with \
+                 its sandbox flags."
+            }
+            (AgentPermissions::Workspace, false) => {
+                "You can modify files in the project, and the user approves each `terminal` \
+                 command before it runs unless their rules allow it."
+            }
+            (AgentPermissions::FullAccess, _) => {
+                "You can modify files in the project, and `terminal` commands run without a \
+                 sandbox, so the `terminal` tool no longer takes sandbox flags."
+            }
+        };
+        LanguageModelRequestMessage {
+            role: Role::User,
+            content: vec![
+                format!(
+                    "The user changed this thread's permissions to {}. {effect} Follow the new \
+                     permissions from now on, even where earlier messages in this conversation \
+                     assumed others.",
+                    self.label()
+                )
+                .into(),
+            ],
+            cache: false,
+            reasoning_details: None,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -325,6 +379,7 @@ impl Message {
                 cache: false,
                 reasoning_details: None,
             }],
+            Message::PermissionsChanged(change) => vec![change.to_request()],
         }
     }
 
@@ -339,12 +394,18 @@ impl Message {
             Message::Compaction(CompactionInfo::ProviderNative { .. }) => {
                 "## Context Compaction (Completed)\n\n".into()
             }
+            Message::PermissionsChanged(change) => {
+                format!("[permissions changed to {}]\n", change.label())
+            }
         }
     }
 
     pub fn role(&self) -> Role {
         match self {
-            Message::User(_) | Message::Resume | Message::Compaction(_) => Role::User,
+            Message::User(_)
+            | Message::Resume
+            | Message::Compaction(_)
+            | Message::PermissionsChanged(_) => Role::User,
             Message::Agent(_) => Role::Assistant,
         }
     }
@@ -1421,6 +1482,10 @@ pub struct Thread {
     /// Broadcasts `permissions` to each tool call's event stream, so a pending
     /// approval prompt can react when they change.
     permissions_tx: watch::Sender<AgentPermissions>,
+    /// The permissions the model last saw in its system prompt, or `None` before the
+    /// thread's first request. When the next request has different ones, the model is
+    /// told they changed, since the conversation so far may follow the old ones.
+    announced_permissions: Option<AgentPermissions>,
 }
 
 impl Thread {
@@ -1569,6 +1634,7 @@ impl Thread {
             sandbox_grants: Rc::new(RefCell::new(ThreadSandboxGrants::default())),
             permissions,
             permissions_tx: watch::channel(permissions).0,
+            announced_permissions: None,
         }
     }
 
@@ -1672,7 +1738,7 @@ impl Thread {
                         }
                     }
                 }
-                Message::Resume => {}
+                Message::Resume | Message::PermissionsChanged(_) => {}
                 Message::Compaction(info) => {
                     let compaction_id = acp_thread::ContextCompactionId(
                         format!("replay-compaction-{message_ix}").into(),
@@ -1872,6 +1938,9 @@ impl Thread {
         let permissions = db_thread
             .permissions
             .unwrap_or(settings.default_permissions);
+        // Saved permissions are the ones the model last saw, unless the user switched them
+        // and closed the thread before its next request.
+        let announced_permissions = (!db_thread.messages.is_empty()).then_some(permissions);
 
         let saved_selection = db_thread.model.map(|model| SelectedModel {
             provider: model.provider.into(),
@@ -1958,6 +2027,7 @@ impl Thread {
             ))),
             permissions,
             permissions_tx: watch::channel(permissions).0,
+            announced_permissions,
         }
     }
 
@@ -2634,7 +2704,10 @@ impl Thread {
                 Message::User(message) => {
                     self.request_token_usage.remove(&message.id);
                 }
-                Message::Agent(_) | Message::Resume | Message::Compaction(_) => {}
+                Message::Agent(_)
+                | Message::Resume
+                | Message::Compaction(_)
+                | Message::PermissionsChanged(_) => {}
             }
         }
         self.usage_predates_compaction =
@@ -3278,6 +3351,7 @@ impl Thread {
                     .ok_or_else(|| anyhow!(NoModelConfiguredError))?;
                 let provider = LanguageModelRegistry::read_global(cx).provider_for_model(&model);
                 this.refresh_turn_tools(cx);
+                this.announce_permissions_change(cx);
                 let request = this.build_completion_request(intent, cx)?;
                 this.current_request_token_usage = TokenUsage::default();
                 anyhow::Ok((model, provider, request))
@@ -4590,8 +4664,28 @@ impl Thread {
             .rev()
             .find_map(|message| match &**message {
                 Message::User(user_message) => Some(user_message),
-                Message::Agent(_) | Message::Resume | Message::Compaction(_) => None,
+                Message::Agent(_)
+                | Message::Resume
+                | Message::Compaction(_)
+                | Message::PermissionsChanged(_) => None,
             })
+    }
+
+    /// The notice goes before the next request rather than at the switch, which can land in
+    /// the middle of a response.
+    fn announce_permissions_change(&mut self, cx: &App) {
+        let permissions = self.permissions;
+        let previous = self.announced_permissions.replace(permissions);
+        if previous.is_none_or(|previous| previous == permissions) {
+            return;
+        }
+        let sandboxed =
+            sandboxing_enabled_for_project(self.project.read(cx), SandboxMode::from(permissions));
+        self.messages
+            .push(Arc::new(Message::PermissionsChanged(PermissionsChange {
+                permissions,
+                sandboxed,
+            })));
     }
 
     fn pending_message(&mut self) -> &mut AgentMessage {
@@ -4966,6 +5060,7 @@ impl Thread {
                 self.project.read(cx),
                 SandboxMode::from(self.permissions),
             ),
+            permissions: self.permissions,
             is_linux: cfg!(target_os = "linux"),
             is_windows: cfg!(target_os = "windows"),
         }
@@ -5452,7 +5547,7 @@ pub(crate) fn messages_to_markdown(messages: &[Arc<Message>]) -> String {
         match &**message {
             Message::User(_) => markdown.push_str("## User\n\n"),
             Message::Agent(_) => markdown.push_str("## Assistant\n\n"),
-            Message::Resume | Message::Compaction(_) => {}
+            Message::Resume | Message::Compaction(_) | Message::PermissionsChanged(_) => {}
         }
         markdown.push_str(&message.to_markdown());
     }

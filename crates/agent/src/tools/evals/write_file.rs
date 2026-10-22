@@ -203,6 +203,7 @@ impl WriteToolTest {
                 prompt_prefix: None,
                 prompt_suffix: None,
                 sandboxing: false,
+                permissions: agent_settings::AgentPermissions::FullAccess,
                 is_linux: cfg!(target_os = "linux"),
                 is_windows: cfg!(target_os = "windows"),
             };

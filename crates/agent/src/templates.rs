@@ -1,3 +1,4 @@
+use agent_settings::AgentPermissions;
 use anyhow::Result;
 use gpui::SharedString;
 use handlebars::Handlebars;
@@ -58,6 +59,10 @@ pub struct SystemPromptTemplate<'a> {
     /// request to relax them. Otherwise the prompt omits the sandbox
     /// section entirely.
     pub sandboxing: bool,
+    /// The thread's permissions, which decide what the sandbox section says
+    /// the model may write and request, and whether a read-only section is
+    /// rendered.
+    pub permissions: AgentPermissions,
     /// Whether the host is Linux. The writable-temp story differs by
     /// platform (Linux exposes an ephemeral `tmpfs` over `/tmp`; other
     /// platforms provide a persistent per-thread `$TMPDIR`), so the sandbox
@@ -113,6 +118,7 @@ mod tests {
             prompt_prefix: None,
             prompt_suffix: None,
             sandboxing: false,
+            permissions: AgentPermissions::Workspace,
             is_linux: false,
             is_windows: false,
         };
@@ -142,6 +148,7 @@ mod tests {
                 prompt_prefix,
                 prompt_suffix,
                 sandboxing: false,
+                permissions: AgentPermissions::Workspace,
                 is_linux: false,
                 is_windows: false,
             }
@@ -190,6 +197,7 @@ mod tests {
             prompt_prefix: None,
             prompt_suffix: None,
             sandboxing: false,
+            permissions: AgentPermissions::Workspace,
             is_linux: false,
             is_windows: false,
         };
@@ -221,6 +229,7 @@ mod tests {
             prompt_prefix: None,
             prompt_suffix: None,
             sandboxing: false,
+            permissions: AgentPermissions::Workspace,
             is_linux: false,
             is_windows: false,
         };
@@ -256,6 +265,7 @@ mod tests {
             prompt_prefix: None,
             prompt_suffix: None,
             sandboxing: true,
+            permissions: AgentPermissions::Workspace,
             is_linux: false,
             is_windows: false,
         };
@@ -301,6 +311,7 @@ mod tests {
             prompt_prefix: None,
             prompt_suffix: None,
             sandboxing: true,
+            permissions: AgentPermissions::Workspace,
             is_linux: true,
             is_windows: false,
         };
@@ -336,6 +347,7 @@ mod tests {
             prompt_prefix: None,
             prompt_suffix: None,
             sandboxing: true,
+            permissions: AgentPermissions::Workspace,
             is_linux: false,
             is_windows: true,
         };
@@ -366,6 +378,7 @@ mod tests {
             prompt_prefix: None,
             prompt_suffix: None,
             sandboxing: true,
+            permissions: AgentPermissions::Workspace,
             is_linux: false,
             is_windows: false,
         };
@@ -390,6 +403,7 @@ mod tests {
             prompt_prefix: None,
             prompt_suffix: None,
             sandboxing: true,
+            permissions: AgentPermissions::Workspace,
             is_linux: false,
             is_windows: false,
         };
@@ -398,6 +412,60 @@ mod tests {
 
         assert!(!rendered.contains("## Terminal sandbox"));
         assert!(!rendered.contains("fs_write_paths"));
+    }
+
+    #[test]
+    fn test_system_prompt_describes_each_permissions() {
+        use prompt_store::{ProjectContext, WorktreeContext};
+
+        let project = ProjectContext::new(vec![WorktreeContext {
+            root_name: "alpha".to_string(),
+            abs_path: std::path::Path::new("/tmp/alpha").into(),
+            rules_file: None,
+        }]);
+        let render = |permissions: AgentPermissions, sandboxing: bool| {
+            SystemPromptTemplate {
+                project: &project,
+                available_tools: vec!["edit_file".into(), "terminal".into()],
+                model_name: None,
+                date: "2026-01-01".to_string(),
+                user_agents_md: None,
+                prompt_prefix: None,
+                prompt_suffix: None,
+                sandboxing,
+                permissions,
+                is_linux: false,
+                is_windows: false,
+            }
+            .render(&Templates::new())
+            .unwrap()
+        };
+
+        let read_only = render(AgentPermissions::ReadOnly, true);
+        assert!(read_only.contains("## Read-only Permissions"));
+        assert!(!read_only.contains("`terminal` commands are refused"));
+        assert!(read_only.contains("## Terminal sandbox"));
+        assert!(read_only.contains("The project directories and everything else"));
+        assert!(!read_only.contains("along with these project directories"));
+        assert!(read_only.contains("you can't request more access"));
+        assert!(!read_only.contains("You can request elevated permissions"));
+        assert!(read_only.contains("git --no-optional-locks status"));
+        assert!(read_only.contains("These sandbox settings follow this thread's permissions"));
+
+        let read_only_unsandboxed = render(AgentPermissions::ReadOnly, false);
+        assert!(read_only_unsandboxed.contains("`terminal` commands are refused"));
+        assert!(!read_only_unsandboxed.contains("## Terminal sandbox"));
+
+        let workspace = render(AgentPermissions::Workspace, true);
+        assert!(!workspace.contains("## Read-only Permissions"));
+        assert!(workspace.contains("along with these project directories"));
+        assert!(workspace.contains("You can request elevated permissions"));
+        assert!(workspace.contains("These sandbox settings follow this thread's permissions"));
+
+        // Full access exposes the unsandboxed `terminal`, so there's no sandbox to describe.
+        let full_access = render(AgentPermissions::FullAccess, false);
+        assert!(!full_access.contains("## Read-only Permissions"));
+        assert!(!full_access.contains("## Terminal sandbox"));
     }
 
     #[test]
@@ -412,6 +480,7 @@ mod tests {
             prompt_prefix: None,
             prompt_suffix: None,
             sandboxing: false,
+            permissions: AgentPermissions::Workspace,
             is_linux: false,
             is_windows: false,
         };
@@ -432,6 +501,7 @@ mod tests {
             prompt_prefix: None,
             prompt_suffix: None,
             sandboxing: false,
+            permissions: AgentPermissions::Workspace,
             is_linux: false,
             is_windows: false,
         };
