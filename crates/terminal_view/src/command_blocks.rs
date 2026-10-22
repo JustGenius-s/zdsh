@@ -8,6 +8,8 @@ use terminal::prompt_context::PromptContext;
 use terminal::{CommandBlock, CommandInputState};
 use util::paths::PathExt as _;
 
+pub(super) const COMMAND_CONTENT_INSET: Rems = gpui::rems(0.75);
+
 pub(super) struct CommandBlockUi {
     input: Entity<Editor>,
     input_style: Option<gpui::TextStyleRefinement>,
@@ -15,6 +17,10 @@ pub(super) struct CommandBlockUi {
     scroll: ScrollHandle,
     state: CommandInputState,
     history: Vec<String>,
+    session_history: Vec<String>,
+    history_generation: Option<u64>,
+    history_task: Option<Task<()>>,
+    history_error: Option<String>,
     history_position: Option<usize>,
     draft: String,
     error: Option<String>,
@@ -46,6 +52,7 @@ impl CommandBlockUi {
     pub fn new(window: &mut Window, cx: &mut Context<TerminalView>) -> Self {
         let input = cx.new(|cx| {
             let mut editor = Editor::auto_height(1, 6, window, cx);
+            editor.set_offset_content(false, cx);
             editor.set_placeholder_text("Type a command", window, cx);
             editor.set_read_only(true);
             editor
@@ -87,6 +94,10 @@ impl CommandBlockUi {
             scroll: ScrollHandle::new(),
             state: CommandInputState::Starting,
             history: Vec::new(),
+            session_history: Vec::new(),
+            history_generation: None,
+            history_task: None,
+            history_error: None,
             history_position: None,
             draft: String::new(),
             error: None,
@@ -268,10 +279,16 @@ impl TerminalView {
             terminal.submit_command(command.clone(), cx)
         }) {
             Ok(()) => {
+                if ui.session_history.last() != Some(&command) {
+                    ui.session_history.push(command.clone());
+                }
                 if ui.history.last() != Some(&command) {
                     ui.history.push(command);
                 }
                 let limit = self.terminal.read(cx).command_history_line_limit();
+                if ui.session_history.len() > limit {
+                    ui.session_history.drain(..ui.session_history.len() - limit);
+                }
                 if ui.history.len() > limit {
                     ui.history.drain(..ui.history.len() - limit);
                 }
@@ -339,20 +356,31 @@ impl TerminalView {
     ) -> AnyElement {
         self.update_command_ui(window, cx);
         self.refresh_prompt_context(cx);
-        let suggestions = self.render_command_suggestions(cx);
+        self.refresh_command_history(window, cx);
+        let suggestions = self.render_command_suggestions(window, cx);
         let Some(ui) = &self.command_ui else {
             return div().into_any_element();
         };
-        let state = self.terminal.read(cx).command_input_state();
+        let state = ui.state;
         let input = ui.input.clone();
         let error = ui.error.clone();
         let completion_error = ui.completion_error.clone();
+        let history_error = ui.history_error.clone();
         let ready = state == CommandInputState::Ready;
         let running = state == CommandInputState::Running;
         let background = cx.theme().colors().terminal_background;
         let border = cx.theme().colors().border;
         let text_style = terminal_text_style(cx);
+        let input_style = input.update(cx, |editor, cx| {
+            let mut style = editor.style(cx).clone();
+            style.text = text_style.clone();
+            style
+        });
+        let input = editor::EditorElement::new(&input, input_style);
+        let content_inset = window.pixel_snap(COMMAND_CONTENT_INSET.to_pixels(window.rem_size()));
         let line_height = text_style.line_height_in_pixels(window.rem_size());
+        let header_height = line_height.max(IconSize::Small.square(window, cx))
+            + rems(0.5).to_pixels(window.rem_size());
         let blocks = ui
             .blocks
             .iter()
@@ -383,8 +411,9 @@ impl TerminalView {
                         h_flex()
                             .w_full()
                             .min_w_0()
+                            .min_h(header_height)
                             .gap_2()
-                            .px_3()
+                            .px(content_inset)
                             .py_1()
                             .child(
                                 div()
@@ -493,6 +522,7 @@ impl TerminalView {
             })
             .collect::<Vec<_>>();
         let command = self.terminal.read(cx).running_command();
+        let output_lines = self.terminal.read(cx).running_command_output_lines();
         let directory = if ui.prompt_context.directory.is_empty() {
             self.terminal
                 .read(cx)
@@ -519,10 +549,16 @@ impl TerminalView {
                     this.child(Icon::new(icon).size(IconSize::XSmall).color(color))
                 })
                 .child(
-                    Label::new(label)
-                        .size(LabelSize::Small)
-                        .color(color)
-                        .truncate(),
+                    div()
+                        .min_w_0()
+                        .font(text_style.font())
+                        .text_size(text_style.font_size)
+                        .line_height(text_style.line_height)
+                        .text_color(color.color(cx))
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(label),
                 )
         };
         let context_bar = h_flex()
@@ -596,9 +632,14 @@ impl TerminalView {
                             v_flex()
                                 .w_full()
                                 .flex_none()
+                                .border_b_1()
+                                .border_color(cx.theme().colors().border_variant)
                                 .child(
                                     h_flex()
-                                        .px_3()
+                                        .w_full()
+                                        .min_w_0()
+                                        .min_h(header_height)
+                                        .px(content_inset)
                                         .py_1()
                                         .gap_2()
                                         .child(
@@ -628,18 +669,29 @@ impl TerminalView {
                                             )
                                         }),
                                 )
-                                .child(div().w_full().h(line_height * 18.).child(
-                                    TerminalElement::new(
-                                        self.terminal.clone(),
-                                        cx.entity(),
-                                        self.workspace.clone(),
-                                        self.focus_handle.clone(),
-                                        focused,
-                                        self.should_show_cursor(focused, cx),
-                                        None,
-                                        TerminalMode::Standalone,
-                                    ),
-                                )),
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h(line_height * output_lines.clamp(1, 18) as f32)
+                                        .overflow_hidden()
+                                        .child(
+                                            // Keep the PTY viewport stable while revealing only its used rows.
+                                            div()
+                                                .w_full()
+                                                .h(line_height * 18.)
+                                                .when(output_lines == 0, |this| this.invisible())
+                                                .child(TerminalElement::new(
+                                                    self.terminal.clone(),
+                                                    cx.entity(),
+                                                    self.workspace.clone(),
+                                                    self.focus_handle.clone(),
+                                                    focused,
+                                                    self.should_show_cursor(focused, cx),
+                                                    None,
+                                                    TerminalMode::Standalone,
+                                                )),
+                                        ),
+                                ),
                         )
                     })
                     .when(state == CommandInputState::Exited, |this| {
@@ -647,32 +699,46 @@ impl TerminalView {
                             Label::new("Shell exited. Open a new terminal to continue.")
                                 .color(Color::Muted),
                         )
-                    }),
-            )
-            .child(
-                v_flex()
-                    .flex_none()
-                    .w_full()
-                    .border_t_1()
-                    .border_color(border)
-                    .px_3()
-                    .py_2()
-                    .gap_2()
-                    .child(context_bar)
-                    .child(
-                        div()
-                            .relative()
-                            .w_full()
-                            .min_w_0()
-                            .when(!ready, |this| this.opacity(0.5))
-                            .child(input)
-                            .child(suggestions),
-                    )
-                    .when_some(completion_error, |this, error| {
-                        this.child(Label::new(error).size(LabelSize::Small).color(Color::Error))
                     })
-                    .when_some(error, |this, error| {
-                        this.child(Label::new(error).color(Color::Error))
+                    .when(ready || running, |this| {
+                        this.child(
+                            v_flex()
+                                .id("terminal-command-input")
+                                .flex_none()
+                                .w_full()
+                                // Preserve its layout while running so restoring the
+                                // prompt does not move the output or the scroll anchor.
+                                .when(!ready, |this| this.invisible())
+                                .px(content_inset)
+                                .py_2()
+                                .gap_2()
+                                .child(context_bar)
+                                .child(
+                                    div()
+                                        .relative()
+                                        .w_full()
+                                        .min_w_0()
+                                        .child(input)
+                                        .child(suggestions),
+                                )
+                                .when_some(history_error, |this, error| {
+                                    this.child(
+                                        Label::new(error)
+                                            .size(LabelSize::Small)
+                                            .color(Color::Error),
+                                    )
+                                })
+                                .when_some(completion_error, |this, error| {
+                                    this.child(
+                                        Label::new(error)
+                                            .size(LabelSize::Small)
+                                            .color(Color::Error),
+                                    )
+                                })
+                                .when_some(error, |this, error| {
+                                    this.child(Label::new(error).color(Color::Error))
+                                }),
+                        )
                     }),
             )
             .into_any_element()

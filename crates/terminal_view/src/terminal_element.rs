@@ -1221,10 +1221,22 @@ impl Element for TerminalElement {
                         .advance(font_id, font_pixels, 'm')
                         .unwrap()
                         .width;
-                    gutter = cell_width;
+                    let command_blocks = matches!(self.mode, TerminalMode::CommandOutput)
+                        || (self.terminal_view.read(cx).command_ui.is_some()
+                            && !self.terminal.read(cx).command_uses_alternate_screen());
+                    gutter = if command_blocks {
+                        window.pixel_snap(
+                            crate::command_blocks::COMMAND_CONTENT_INSET.to_pixels(rem_size),
+                        )
+                    } else {
+                        cell_width
+                    };
 
                     let mut size = bounds.size;
                     size.width -= gutter;
+                    if command_blocks {
+                        size.width -= gutter;
+                    }
                     let available_height = size.height;
 
                     // https://github.com/zed-industries/zed/issues/2750

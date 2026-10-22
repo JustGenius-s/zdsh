@@ -1,4 +1,5 @@
 mod command_blocks;
+pub mod command_history;
 pub mod completions;
 mod mappings;
 pub mod prompt_context;

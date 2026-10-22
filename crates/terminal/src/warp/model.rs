@@ -21,6 +21,8 @@ use terminal_core::{
 pub(crate) struct BackendTerm {
     pub shell: Option<crate::command_blocks::ShellIntegration>,
     pub finished_commands: VecDeque<crate::command_blocks::FinishedCommand>,
+    pub command_blocks_cleared: bool,
+    command_screen_cleared: bool,
     pub primary: GridHandler,
     pub alternate: GridHandler,
     pub alternate_active: bool,
@@ -54,6 +56,8 @@ impl BackendTerm {
         Self {
             shell: None,
             finished_commands: VecDeque::new(),
+            command_blocks_cleared: false,
+            command_screen_cleared: false,
             primary: Self::new_grid(size, history_limit, listener.clone(), false),
             alternate: Self::new_grid(size, 0, listener.clone(), true),
             alternate_active: false,
@@ -81,6 +85,7 @@ impl BackendTerm {
                 return;
             }
             shell.started = Some(std::time::Instant::now());
+            self.command_screen_cleared = false;
             self.primary =
                 Self::new_grid(self.size, self.history_limit, self.listener.clone(), false);
             self.primary
@@ -94,6 +99,9 @@ impl BackendTerm {
     pub fn finish_command(&mut self, exit_code: Option<i32>) {
         if let Some(shell) = &mut self.shell {
             if let Some(command) = shell.command.take() {
+                if self.command_screen_cleared {
+                    self.primary.set_track_content_length(true);
+                }
                 let started = shell.started.take();
                 self.finished_commands
                     .push_back(crate::command_blocks::FinishedCommand {
@@ -101,6 +109,7 @@ impl BackendTerm {
                         directory: shell.directory.take(),
                         duration: started.map(|time| time.elapsed()).unwrap_or_default(),
                         exit_code,
+                        screen_cleared: self.command_screen_cleared,
                         grid: if started.is_some() {
                             self.primary.clone()
                         } else {
@@ -528,7 +537,26 @@ impl Handler for BackendTerm {
     }
     fn clear_screen(&mut self, argument1: ansi::ClearMode) {
         self.selection = None;
-        self.grid_mut().clear_screen(argument1)
+        self.grid_mut().clear_screen(argument1);
+        if !self.alternate_active
+            && self
+                .shell
+                .as_ref()
+                .is_some_and(|shell| shell.started.is_some())
+            && matches!(
+                argument1,
+                ansi::ClearMode::All | ansi::ClearMode::Saved | ansi::ClearMode::ResetAndClear
+            )
+        {
+            self.command_blocks_cleared = true;
+            self.command_screen_cleared = true;
+            self.finished_commands.clear();
+            // A primary-screen erase moves visible rows into scrollback. Drop
+            // those rows after the erase without changing normal resize behavior.
+            self.primary.clear_screen(ansi::ClearMode::Saved);
+            self.display_offset = 0;
+            self.vi_cursor = None;
+        }
     }
     fn clear_tabs(&mut self, argument1: ansi::TabulationClearMode) {
         self.grid_mut().clear_tabs(argument1)
@@ -604,5 +632,102 @@ impl Handler for BackendTerm {
     }
     fn on_finish_byte_processing(&mut self, input: &ProcessorInput<'_>) {
         self.grid_mut().on_finish_byte_processing(input);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::{Context as _, Result};
+
+    fn command_terminal() -> Result<BackendTerm> {
+        let (sender, _receiver) = futures::channel::mpsc::unbounded();
+        let mut size = super::super::size_info(crate::TerminalBounds::default());
+        size.rows = 18;
+        size.columns = 80;
+        let mut term = BackendTerm::new(size, 1000, sender, 0);
+        term.shell = Some(crate::command_blocks::ShellIntegration {
+            session_id: terminal_core::session_id::generate_session_id(),
+            _startup: tempfile::tempdir()?,
+            ready: false,
+            prompt: None,
+            prompt_generation: 0,
+            command: Some("clear".into()),
+            directory: None,
+            started: None,
+        });
+        term.begin_command();
+        Ok(term)
+    }
+
+    #[test]
+    fn command_clear_discards_erased_rows_and_preserves_subsequent_output() -> Result<()> {
+        for suffix in ["", "after clear"] {
+            let mut term = command_terminal()?;
+            let mut processor = Processor::new();
+            processor.advance(&mut term, b"old output\r\n\x1b[H\x1b[2J\x1b[3J");
+            processor.advance(&mut term, suffix.as_bytes());
+            assert!(term.command_blocks_cleared);
+            term.finish_command(Some(0));
+            let block = term
+                .finished_commands
+                .back()
+                .context("missing output block")?;
+            assert!(block.screen_cleared);
+            assert_eq!(
+                block.grid.visible_content_len_for_trimming(),
+                (!suffix.is_empty()).then_some(1)
+            );
+            assert!(!super::super::content_text(&term).contains("old output"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn command_alternate_screen_clear_preserves_history() -> Result<()> {
+        let mut term = command_terminal()?;
+        let mut processor = Processor::new();
+        processor.advance(
+            &mut term,
+            b"keep output\x1b[?1049h\x1b[H\x1b[2J\x1b[3J\x1b[?1049l",
+        );
+        assert!(!term.command_blocks_cleared);
+        term.finish_command(Some(0));
+        let block = term
+            .finished_commands
+            .back()
+            .context("missing output block")?;
+        assert!(!block.screen_cleared);
+        assert!(super::super::content_text(&term).contains("keep output"));
+        Ok(())
+    }
+
+    #[test]
+    fn command_output_survives_snapshot_resize() -> Result<()> {
+        for output in ["/Users/example/project\r\n", "one  two\r\nthree  four\r\n"] {
+            let mut term = command_terminal()?;
+            Processor::new().advance(&mut term, output.as_bytes());
+            term.finish_command(Some(0));
+            let block = term
+                .finished_commands
+                .pop_front()
+                .context("missing output block")?;
+            let (sender, _receiver) = futures::channel::mpsc::unbounded();
+            let mut snapshot = BackendTerm::new(term.size, 1000, sender, 0);
+            snapshot.primary = block.grid;
+            let expected = super::super::content_text(&snapshot);
+            assert!(expected.contains(output.lines().next().context("missing first line")?.trim()));
+            for columns in [80, 40, 100] {
+                let mut size = term.size;
+                size.rows = super::super::used_lines(&snapshot);
+                size.columns = columns;
+                snapshot.resize(size);
+                assert_eq!(
+                    super::super::content_text(&snapshot).trim(),
+                    expected.trim()
+                );
+            }
+        }
+        Ok(())
     }
 }

@@ -46,6 +46,7 @@ pub(crate) struct FinishedCommand {
     pub directory: Option<PathBuf>,
     pub duration: Duration,
     pub exit_code: Option<i32>,
+    pub screen_cleared: bool,
     pub grid: GridHandler,
     pub colors: [Option<crate::Rgb>; 269],
 }
@@ -63,7 +64,8 @@ impl Terminal {
         };
         if self.child_exited.is_some() || !self.has_active_pty_resources() {
             CommandInputState::Exited
-        } else if shell.command.is_some() {
+        } else if shell.command.is_some() || !term.finished_commands.is_empty() {
+            // Keep the input hidden until the foreground has installed the completed output.
             CommandInputState::Running
         } else if shell.ready {
             CommandInputState::Ready
@@ -77,11 +79,32 @@ impl Terminal {
     }
 
     pub fn running_command(&self) -> Option<String> {
-        self.term
-            .lock()
-            .shell
+        let term = self.term.lock();
+        term.shell
             .as_ref()
             .and_then(|shell| shell.command.clone())
+            .or_else(|| {
+                term.finished_commands
+                    .back()
+                    .map(|block| block.command.clone())
+            })
+    }
+
+    pub fn running_command_output_lines(&self) -> usize {
+        let term = self.term.lock();
+        if term
+            .shell
+            .as_ref()
+            .is_some_and(|shell| shell.started.is_some())
+            || !term.finished_commands.is_empty()
+        {
+            crate::warp::used_lines(&term)
+                .min(crate::warp::total_lines(&term))
+                .max(1)
+        } else {
+            // The grid still holds the previous command until the preexec hook resets it.
+            0
+        }
     }
 
     pub fn command_uses_alternate_screen(&self) -> bool {
@@ -134,7 +157,9 @@ impl Terminal {
         }
         let hook = format!(r#"{{"hook":"Preexec","value":{{"session_id":{id},"command":""}}}}"#);
         let hook: String = hook.bytes().map(|byte| format!("{byte:02x}")).collect();
-        let input = format!(r#" builtin printf '\033Pd{hook}\033\\'; builtin eval $'{quoted}'"#);
+        let input = format!(
+            r#" builtin printf '\033Pd{hook}\033\\'; __zdsh_record_history $'{quoted}'; builtin eval $'{quoted}'"#
+        );
         self.input(format!("{input}\r").into_bytes());
         cx.emit(Event::Wakeup);
         Ok(())
@@ -146,11 +171,28 @@ impl Terminal {
     }
 
     pub(crate) fn collect_command_blocks(&mut self, cx: &mut Context<Self>) {
-        let completed = std::mem::take(&mut self.term.lock().finished_commands);
+        let (completed, cleared) = {
+            let mut term = self.term.lock();
+            (
+                std::mem::take(&mut term.finished_commands),
+                std::mem::take(&mut term.command_blocks_cleared),
+            )
+        };
+        if cleared {
+            self.command_blocks.clear();
+        }
         if completed.is_empty() {
             return;
         }
         for block in completed {
+            // Erased cells still occupy grid rows; a successful clear should
+            // leave the next prompt, not a full-height empty output block.
+            if block.screen_cleared
+                && block.exit_code == Some(0)
+                && block.grid.visible_content_len_for_trimming().is_none()
+            {
+                continue;
+            }
             let mut builder = TerminalBuilder::new_display_only_with_bounds(
                 self.template.cursor_shape,
                 self.template.alternate_scroll,

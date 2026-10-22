@@ -115,6 +115,76 @@ impl CommandBlockUi {
 }
 
 impl TerminalView {
+    pub(super) fn refresh_command_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ui) = &mut self.command_ui else {
+            return;
+        };
+        if self.terminal.read(cx).command_input_state() != CommandInputState::Ready {
+            ui.history_task = None;
+            ui.history_generation = None;
+            return;
+        }
+        let Some(request) = self.terminal.read(cx).command_history_request() else {
+            return;
+        };
+        let generation = request.generation;
+        if ui.history_generation == Some(generation) {
+            return;
+        }
+        ui.history_generation = Some(generation);
+        let executor = cx.background_executor().clone();
+        ui.history_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = executor.spawn(async move { request.load() }).await;
+            this.update_in(cx, |this, window, cx| {
+                if this.terminal.read(cx).command_input_state() != CommandInputState::Ready
+                    || this
+                        .terminal
+                        .read(cx)
+                        .command_history_request()
+                        .map(|request| request.generation)
+                        != Some(generation)
+                {
+                    return;
+                }
+                let limit = this.terminal.read(cx).command_history_line_limit();
+                let Some(ui) = &mut this.command_ui else {
+                    return;
+                };
+                ui.history_task = None;
+                match result {
+                    Ok(mut history) => {
+                        let selected = ui
+                            .history_position
+                            .and_then(|position| ui.history.get(position))
+                            .cloned();
+                        history.extend(ui.session_history.iter().cloned());
+                        let mut seen = std::collections::HashSet::new();
+                        let mut history: Vec<_> = history
+                            .into_iter()
+                            .rev()
+                            .filter(|command| seen.insert(command.clone()))
+                            .take(limit)
+                            .collect();
+                        history.reverse();
+                        ui.history = history;
+                        ui.history_position = selected.and_then(|selected| {
+                            ui.history.iter().rposition(|command| *command == selected)
+                        });
+                        ui.history_error = None;
+                        ui.completion_query = None;
+                        this.refresh_command_suggestions(window, cx);
+                    }
+                    Err(error) => {
+                        log::error!("Failed to load terminal history: {error:#}");
+                        ui.history_error = Some(format!("Failed to load shell history: {error:#}"));
+                    }
+                }
+                cx.notify();
+            })
+            .log_err();
+        }));
+    }
+
     pub(super) fn dismiss_command_suggestions(&mut self, cx: &mut Context<Self>) {
         let Some(ui) = &mut self.command_ui else {
             return;
@@ -502,7 +572,11 @@ impl TerminalView {
         false
     }
 
-    pub(super) fn render_command_suggestions(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_command_suggestions(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(ui) = &self.command_ui else {
             return div().into_any_element();
         };
@@ -512,10 +586,24 @@ impl TerminalView {
         let Some(bounds) = ui.input.read(cx).last_bounds().copied() else {
             return div().into_any_element();
         };
+        let menu_height = px(28. * ui.completions.len().min(6) as f32 + 8.);
+        let space_below = window.viewport_size().height - bounds.bottom() - px(8.);
+        let open_below = space_below >= menu_height || space_below >= bounds.top();
+        let (position, anchor) = if open_below {
+            (
+                bounds.bottom_left() + gpui::point(px(0.), px(4.)),
+                gpui::Anchor::TopLeft,
+            )
+        } else {
+            (
+                bounds.origin - gpui::point(px(0.), px(4.)),
+                gpui::Anchor::BottomLeft,
+            )
+        };
         gpui::deferred(
             gpui::anchored()
-                .position(bounds.origin - gpui::point(px(0.), px(4.)))
-                .anchor(gpui::Anchor::BottomLeft)
+                .position(position)
+                .anchor(anchor)
                 .snap_to_window_with_margin(px(8.))
                 .child(
                     v_flex()
