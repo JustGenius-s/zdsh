@@ -280,7 +280,7 @@ impl ThreadView {
         cx.notify();
     }
 
-    fn render_unfolded_entry(
+    pub(super) fn render_unfolded_entry(
         &self,
         entry_ix: usize,
         total_entries: usize,
@@ -1513,6 +1513,7 @@ pub(super) struct ActivityRow {
     id: ElementId,
     action: SharedString,
     details: Option<SharedString>,
+    icon: Option<IconName>,
     diff_stats: Option<DiffStats>,
     meta: Vec<AnyElement>,
     running: bool,
@@ -1529,6 +1530,7 @@ impl ActivityRow {
             id: id.into(),
             action: action.into(),
             details: None,
+            icon: None,
             diff_stats: None,
             meta: Vec::new(),
             running: false,
@@ -1554,6 +1556,11 @@ impl ActivityRow {
     pub(super) fn details(mut self, details: impl Into<SharedString>) -> Self {
         let details = details.into();
         self.details = (!details.is_empty()).then_some(details);
+        self
+    }
+
+    pub(super) fn icon(mut self, icon: IconName) -> Self {
+        self.icon = Some(icon);
         self
     }
 
@@ -1630,7 +1637,16 @@ impl RenderOnce for ActivityRow {
             .gap_1()
             .text_size(font_size)
             .line_height(relative(LINE_HEIGHT))
+            .font_weight(FontWeight::NORMAL)
             .when(clickable, |this| this.cursor_pointer())
+            .when_some(self.icon, |this, icon| {
+                this.child(
+                    kit_icon(icon)
+                        .size(font_size)
+                        .flex_none()
+                        .text_color(shades.tertiary),
+                )
+            })
             .child(
                 div()
                     .id("action")
@@ -1676,7 +1692,7 @@ impl RenderOnce for ActivityRow {
             .children(
                 self.meta
                     .into_iter()
-                    .map(|meta| div().flex_none().child(meta)),
+                    .map(|meta| div().flex_none().text_color(shades.tertiary).child(meta)),
             )
             .when_some(self.expanded, |this, expanded| {
                 let chevron = if expanded {

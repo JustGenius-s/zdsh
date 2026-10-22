@@ -95,9 +95,65 @@ impl GrepTool {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum GrepToolOutput {
+    Matches {
+        text: String,
+        content: Vec<acp::ToolCallContent>,
+        locations: Vec<acp::ToolCallLocation>,
+    },
+    // Existing histories stored only the model-facing text.
+    Text(String),
+}
+
+impl GrepToolOutput {
+    fn text(&self) -> &str {
+        match self {
+            Self::Matches { text, .. } | Self::Text(text) => text,
+        }
+    }
+
+    fn emit_update(&self, event_stream: &ToolCallEventStream) {
+        match self {
+            Self::Matches {
+                content, locations, ..
+            } => {
+                event_stream.update_fields(|update| {
+                    update
+                        .title(self.text().lines().next().unwrap_or_default())
+                        .content(content.clone())
+                        .locations(locations.clone())
+                });
+            }
+            Self::Text(text) => {
+                event_stream.update_fields(|update| {
+                    update
+                        .title(self.text().lines().next().unwrap_or_default())
+                        .content(vec![acp::ToolCallContent::from(text.clone())])
+                });
+            }
+        }
+    }
+}
+
+impl From<String> for GrepToolOutput {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
+}
+
+impl From<GrepToolOutput> for language_model::LanguageModelToolResultContent {
+    fn from(output: GrepToolOutput) -> Self {
+        match output {
+            GrepToolOutput::Matches { text, .. } | GrepToolOutput::Text(text) => text.into(),
+        }
+    }
+}
+
 impl AgentTool for GrepTool {
     type Input = GrepToolInput;
-    type Output = String;
+    type Output = GrepToolOutput;
 
     const NAME: &'static str = "grep";
 
@@ -204,7 +260,7 @@ impl AgentTool for GrepTool {
                 let search_result = futures::select! {
                     result = rx.next().fuse() => result,
                     _ = event_stream.cancelled_by_user().fuse() => {
-                        return Err("Search cancelled by user".to_string());
+                        return Err("Search cancelled by user".to_string().into());
                     }
                 };
 
@@ -381,27 +437,37 @@ impl AgentTool for GrepTool {
                 }
             }
 
-            if !content.is_empty() {
-                event_stream.update_fields(
-                    |update| update
-                        .content(content)
-                        .locations(locations),
-                );
-            }
-
-            if matches_found == 0 {
-                Ok("No matches found".into())
+            let text = if matches_found == 0 {
+                "No matches found".to_string()
             } else if has_more_matches {
-                Ok(format!(
+                format!(
                     "Showing matches {}-{} (there were more matches found; use offset: {} to see next page):\n{output}",
                     input.offset + 1,
                     input.offset + matches_found,
                     input.offset + RESULTS_PER_PAGE,
-                ))
+                )
             } else {
-                Ok(format!("Found {matches_found} matches:\n{output}"))
-            }
+                format!("Found {matches_found} matches:\n{output}")
+            };
+            let output = if content.is_empty() {
+                GrepToolOutput::Text(text)
+            } else {
+                GrepToolOutput::Matches { text, content, locations }
+            };
+            output.emit_update(&event_stream);
+            Ok(output)
         })
+    }
+
+    fn replay(
+        &self,
+        _input: Self::Input,
+        output: Self::Output,
+        event_stream: ToolCallEventStream,
+        _cx: &mut App,
+    ) -> anyhow::Result<()> {
+        output.emit_update(&event_stream);
+        Ok(())
     }
 }
 
@@ -625,6 +691,7 @@ mod tests {
         };
         let task = cx.update(|cx| tool.run(ToolInput::resolved(input), event_stream, cx));
         let output = task.await.expect("grep tool should succeed");
+        let output = output.text();
         let update = events.expect_update_fields().await;
 
         // Model-facing output is unchanged: matches are rendered as markdown, but
@@ -1123,13 +1190,14 @@ mod tests {
 
         match task.await {
             Ok(result) => {
+                let result = result.text().to_string();
                 if cfg!(windows) {
                     result.replace("root\\", "root/")
                 } else {
                     result
                 }
             }
-            Err(e) => panic!("Failed to run grep tool: {}", e),
+            Err(e) => panic!("Failed to run grep tool: {}", e.text()),
         }
     }
 

@@ -4,10 +4,11 @@ use super::transcript::{
 };
 use super::*;
 use crate::entry_view_state::ActivityGroup;
-use gpui::{AnyView, HighlightStyle, StyledText};
+use gpui::{HighlightStyle, StyledText};
 use gpui_kit::component::{
     Disableable as _, Icon as KitIcon, Size as KitSize, Theme as KitTheme,
     button::{Button as KitButton, ButtonVariant},
+    hover_card::HoverCard,
     shimmer::ShimmerText,
     skeleton::Skeleton,
     spinner::Spinner,
@@ -44,7 +45,7 @@ impl ThreadView {
         )));
 
         div().w_full().id(container_id).map(|this| {
-            if tool_call.is_subagent() {
+            if tool_call.is_subagent() && tool_call.authorization_id().is_none() {
                 this.child(
                     self.render_subagent_tool_call(
                         active_session_id,
@@ -55,6 +56,7 @@ impl ThreadView {
                             .as_ref()
                             .map(|i| i.session_id.clone()),
                         focus_handle,
+                        layout,
                         window,
                         cx,
                     ),
@@ -106,11 +108,8 @@ impl ThreadView {
         })
     }
 
-    /// Whether the tool call shows as one line in the transcript rather than as a card, which
-    /// edits, commands, and anything awaiting confirmation get.
     fn is_activity_tool_call(tool_call: &ToolCall) -> bool {
         !Self::is_edit_tool_call(tool_call)
-            && !matches!(tool_call.kind(), acp_v2::ToolKind::Execute)
             && !matches!(tool_call.status(), ToolCallStatus::WaitingForConfirmation)
     }
 
@@ -290,15 +289,17 @@ impl ThreadView {
 
     fn render_activity_tool_call(
         &self,
-        active_session_id: &acp_v2::SessionId,
+        _active_session_id: &acp_v2::SessionId,
         entry_ix: usize,
         tool_call: &ToolCall,
-        focus_handle: &FocusHandle,
+        _focus_handle: &FocusHandle,
         layout: ToolCallLayout,
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
         let is_read = matches!(tool_call.kind(), acp_v2::ToolKind::Read);
+        let is_file_read = tool_call.tool_name.as_deref() == Some("read_file")
+            || (tool_call.tool_name.is_none() && is_read && !tool_call.locations.is_empty());
         let has_location =
             tool_call.locations.len() == 1 || (is_read && !tool_call.locations.is_empty());
         let failed_or_canceled = matches!(
@@ -310,9 +311,10 @@ impl ThreadView {
             ToolCallStatus::Pending | ToolCallStatus::InProgress
         );
         let has_image_content = tool_call.content().iter().any(|c| c.image().is_some());
-        let should_show_raw_input = !has_image_content;
-        // A read opens its file instead of showing what it read, unless it failed, to show why.
-        let shows_content = !is_read || failed_or_canceled;
+        let should_show_raw_input = !has_image_content && tool_call.raw_input_markdown.is_some();
+        // Only successful text-file reads navigate directly; directories, diagnostics and
+        // images also use the Read kind, but their results need to remain inspectable.
+        let shows_content = !is_file_read || has_image_content || failed_or_canceled;
         let has_content = shows_content
             && (!tool_call.content().is_empty()
                 || (should_show_raw_input && tool_call.raw_input.is_some()));
@@ -325,24 +327,35 @@ impl ThreadView {
         let read_file_name = tool_call
             .locations
             .first()
-            .filter(|_| is_read)
+            .filter(|_| is_file_read)
             .and_then(|location| location.path.file_name())
             .map(|file_name| file_name.to_string_lossy().into_owned());
         let row_id = ("tool-call-activity", entry_ix);
-        let row = match (native_tool_row_label(tool_call, running), read_file_name) {
-            (Some((action, details)), _) => {
-                ActivityRow::new(row_id, action).details(details.unwrap_or_default())
-            }
-            (None, Some(file_name)) => {
-                ActivityRow::new(row_id, if running { "Reading" } else { "Read" })
-                    .details(file_name)
-            }
-            (None, None) => {
-                ActivityRow::from_label(row_id, &markdown_line(tool_call.label.read(cx)).0)
+        let row = if matches!(tool_call.kind(), acp_v2::ToolKind::Execute) {
+            ActivityRow::new(row_id, command_verb(false, running))
+                .details(
+                    command_description(tool_call).unwrap_or_else(|| command_line(tool_call, cx)),
+                )
+                .icon(IconName::Terminal)
+        } else {
+            match (native_tool_row_label(tool_call, running), read_file_name) {
+                (Some((action, details)), _) => {
+                    ActivityRow::new(row_id, action).details(details.unwrap_or_default())
+                }
+                (None, Some(file_name)) => {
+                    ActivityRow::new(row_id, if running { "Reading" } else { "Read" })
+                        .details(file_name)
+                }
+                (None, None) => {
+                    ActivityRow::from_label(row_id, &markdown_line(tool_call.label.read(cx)).0)
+                }
             }
         }
         .running(running)
         .failed(failed_or_canceled)
+        .when_some(tool_result_summary(tool_call), |row, summary| {
+            row.meta(summary)
+        })
         .map(|row| {
             if has_content {
                 row.expanded(is_open).on_click(cx.listener({
@@ -376,87 +389,87 @@ impl ThreadView {
             )
         });
 
-        let input_output_header = |label: SharedString| {
-            Label::new(label)
-                .size(LabelSize::XSmall)
-                .color(Color::Muted)
-                .buffer_font(cx)
+        let row = if !running && !is_open && has_content && supports_result_preview(tool_call) {
+            let owner = cx.weak_entity();
+            let tool_call_id = tool_call.id.clone();
+            HoverCard::new(("tool-result-preview", entry_ix))
+                .anchor(gpui::Anchor::TopLeft)
+                .w(px(360.))
+                .p_1()
+                .trigger(row)
+                .content(move |_, window, cx| {
+                    owner
+                        .update(cx, |this, cx| {
+                            let Some((entry_ix, tool_call)) =
+                                this.thread.read(cx).tool_call(&tool_call_id)
+                            else {
+                                return Empty.into_any_element();
+                            };
+                            this.render_tool_result_content(entry_ix, tool_call, true, window, cx)
+                                .into_any_element()
+                        })
+                        .log_err()
+                        .unwrap_or_else(|| Empty.into_any_element())
+                })
+                .into_any_element()
+        } else {
+            row.into_any_element()
         };
 
-        let output =
-            (is_open && !matches!(tool_call.status(), ToolCallStatus::Rejected)).then(|| {
-                v_flex()
-                    .pt_1()
-                    .gap_1()
-                    .when(should_show_raw_input, |this| {
-                        this.w_full().child(
-                            v_flex()
-                                .gap_1()
-                                .child(input_output_header("Raw Input:".into()))
-                                .children(tool_call.raw_input_markdown.clone().map(|input| {
-                                    div().id(("tool-call-raw-input-markdown", entry_ix)).child(
-                                        self.render_markdown(
-                                            input,
-                                            MarkdownStyle::themed(MarkdownFont::Agent, window, cx),
-                                            cx,
-                                        ),
-                                    )
-                                }))
-                                .child(input_output_header("Output:".into())),
-                        )
-                    })
-                    .children(tool_call.content().iter().enumerate().map(
-                        |(content_ix, content)| {
-                            let output_id = SharedString::from(format!(
-                                "tool-call-output-{entry_ix}-{content_ix}"
-                            ));
-                            div()
-                                .id(output_id.clone())
-                                .debug_selector(move || output_id.to_string())
-                                .child(self.render_tool_call_content(
-                                    active_session_id,
-                                    entry_ix,
-                                    content,
-                                    content_ix,
-                                    tool_call,
-                                    false,
-                                    focus_handle,
-                                    window,
-                                    cx,
-                                ))
-                        },
-                    ))
-                    .child(
-                        PillButton::new(SharedString::from(format!(
-                            "tool_output-collapse-{:?}",
-                            tool_call.id
-                        )))
-                        .size(KitSize::XSmall)
-                        .icon(IconName::ChevronUp)
-                        .tooltip(Tooltip::text("Collapse"))
-                        .on_click(cx.listener({
-                            let tool_call_id = tool_call.id.clone();
-                            move |this, _, window, cx| {
-                                this.hold_scroll_position_for_toggle();
-                                this.entry_view_state.update(cx, |state, _cx| {
-                                    state.collapse_tool_call(&tool_call_id);
-                                });
-                                this.refresh_thread_search(window, cx);
-                                cx.notify();
-                            }
-                        })),
-                    )
-            });
+        let output = is_open.then(|| {
+            v_flex()
+                .w_full()
+                .mt_1()
+                .rounded_md()
+                .border_1()
+                .border_color(KitTheme::global(cx).border.opacity(0.6))
+                .overflow_hidden()
+                .child(self.render_tool_result_content(entry_ix, tool_call, false, window, cx))
+                .when(should_show_raw_input, |this| {
+                    this.child(self.render_raw_input_disclosure(entry_ix, tool_call, window, cx))
+                })
+        });
 
         v_flex()
             .w_full()
             .when_some(layout.row_gap(), |this, gap| this.px(TEXT_INSET).pt(gap))
             .child(row)
-            .children(
-                output.map(|output| {
-                    scrollable_output(("tool-call-activity-output", entry_ix), output)
-                }),
-            )
+            .children(output)
+    }
+
+    fn render_tool_result_content(
+        &self,
+        entry_ix: usize,
+        tool_call: &ToolCall,
+        preview: bool,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let has_links = tool_call.content().iter().any(|content| {
+            matches!(content, ToolCallContent::ContentBlock { block, .. } if block.as_view().resource_link().is_some())
+        });
+        div()
+            .id((if preview { "tool-hover-results" } else { "tool-results" }, entry_ix))
+            .w_full()
+            .max_h(px(if preview { 280. } else { 240. }))
+            .overflow_y_scroll()
+            .text_size(ThemeSettings::get_global(cx).agent_ui_font_size(cx))
+            .children(tool_call.content().iter().enumerate().filter_map(|(content_ix, content)| {
+                if preview && has_links && !matches!(content, ToolCallContent::ContentBlock { block, .. } if block.as_view().resource_link().is_some()) {
+                    return None;
+                }
+                Some(div().id(("result", content_ix)).child(self.render_tool_call_content(
+                    &self.session_id,
+                    entry_ix,
+                    content,
+                    content_ix,
+                    tool_call,
+                    true,
+                    &self.focus_handle,
+                    window,
+                    cx,
+                )))
+            }))
     }
 
     fn tool_call_kind_icon(tool_call: &ToolCall) -> IconName {
@@ -806,14 +819,26 @@ fn native_tool_row_label(
         "read_file" => (
             ("Reading", "Read"),
             field("path").map(|path| {
-                Path::new(&path)
+                let name = Path::new(&path)
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or(path)
+                    .unwrap_or(path);
+                let start = input
+                    .and_then(|input| input.get("start_line"))
+                    .and_then(|line| line.as_u64());
+                let end = input
+                    .and_then(|input| input.get("end_line"))
+                    .and_then(|line| line.as_u64());
+                match (start, end) {
+                    (Some(start), Some(end)) if start != end => format!("{name} L{start}–{end}"),
+                    (Some(start), _) => format!("{name} L{start}"),
+                    (None, Some(end)) => format!("{name} L1–{end}"),
+                    _ => name,
+                }
             }),
         ),
         "list_directory" => (("Listing", "Listed"), field("path")),
-        "grep" => (("Grepping", "Grepped"), field("regex")),
+        "grep" => (("Searching", "Searched"), field("regex")),
         "find_path" => (("Searching", "Searched"), field("glob")),
         "fetch" => (("Fetching", "Fetched"), field("url")),
         "search_web" => (("Searching the web", "Searched the web"), field("query")),
@@ -843,6 +868,54 @@ fn native_tool_row_label(
         _ => return None,
     };
     Some((if running { running_action } else { done_action }, details))
+}
+
+fn supports_result_preview(tool_call: &ToolCall) -> bool {
+    matches!(
+        tool_call.kind(),
+        acp_v2::ToolKind::Search | acp_v2::ToolKind::Fetch
+    ) || matches!(
+        tool_call.tool_name.as_deref(),
+        Some("list_directory" | "diagnostics")
+    )
+}
+
+fn tool_result_summary(tool_call: &ToolCall) -> Option<String> {
+    if tool_call.status() != ToolCallStatus::Completed {
+        return None;
+    }
+    let links = tool_call.content().iter().filter(|content| {
+        matches!(content, ToolCallContent::ContentBlock { block, .. } if block.as_view().resource_link().is_some())
+    }).count();
+    if links > 0 {
+        let noun = if tool_call.tool_name.as_deref() == Some("find_path") {
+            "file"
+        } else {
+            "result"
+        };
+        return Some(format!(
+            "{links} {noun}{}",
+            if links == 1 { "" } else { "s" }
+        ));
+    }
+    let output = tool_call.raw_output.as_ref()?.as_str()?;
+    match tool_call.tool_name.as_deref()? {
+        "grep" if output == "No matches found" => Some("No matches".into()),
+        "diagnostics"
+            if output.contains("No errors or warnings found")
+                || output.contains("File doesn't have errors or warnings") =>
+        {
+            Some(
+                if output.starts_with("Failed to refresh") {
+                    "No issues · may be stale"
+                } else {
+                    "No errors or warnings"
+                }
+                .into(),
+            )
+        }
+        _ => None,
+    }
 }
 
 /// Markdown as one line of text, with the ranges it quotes as code. In a tool call's label,
@@ -1313,9 +1386,9 @@ impl ThreadView {
     ) -> impl IntoElement {
         let is_raw_input_expanded = self.expanded_tool_call_raw_inputs.contains(&tool_call.id);
         let label = if is_raw_input_expanded {
-            "Raw Input:"
+            "Hide parameters"
         } else {
-            "View Raw Input"
+            "Show parameters"
         };
 
         v_flex()
@@ -1329,6 +1402,7 @@ impl ThreadView {
                     .on_click(cx.listener({
                         let id = tool_call.id.clone();
                         move |this: &mut Self, _, _, cx| {
+                            this.hold_scroll_position_for_toggle();
                             if !this.expanded_tool_call_raw_inputs.remove(&id) {
                                 this.expanded_tool_call_raw_inputs.insert(id.clone());
                             }
@@ -1338,10 +1412,13 @@ impl ThreadView {
             )
             .when(is_raw_input_expanded, |this| {
                 this.children(tool_call.raw_input_markdown.clone().map(|input| {
-                    self.render_markdown(
-                        input,
-                        MarkdownStyle::themed(MarkdownFont::Agent, window, cx),
-                        cx,
+                    scrollable_output(
+                        ("tool-parameters", entry_ix),
+                        self.render_markdown(
+                            input,
+                            MarkdownStyle::themed(MarkdownFont::Agent, window, cx),
+                            cx,
+                        ),
                     )
                 }))
             })
@@ -1356,8 +1433,6 @@ impl ThreadView {
     ) -> Div {
         let mut style =
             MarkdownStyle::themed(MarkdownFont::Agent, window, cx).with_agent_buffer_font(cx);
-        style.container_style.text.font_size = Some(rems_from_px(12_f32).into());
-        style.container_style.text.line_height = Some(rems_from_px(17_f32).into());
         style.height_is_multiple_of_line_height = true;
         // Soft-wrap the command instead of horizontally scrolling it: the card is
         // narrow, and in scroll mode a long command wraps anyway but its wrapped
@@ -1429,7 +1504,10 @@ impl ThreadView {
         } else {
             started_at.elapsed()
         };
-        let running = !command_finished && !needs_confirmation;
+        let running = matches!(
+            tool_call.status(),
+            ToolCallStatus::Pending | ToolCallStatus::InProgress
+        ) && !needs_confirmation;
 
         let terminal_id = terminal.entity_id().to_string();
         let child_id = |name: &str| format!("terminal-tool-{name}-{terminal_id}");
@@ -1468,21 +1546,32 @@ impl ThreadView {
         });
 
         let theme = KitTheme::global(cx);
+        let font_size = ThemeSettings::get_global(cx).agent_ui_font_size(cx);
         let failed = tool_failed || command_failed;
         let row_id = SharedString::from(child_id("row"));
+        let verb = if matches!(tool_call.status(), ToolCallStatus::Canceled) {
+            "Stopped"
+        } else if matches!(tool_call.status(), ToolCallStatus::Rejected) {
+            "Skipped"
+        } else if failed {
+            "Failed"
+        } else {
+            command_verb(needs_confirmation, running)
+        };
         let row = match &description {
-            Some(description) => {
-                ActivityRow::new(row_id, command_verb(needs_confirmation, running))
-                    .details(description.clone())
-            }
-            None => ActivityRow::new(row_id, command_verb(needs_confirmation, running))
+            Some(description) => ActivityRow::new(row_id, verb).details(description.clone()),
+            None => ActivityRow::new(row_id, verb)
                 .details(command.lines().next().unwrap_or_default().to_string()),
         }
+        .icon(IconName::Terminal)
         .running(running)
-        .tooltip(Tooltip::text(format!("Working directory: {working_dir}")))
-        .when(time_elapsed > ELAPSED_DISPLAY_THRESHOLD, |row| {
-            row.meta(duration_alt_display(time_elapsed))
-        })
+        .tooltip(Tooltip::text(format!(
+            "{command}\nWorking directory: {working_dir}"
+        )))
+        .when(
+            (running || output.is_some()) && time_elapsed > ELAPSED_DISPLAY_THRESHOLD,
+            |row| row.meta(duration_alt_display(time_elapsed)),
+        )
         .when_some(truncated_tooltip, |row, tooltip| {
             row.meta(
                 div()
@@ -1594,22 +1683,19 @@ impl ThreadView {
                 .content_mode(window, cx)
                 .is_scrollable()
             {
-                // As tall as the most lines it shows in full, so it doesn't jump when it starts
-                // scrolling. Its text is the card's small UI size.
-                let line_height = TextSize::Small.rems(cx).0
-                    * TerminalSettings::get_global(cx).line_height.value();
+                // Embedded terminals inherit the surrounding text size. Use the same size
+                // here so switching to a scrollable viewport doesn't clip a line or jump.
+                let line_height = font_size * TerminalSettings::get_global(cx).line_height.value();
                 div()
-                    .h(rems(
-                        TERMINAL_MAX_INLINE_LINES as f32 * line_height
-                            + TERMINAL_CONTENT_TOP_PADDING,
-                    ))
+                    .h(line_height * TERMINAL_MAX_INLINE_LINES as f32
+                        + rems(TERMINAL_CONTENT_TOP_PADDING).to_pixels(window.rem_size()))
                     .child(terminal_view)
                     .into_any_element()
             } else {
                 terminal_view.into_any_element()
             };
             div()
-                .h_full()
+                .w_full()
                 .on_action(cx.listener(|_this, _: &NewTerminal, window, cx| {
                     window.dispatch_action(NewThread.boxed_clone(), cx);
                     cx.stop_propagation();
@@ -1665,12 +1751,38 @@ impl ThreadView {
                         .flex_1()
                         .text_color(theme.foreground)
                         .child(command.clone()),
-                );
+                )
+                .child(copy_command_button(
+                    SharedString::from(child_id("copy-expanded-command")),
+                    command.clone(),
+                ));
             let body = v_flex()
                 .w_full()
-                .text_ui_sm(cx)
+                .text_size(font_size)
+                .font_weight(gpui::FontWeight::NORMAL)
                 .child(command_line)
-                .children(terminal_output);
+                .children(terminal_output)
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .text_color(theme.muted_foreground)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(working_dir.clone()),
+                        )
+                        .when(command_finished, |this| {
+                            this.child(duration_alt_display(time_elapsed))
+                        })
+                        .when_some(exit_code.filter(|code| *code != 0), |this, code| {
+                            this.child(div().text_color(theme.danger).child(format!("Exit {code}")))
+                        }),
+                );
             let footer = permission_buttons.map(|buttons| {
                 div()
                     .w_full()
@@ -1686,7 +1798,11 @@ impl ThreadView {
                 v_flex().w_full().child(body).children(footer)
             } else {
                 transcript_card(cx)
-                    .when(failed, |this| this.border_dashed())
+                    .border_color(if failed {
+                        theme.danger.opacity(0.5)
+                    } else {
+                        theme.border.opacity(0.6)
+                    })
                     .child(body)
                     .children(footer)
             }
@@ -2287,6 +2403,7 @@ impl ThreadView {
         tool_call: &ToolCall,
         subagent_session_id: Option<acp_v2::SessionId>,
         focus_handle: &FocusHandle,
+        layout: ToolCallLayout,
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
@@ -2296,18 +2413,18 @@ impl ThreadView {
                 .and_then(|server_view| server_view.read(cx).as_connected())
                 .and_then(|connected| connected.threads.get(&session_id))
         });
-
-        let content = self.render_subagent_card(
-            active_session_id,
-            entry_ix,
-            subagent_thread_view,
-            tool_call,
-            focus_handle,
-            window,
-            cx,
-        );
-
-        v_flex().px(TEXT_INSET).pt(ROW_GAP).child(content)
+        v_flex()
+            .w_full()
+            .when_some(layout.row_gap(), |this, gap| this.px(TEXT_INSET).pt(gap))
+            .child(self.render_subagent_card(
+                active_session_id,
+                entry_ix,
+                subagent_thread_view,
+                tool_call,
+                focus_handle,
+                window,
+                cx,
+            ))
     }
 
     fn render_subagent_card(
@@ -2320,252 +2437,312 @@ impl ThreadView {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let thread = thread_view
+        let thread = thread_view.map(|view| view.read(cx).thread.clone());
+        let subagent_session_id = tool_call
+            .subagent_session_info
             .as_ref()
-            .map(|view| view.read(cx).thread.clone());
-        let subagent_session_id = thread
+            .map(|info| info.session_id.clone())
+            .or_else(|| {
+                thread
+                    .as_ref()
+                    .map(|thread| thread.read(cx).session_id().clone())
+            });
+        let changed_buffers = thread
             .as_ref()
-            .map(|thread| thread.read(cx).session_id().clone());
-        let action_log = thread.as_ref().map(|thread| thread.read(cx).action_log());
-        let changed_buffers = action_log
-            .map(|log| log.read(cx).changed_buffers(cx).collect::<Vec<_>>())
-            .unwrap_or_default();
-
-        let is_pending_tool_call = thread_view
-            .as_ref()
-            .and_then(|tv| {
-                let sid = tv.read(cx).thread.read(cx).session_id();
-                self.conversation.read(cx).pending_tool_call(sid, cx)
+            .map(|thread| {
+                thread
+                    .read(cx)
+                    .action_log()
+                    .read(cx)
+                    .changed_buffers(cx)
+                    .collect::<Vec<_>>()
             })
-            .is_some();
-
+            .unwrap_or_default();
+        let files_changed = changed_buffers.len();
+        let diff_stats = DiffStats::all_files(changed_buffers, cx);
+        let pending_tool_call = subagent_session_id
+            .as_ref()
+            .and_then(|session_id| self.conversation.read(cx).pending_tool_call(session_id, cx));
         let is_expanded = self
             .entry_view_state
             .read(cx)
             .is_tool_call_expanded(&tool_call.id);
-        let files_changed = changed_buffers.len();
-        let diff_stats = DiffStats::all_files(changed_buffers, cx);
-
-        let is_running = matches!(
-            tool_call.status(),
-            ToolCallStatus::Pending
-                | ToolCallStatus::InProgress
-                | ToolCallStatus::WaitingForConfirmation
-        );
-
+        let is_cancelled = matches!(tool_call.status(), ToolCallStatus::Canceled)
+            || tool_call.content().iter().any(|content| {
+                matches!(content, ToolCallContent::ContentBlock { block, .. } if block.text_content(cx) == Some("User canceled"))
+            });
         let is_failed = matches!(
             tool_call.status(),
             ToolCallStatus::Failed | ToolCallStatus::Rejected
-        );
-
-        let is_cancelled = matches!(tool_call.status(), ToolCallStatus::Canceled)
-            || tool_call.content().iter().any(|c| match c {
-                ToolCallContent::ContentBlock { block, .. } => {
-                    block.text_content(cx) == Some("User canceled")
-                }
-                _ => false,
-            });
-
+        ) && !is_cancelled;
+        let is_running = !is_cancelled
+            && matches!(
+                tool_call.status(),
+                ToolCallStatus::Pending
+                    | ToolCallStatus::InProgress
+                    | ToolCallStatus::WaitingForConfirmation
+            );
+        let waiting = is_running
+            && (pending_tool_call.is_some()
+                || tool_call.status() == ToolCallStatus::WaitingForConfirmation);
         let model_name = thread_view
             .and_then(|view| view.read(cx).as_native_thread(cx))
-            .and_then(|thread| {
-                let thread = thread.read(cx);
-                let model = thread.model()?;
-                Some(model.name().0)
+            .and_then(|thread| thread.read(cx).model().map(|model| model.name().0))
+            .or_else(|| {
+                tool_call
+                    .raw_input
+                    .as_ref()?
+                    .get("model")?
+                    .as_str()
+                    .map(SharedString::from)
             });
-        let thread_title = thread
+        let title = tool_call
+            .raw_input
             .as_ref()
-            .and_then(|t| t.read(cx).title())
-            .filter(|t| !t.is_empty());
-        let tool_call_label = tool_call.label.read(cx).source().to_string();
-        let has_tool_call_label = !tool_call_label.is_empty();
-
-        let has_title = thread_title.is_some() || has_tool_call_label;
-        let has_no_title_or_canceled = !has_title || is_failed || is_cancelled;
-
-        let title: SharedString = if let Some(thread_title) = thread_title {
-            thread_title
-        } else if !tool_call_label.is_empty() {
-            tool_call_label.into()
+            .and_then(|input| input.get("label"))
+            .and_then(|label| label.as_str())
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .map(SharedString::from)
+            .or_else(|| {
+                let label = markdown_line(tool_call.label.read(cx)).0;
+                (!label.trim().is_empty()).then_some(label)
+            })
+            .or_else(|| thread.as_ref().and_then(|thread| thread.read(cx).title()))
+            .unwrap_or_else(|| "Subagent".into());
+        let status: SharedString = if waiting {
+            "Waiting for approval".into()
         } else if is_cancelled {
-            "Subagent Canceled".into()
+            "Stopped".into()
         } else if is_failed {
-            "Subagent Failed".into()
+            "Stopped with error".into()
+        } else if is_running {
+            thread
+                .as_ref()
+                .and_then(|thread| subagent_activity(thread.read(cx), tool_call, cx))
+                .unwrap_or_else(|| "Starting up…".into())
         } else {
-            "Spawning Agent…".into()
+            "Completed".into()
         };
-
+        let has_entries = thread.as_ref().is_some_and(|thread| {
+            !subagent_entry_range(thread.read(cx).entries().len(), tool_call).is_empty()
+        });
+        let has_preview = has_entries || !tool_call.content().is_empty();
         let theme = KitTheme::global(cx);
-        let status_icon = format!("status-icon-{}", entry_ix);
-        let icon = if is_running {
+        let font_size = ThemeSettings::get_global(cx).agent_ui_font_size(cx);
+        let status_color = if is_failed {
+            theme.danger
+        } else if waiting {
+            theme.warning
+        } else {
+            theme.muted_foreground
+        };
+        let group: SharedString = format!("subagent-row-{}", tool_call.id.0).into();
+        let indicator = if is_running && !waiting {
             Spinner::new()
                 .icon(kit_icon(IconName::LoadCircle))
-                .with_size(KitSize::Small)
-                .into_any_element()
-        } else if is_cancelled {
-            div()
-                .id(status_icon)
-                .tooltip(Tooltip::text("Subagent Cancelled"))
-                .child(
-                    kit_icon(IconName::Circle)
-                        .with_size(KitSize::Small)
-                        .text_color(theme.muted_foreground.opacity(0.5)),
-                )
-                .into_any_element()
-        } else if is_failed {
-            div()
-                .id(status_icon)
-                .tooltip(Tooltip::text("Subagent Failed"))
-                .child(
-                    kit_icon(IconName::Close)
-                        .with_size(KitSize::Small)
-                        .text_color(theme.danger),
-                )
+                .with_size(KitSize::Size(font_size * 0.7))
                 .into_any_element()
         } else {
-            kit_icon(IconName::Check)
-                .with_size(KitSize::Small)
-                .text_color(theme.success)
+            div()
+                .size(font_size * 0.4)
+                .rounded_full()
+                .bg(status_color)
+                .when(is_cancelled, |this| this.opacity(0.65))
                 .into_any_element()
         };
-
-        let has_expandable_content = thread
-            .as_ref()
-            .map_or(false, |thread| !thread.read(cx).entries().is_empty());
-
-        let tooltip_meta_description = if is_expanded {
-            "Click to Collapse"
-        } else {
-            "Click to Preview"
-        };
-
-        let error_message = self.subagent_error_message(&tool_call.status(), tool_call, cx);
-
-        let header = ToolCardHeader::new(
-            SharedString::from(format!("subagent-header-{}", entry_ix)),
-            icon,
-            div().text_color(theme.foreground).child(title.clone()),
-        )
-        .when_some(model_name, |header, model_name| {
-            header.meta(format!("· {model_name}"))
-        })
-        .when(files_changed > 0, |header| {
-            header
-                .meta(format!(
-                    "— {} {} changed",
-                    files_changed,
-                    if files_changed == 1 { "file" } else { "files" }
-                ))
-                .meta(diff_stat(diff_stats, cx))
-        })
-        .when(
-            !has_no_title_or_canceled && !is_pending_tool_call,
-            |header| {
-                header.tooltip(move |_, cx| {
-                    Tooltip::with_meta(title.to_string(), None, tooltip_meta_description, cx)
-                })
-            },
-        )
-        .when(has_expandable_content && !is_pending_tool_call, |header| {
-            header.expanded(is_expanded).on_click(cx.listener({
-                let tool_call_id = tool_call.id.clone();
-                move |this, _, window, cx| {
-                    this.hold_scroll_position_for_toggle();
-                    let expanded = this.entry_view_state.update(cx, |state, _cx| {
-                        state.toggle_tool_call_expansion(&tool_call_id);
-                        state.is_tool_call_expanded(&tool_call_id)
-                    });
-                    this.refresh_thread_search(window, cx);
-                    telemetry::event!("Subagent Toggled", expanded);
-                    cx.notify();
-                }
-            }))
-        })
-        .when_some(
-            thread_view.map(|view| view.read(cx).thread.read(cx).session_id().clone()),
-            |header, nav_session_id| {
-                header.hover_action(
-                    PillButton::new(("subagent-full-screen", entry_ix))
-                        .size(KitSize::XSmall)
-                        .icon(IconName::Maximize)
-                        .tooltip(Tooltip::text("Make Subagent Full Screen"))
-                        .on_click(cx.listener(move |this, _event, window, cx| {
-                            telemetry::event!("Subagent Maximized");
-                            this.server_view
-                                .update(cx, |this, cx| {
-                                    this.navigate_to_thread(nav_session_id.clone(), window, cx);
+        let header = KitListItem::new(("subagent-summary", entry_ix))
+            .accessibility_label(format!("{title}: {status}"))
+            .w_full()
+            .min_w_0()
+            .px_0()
+            .py_1()
+            .gap_2()
+            .text_size(font_size)
+            .font_weight(gpui::FontWeight::NORMAL)
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .w(font_size * 1.4)
+                            .justify_center()
+                            .child(indicator),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_0p5()
+                            .child(
+                                h_flex()
+                                    .min_w_0()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_color(theme.foreground)
+                                            .child(title),
+                                    )
+                                    .when_some(model_name, |this, model_name| {
+                                        this.child(
+                                            div()
+                                                .min_w_0()
+                                                .truncate()
+                                                .text_color(theme.muted_foreground.opacity(0.7))
+                                                .child(model_name),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                h_flex()
+                                    .min_w_0()
+                                    .gap_2()
+                                    .text_color(status_color)
+                                    .child(div().min_w_0().truncate().child(
+                                        if is_running && !waiting {
+                                            ShimmerText::new(status).into_any_element()
+                                        } else {
+                                            status.into_any_element()
+                                        },
+                                    ))
+                                    .when(files_changed > 0, |this| {
+                                        this.child(div().flex_none().child(format!(
+                                            "{files_changed} {}",
+                                            if files_changed == 1 { "file" } else { "files" }
+                                        )))
+                                        .child(diff_stat(diff_stats, cx))
+                                    }),
+                            ),
+                    )
+                    .when(is_running, |this| {
+                        this.when_some(thread.clone(), |this, thread| {
+                            this.child(
+                                div().visible_on_hover(group.clone()).child(
+                                    PillButton::new(("stop-subagent", entry_ix))
+                                        .size(KitSize::XSmall)
+                                        .icon(IconName::Stop)
+                                        .debug_selector("ICON-Stop")
+                                        .tooltip(Tooltip::text("Stop Subagent"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            telemetry::event!("Subagent Stopped");
+                                            this.cancel_thread(&thread, cx).detach();
+                                        })),
+                                ),
+                            )
+                        })
+                    })
+                    .when(has_preview, |this| {
+                        this.child(
+                            PillButton::new(("preview-subagent", entry_ix))
+                                .size(KitSize::XSmall)
+                                .icon(if is_expanded {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
                                 })
-                                .log_err();
-                        })),
-                )
-            },
-        )
-        .when(is_running && subagent_session_id.is_some(), |header| {
-            header.action(
-                PillButton::new(SharedString::from(format!("stop-subagent-{}", entry_ix)))
-                    .size(KitSize::XSmall)
-                    .icon(IconName::Stop)
-                    .debug_selector("ICON-Stop")
-                    .tooltip(Tooltip::text("Stop Subagent"))
-                    .when_some(thread.clone(), |button, thread| {
-                        button.on_click(cx.listener(move |this, _event, _window, cx| {
-                            telemetry::event!("Subagent Stopped");
-                            this.cancel_thread(&thread, cx).detach();
-                        }))
+                                .tooltip(Tooltip::text(if is_expanded {
+                                    "Collapse Preview"
+                                } else {
+                                    "Preview Subagent"
+                                }))
+                                .on_click(cx.listener({
+                                    let tool_call_id = tool_call.id.clone();
+                                    move |this, _, window, cx| {
+                                        this.hold_scroll_position_for_toggle();
+                                        this.entry_view_state.update(cx, |state, _| {
+                                            state.toggle_tool_call_expansion(&tool_call_id)
+                                        });
+                                        this.refresh_thread_search(window, cx);
+                                        cx.notify();
+                                    }
+                                })),
+                        )
                     }),
             )
-        });
+            .when(subagent_session_id.is_some() || has_preview, |this| {
+                this.on_click(cx.listener({
+                    let tool_call_id = tool_call.id.clone();
+                    move |this, _, window, cx| {
+                        if let Some(session_id) = &subagent_session_id {
+                            telemetry::event!("Subagent Maximized");
+                            this.server_view
+                                .update(cx, |server, cx| {
+                                    server.navigate_to_thread(session_id.clone(), window, cx);
+                                })
+                                .log_err();
+                        } else {
+                            this.hold_scroll_position_for_toggle();
+                            this.entry_view_state.update(cx, |state, _| {
+                                state.toggle_tool_call_expansion(&tool_call_id)
+                            });
+                            this.refresh_thread_search(window, cx);
+                            cx.notify();
+                        }
+                    }
+                }))
+            });
 
         let mut sections = Vec::new();
-        if let Some(thread_view) = thread_view {
-            let thread = &thread_view.read(cx).thread;
-            let pending_tool_call = self
-                .conversation
-                .read(cx)
-                .pending_tool_call(thread.read(cx).session_id(), cx);
-
-            if is_running && let Some((_, subagent_tool_call_id, _)) = pending_tool_call {
-                if let Some((entry_ix, tool_call)) =
-                    thread.read(cx).tool_call(&subagent_tool_call_id)
-                {
-                    sections.push(
-                        thread_view
-                            .read(cx)
-                            .render_any_tool_call(
-                                active_session_id,
-                                entry_ix,
-                                tool_call,
-                                focus_handle,
-                                ToolCallLayout::Embedded,
-                                window,
-                                cx,
-                            )
-                            .into_any_element(),
-                    );
+        if is_running
+            && let Some(thread_view) = thread_view
+            && let Some((_, child_tool_call_id, _)) = pending_tool_call
+        {
+            sections.push(
+                SubagentPermission {
+                    thread_view: thread_view.clone(),
+                    tool_call_id: child_tool_call_id,
+                    active_session_id: active_session_id.clone(),
+                    focus_handle: focus_handle.clone(),
                 }
-            } else if is_expanded {
+                .into_any_element(),
+            );
+        } else if is_expanded {
+            if has_entries && let Some(thread_view) = thread_view {
                 sections.push(
                     self.render_subagent_expanded_content(thread_view, tool_call, window, cx)
                         .into_any_element(),
                 );
-                if let Some(message) = error_message {
-                    sections.push(
-                        div()
-                            .p_1p5()
-                            .child(AlertCard::new(
-                                ("subagent-error", entry_ix),
-                                AlertVariant::Error,
-                                message,
-                            ))
-                            .into_any_element(),
-                    );
-                }
+            } else {
+                sections.push(
+                    self.render_tool_result_content(entry_ix, tool_call, false, window, cx)
+                        .into_any_element(),
+                );
+            }
+            if has_entries
+                && let Some(message) =
+                    self.subagent_error_message(&tool_call.status(), tool_call, cx)
+            {
+                sections.push(
+                    AlertCard::new(("subagent-error", entry_ix), AlertVariant::Error, message)
+                        .into_any_element(),
+                );
             }
         }
 
-        ToolCard::new(("subagent-card", entry_ix), header)
-            .sections(sections)
-            .dashed(has_no_title_or_canceled)
+        v_flex()
+            .id(("subagent", entry_ix))
+            .group(group)
+            .w_full()
+            .min_w_0()
+            .child(header)
+            .when(!sections.is_empty(), |this| {
+                this.child(
+                    v_flex()
+                        .min_w_0()
+                        .mt_1()
+                        .ml_3()
+                        .pl_3()
+                        .border_l_1()
+                        .border_color(theme.border.opacity(0.6))
+                        .gap_2()
+                        .children(sections),
+                )
+            })
             .into_any_element()
     }
 
@@ -2573,93 +2750,45 @@ impl ThreadView {
         &self,
         thread_view: &Entity<ThreadView>,
         tool_call: &ToolCall,
-        window: &Window,
+        _window: &Window,
         cx: &Context<Self>,
     ) -> impl IntoElement {
         const MAX_PREVIEW_ENTRIES: usize = 8;
-
-        let subagent_view = thread_view.read(cx);
-        let session_id = subagent_view.thread.read(cx).session_id().clone();
-
-        let editor_bg = cx.theme().colors().editor_background;
-        let overlay = {
-            div()
-                .absolute()
-                .inset_0()
-                .size_full()
-                .bg(linear_gradient(
-                    180.,
-                    linear_color_stop(editor_bg.opacity(0.5), 0.),
-                    linear_color_stop(editor_bg.opacity(0.), 0.1),
-                ))
-                .block_mouse_except_scroll()
-        };
-
-        let entries = subagent_view.thread.read(cx).entries();
-        let total_entries = entries.len();
-        let mut entry_range = if let Some(info) = tool_call.subagent_session_info.as_ref() {
-            info.message_start_index
-                ..info
-                    .message_end_index
-                    .map(|i| (i + 1).min(total_entries))
-                    .unwrap_or(total_entries)
-        } else {
-            0..total_entries
-        };
+        let subagent_thread = thread_view.read(cx).thread.read(cx);
+        let mut entry_range = subagent_entry_range(subagent_thread.entries().len(), tool_call);
         let first_entry_ix = entry_range.start;
         entry_range.start = entry_range
             .end
             .saturating_sub(MAX_PREVIEW_ENTRIES)
             .max(first_entry_ix);
-        // A collapsed activity group shows its line at its first entry, so the preview starts
-        // there rather than among the entries the line stands for.
-        if let Some(group) =
-            ActivityGroup::containing(subagent_view.thread.read(cx), entry_range.start, cx)
-        {
+        if let Some(group) = ActivityGroup::containing(subagent_thread, entry_range.start, cx) {
             entry_range.start = group.entries.start.max(first_entry_ix);
         }
-        let start_ix = entry_range.start;
-
         let scroll_handle = self
             .subagent_scroll_handles
             .borrow_mut()
-            .entry(subagent_view.session_id.clone())
-            .or_default()
-            .clone();
-
-        scroll_handle.scroll_to_bottom();
-
-        let rendered_entries: Vec<AnyElement> = entries
-            .get(entry_range)
-            .unwrap_or_default()
-            .iter()
-            .enumerate()
-            .map(|(i, entry)| {
-                let actual_ix = start_ix + i;
-                subagent_view.render_entry(actual_ix, total_entries, entry, window, cx)
+            .entry(tool_call.id.clone())
+            .or_insert_with(|| {
+                let handle = ScrollHandle::new();
+                handle.scroll_to_bottom();
+                handle
             })
-            .collect();
-
-        v_flex()
-            .relative()
-            .w_full()
-            .overflow_hidden()
-            .child(
-                div()
-                    .pb_1()
-                    .min_h_0()
-                    // Include the tool call id so the same subagent session
-                    // rendered in multiple parent cards gets distinct element
-                    // ids for its inlined entries (avoids duplicate a11y ids).
-                    .id(format!(
-                        "subagent-entries-{}-{}",
-                        session_id, tool_call.id.0
-                    ))
-                    .track_scroll(&scroll_handle)
-                    .children(rendered_entries),
+            .clone();
+        let at_bottom = scroll_handle.offset().y + scroll_handle.max_offset().y <= px(1.);
+        if at_bottom
+            && matches!(
+                tool_call.status(),
+                ToolCallStatus::Pending | ToolCallStatus::InProgress
             )
-            .h_56()
-            .child(overlay)
+        {
+            scroll_handle.scroll_to_bottom();
+        }
+        SubagentPreview {
+            thread_view: thread_view.clone(),
+            tool_call_id: tool_call.id.clone(),
+            entry_range,
+            scroll_handle,
+        }
     }
 
     fn subagent_error_message(
@@ -2668,7 +2797,7 @@ impl ThreadView {
         tool_call: &ToolCall,
         cx: &App,
     ) -> Option<SharedString> {
-        if matches!(status, ToolCallStatus::Failed) {
+        if matches!(status, ToolCallStatus::Failed | ToolCallStatus::Rejected) {
             tool_call.content().iter().find_map(|content| {
                 if let ToolCallContent::ContentBlock { block, .. } = content {
                     if let Some(source) = block.text_content(cx).filter(|source| !source.is_empty())
@@ -2685,6 +2814,125 @@ impl ThreadView {
         } else {
             None
         }
+    }
+}
+
+fn subagent_entry_range(total_entries: usize, tool_call: &ToolCall) -> Range<usize> {
+    match tool_call.subagent_session_info.as_ref() {
+        Some(info) => {
+            let end = info
+                .message_end_index
+                .map(|index| index.saturating_add(1))
+                .unwrap_or(total_entries)
+                .min(total_entries);
+            info.message_start_index.min(end)..end
+        }
+        None => 0..total_entries,
+    }
+}
+
+fn subagent_activity(thread: &AcpThread, tool_call: &ToolCall, cx: &App) -> Option<SharedString> {
+    thread
+        .entries()
+        .get(subagent_entry_range(thread.entries().len(), tool_call))?
+        .iter()
+        .rev()
+        .find_map(|entry| match entry {
+            AgentThreadEntry::ToolCall(tool_call) => {
+                if tool_call.status() == ToolCallStatus::WaitingForConfirmation {
+                    return Some("Waiting for approval".into());
+                }
+                let running = matches!(
+                    tool_call.status(),
+                    ToolCallStatus::Pending | ToolCallStatus::InProgress
+                );
+                if let Some((action, details)) = native_tool_row_label(tool_call, running) {
+                    Some(match details {
+                        Some(details) => format!("{action} {details}").into(),
+                        None => action.into(),
+                    })
+                } else {
+                    Some(markdown_line(tool_call.label.read(cx)).0)
+                }
+            }
+            AgentThreadEntry::AssistantMessage(message) => {
+                message.chunks.iter().rev().find_map(|chunk| match chunk {
+                    AssistantMessageChunk::Thought { block, .. } if block.visible_content(cx) => {
+                        Some("Thinking…".into())
+                    }
+                    AssistantMessageChunk::Message { block, .. } if block.visible_content(cx) => {
+                        Some("Writing response…".into())
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+}
+
+#[derive(IntoElement)]
+struct SubagentPreview {
+    thread_view: Entity<ThreadView>,
+    tool_call_id: acp_v2::ToolCallId,
+    entry_range: Range<usize>,
+    scroll_handle: ScrollHandle,
+}
+
+#[derive(IntoElement)]
+struct SubagentPermission {
+    thread_view: Entity<ThreadView>,
+    tool_call_id: acp_v2::ToolCallId,
+    active_session_id: acp_v2::SessionId,
+    focus_handle: FocusHandle,
+}
+
+impl RenderOnce for SubagentPermission {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        self.thread_view.update(cx, |view, cx| {
+            let Some((entry_ix, tool_call)) = view.thread.read(cx).tool_call(&self.tool_call_id)
+            else {
+                return Empty.into_any_element();
+            };
+            view.render_any_tool_call(
+                &self.active_session_id,
+                entry_ix,
+                tool_call,
+                &self.focus_handle,
+                ToolCallLayout::Embedded,
+                window,
+                cx,
+            )
+            .into_any_element()
+        })
+    }
+}
+
+impl RenderOnce for SubagentPreview {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Bind listeners to the child view. Rendering with the parent's Context sends
+        // nested disclosures and file-navigation clicks to the wrong conversation.
+        let entries = self.thread_view.update(cx, |view, cx| {
+            let entries = view.thread.read(cx).entries();
+            self.entry_range
+                .filter_map(|entry_ix| {
+                    entries.get(entry_ix).map(|entry| {
+                        view.render_unfolded_entry(entry_ix, entries.len(), entry, window, cx)
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+        div()
+            .id(SharedString::from(format!(
+                "subagent-preview-{}",
+                self.tool_call_id
+            )))
+            .w_full()
+            .min_h_0()
+            .max_h(px(300.))
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll_handle)
+            .pb_1()
+            .children(entries)
     }
 }
 
@@ -2711,7 +2959,7 @@ fn copy_command_button(id: impl Into<ElementId>, command: String) -> PillButton 
 fn command_title(command: &str, cx: &App) -> impl IntoElement {
     div()
         .font_family(ThemeSettings::get_global(cx).buffer_font.family.clone())
-        .text_xs()
+        .text_size(ThemeSettings::get_global(cx).agent_ui_font_size(cx))
         .text_color(KitTheme::global(cx).foreground)
         .child(command.lines().next().unwrap_or_default().to_string())
 }
@@ -2768,7 +3016,7 @@ pub(super) fn diff_stat(stats: DiffStats, cx: &App) -> impl IntoElement {
     let theme = KitTheme::global(cx);
     h_flex()
         .gap_1()
-        .text_xs()
+        .text_size(ThemeSettings::get_global(cx).agent_ui_font_size(cx))
         .child(
             div()
                 .text_color(theme.success)
@@ -2791,7 +3039,6 @@ pub(super) struct ToolCardHeader {
     hover_actions: Vec<AnyElement>,
     actions: Vec<AnyElement>,
     expanded: Option<bool>,
-    tooltip: Option<Box<dyn Fn(&mut Window, &mut App) -> AnyView>>,
     on_click: Option<ClickHandler>,
 }
 
@@ -2809,7 +3056,6 @@ impl ToolCardHeader {
             hover_actions: Vec::new(),
             actions: Vec::new(),
             expanded: None,
-            tooltip: None,
             on_click: None,
         }
     }
@@ -2838,14 +3084,6 @@ impl ToolCardHeader {
         self
     }
 
-    pub(super) fn tooltip(
-        mut self,
-        tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
-    ) -> Self {
-        self.tooltip = Some(Box::new(tooltip));
-        self
-    }
-
     pub(super) fn on_click(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -2865,10 +3103,11 @@ impl RenderOnce for ToolCardHeader {
             .id(self.id)
             .group(group.clone())
             .w_full()
-            .h_8()
+            .min_h_8()
+            .py_1()
             .px_2()
             .gap_1p5()
-            .text_size(rems_from_px(13_f32))
+            .text_size(ThemeSettings::get_global(cx).agent_ui_font_size(cx))
             .text_color(theme.muted_foreground)
             .when(self.on_click.is_some(), |this| {
                 this.cursor_pointer()
@@ -2909,7 +3148,6 @@ impl RenderOnce for ToolCardHeader {
                         .child(kit_icon(chevron).with_size(KitSize::XSmall)),
                 )
             })
-            .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip))
             .when_some(self.on_click, |this, on_click| {
                 this.on_click(move |event, window, cx| on_click(event, window, cx))
             })

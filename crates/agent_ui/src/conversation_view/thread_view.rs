@@ -42,6 +42,7 @@ use gpui_kit::component::{
     alert::AlertVariant,
     button::{Button as KitButton, ButtonRounded, ButtonVariant, ButtonVariants as _},
     clipboard::Clipboard as KitClipboard,
+    list::ListItem as KitListItem,
     menu::{PopupMenu, PopupMenuItem},
     notification::Notification,
     popover::Popover,
@@ -585,7 +586,7 @@ pub struct ThreadView {
     /// has explicitly acknowledged. Until a prompt's tool call is in this set,
     /// its allow buttons stay disabled. See [`Self::sandbox_confusable_findings`].
     acknowledged_confusable_warnings: HashSet<acp_v2::ToolCallId>,
-    pub subagent_scroll_handles: RefCell<HashMap<acp_v2::SessionId, ScrollHandle>>,
+    pub subagent_scroll_handles: RefCell<HashMap<acp_v2::ToolCallId, ScrollHandle>>,
     pub edits_expanded: bool,
     branch_chip_hovered: bool,
     pub plan_expanded: bool,
@@ -7035,69 +7036,118 @@ impl ThreadView {
         cx: &Context<Self>,
     ) -> AnyElement {
         let uri: SharedString = resource_link.uri.clone().into();
-        let is_file = resource_link.uri.strip_prefix("file://");
-
-        let Some(project) = self.project.upgrade() else {
-            return Empty.into_any_element();
-        };
-
-        let label: SharedString = if let Some(abs_path) = is_file {
-            // Split off an optional `#L<line>` fragment so the path still resolves.
-            let (abs_path, fragment) = abs_path
-                .split_once('#')
-                .map_or((abs_path, None), |(path, fragment)| (path, Some(fragment)));
-
-            let path_label = if let Some(project_path) = project
-                .read(cx)
-                .project_path_for_absolute_path(&Path::new(abs_path), cx)
-                && let Some(worktree) = project
-                    .read(cx)
-                    .worktree_for_id(project_path.worktree_id, cx)
-            {
-                worktree
-                    .read(cx)
-                    .full_path(&project_path.path)
-                    .to_string_lossy()
-                    .to_string()
-            } else {
-                abs_path.to_string()
+        let url = Url::parse(&uri).ok();
+        let file_path = url.as_ref().and_then(|url| url.to_file_path().ok());
+        let is_file = file_path.is_some();
+        let (title, detail) = if let Some(path) = file_path {
+            let display_path = self
+                .project
+                .upgrade()
+                .and_then(|project| {
+                    let project_path =
+                        project.read(cx).project_path_for_absolute_path(&path, cx)?;
+                    let worktree = project
+                        .read(cx)
+                        .worktree_for_id(project_path.worktree_id, cx)?;
+                    Some(worktree.read(cx).full_path(&project_path.path))
+                })
+                .unwrap_or(path);
+            let name = display_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| display_path.to_string_lossy().into_owned());
+            let title = match url.as_ref().and_then(|url| url.fragment()) {
+                Some(fragment) => format!("{name} {fragment}"),
+                None => name,
             };
-
-            match fragment {
-                Some(fragment) => format!("{path_label}#{fragment}").into(),
-                None => path_label.into(),
-            }
+            let detail = display_path
+                .parent()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (title, detail)
         } else {
-            uri.clone()
-        };
-
-        let button_id = SharedString::from(format!("item-{}", uri));
-
-        div()
-            .ml(rems(0.4))
-            .pl_2p5()
-            .border_l_1()
-            .border_color(self.tool_card_border_color(cx))
-            .overflow_hidden()
-            .child(
-                Button::new(button_id, label)
-                    .label_size(LabelSize::Small)
-                    .color(Color::Muted)
-                    .truncate(true)
-                    .when(is_file.is_none(), |this| {
-                        this.end_icon(
-                            Icon::new(IconName::ArrowUpRight)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
-                        )
-                    })
-                    .on_click(cx.listener({
-                        let workspace = self.workspace.clone();
-                        move |_, _, window, cx: &mut Context<Self>| {
-                            open_link(uri.clone(), &workspace, window, cx);
-                        }
-                    })),
+            let title = resource_link
+                .title
+                .as_ref()
+                .filter(|title| !title.is_empty())
+                .cloned()
+                .unwrap_or_else(|| resource_link.name.clone());
+            let detail = url
+                .as_ref()
+                .and_then(|url| url.host_str())
+                .unwrap_or(&uri)
+                .to_string();
+            (
+                if title.is_empty() {
+                    uri.to_string()
+                } else {
+                    title
+                },
+                detail,
             )
+        };
+        let theme = KitTheme::global(cx);
+        let font_size = theme_settings::ThemeSettings::get_global(cx).agent_ui_font_size(cx);
+        KitListItem::new(SharedString::from(format!("resource-{}", uri)))
+            .accessibility_label(format!("{title} {detail}"))
+            .w_full()
+            .min_w_0()
+            .py_1()
+            .px_2()
+            .gap_2()
+            .text_size(font_size)
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_2()
+                    .child(
+                        transcript::kit_icon(if is_file {
+                            IconName::File
+                        } else {
+                            IconName::ToolWeb
+                        })
+                        .size(font_size)
+                        .flex_none()
+                        .text_color(theme.muted_foreground),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_0p5()
+                            .child(div().truncate().text_color(theme.foreground).child(title))
+                            .when(!detail.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .truncate()
+                                        .text_color(theme.muted_foreground)
+                                        .child(detail),
+                                )
+                            })
+                            .when_some(
+                                resource_link
+                                    .description
+                                    .as_ref()
+                                    .filter(|description| !description.is_empty()),
+                                |this, description| {
+                                    this.child(
+                                        div()
+                                            .truncate()
+                                            .text_color(theme.muted_foreground)
+                                            .child(description.clone()),
+                                    )
+                                },
+                            ),
+                    ),
+            )
+            .on_click(cx.listener({
+                let workspace = self.workspace.clone();
+                move |_, _, window, cx| {
+                    cx.stop_propagation();
+                    open_link(uri.clone(), &workspace, window, cx);
+                }
+            }))
             .into_any_element()
     }
 

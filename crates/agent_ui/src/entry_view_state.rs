@@ -34,7 +34,7 @@ pub(crate) const TERMINAL_CONTENT_TOP_PADDING: f32 = 0.5;
 
 /// How many lines of output an agent terminal shows before it scrolls instead, so long output
 /// doesn't stretch its tool card down the transcript.
-pub(crate) const TERMINAL_MAX_INLINE_LINES: usize = 12;
+pub(crate) const TERMINAL_MAX_INLINE_LINES: usize = 10;
 
 /// Maps an entry index through the removal of `removed` (a contiguous range of
 /// entries), returning `None` if the index referred to a removed entry.

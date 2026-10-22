@@ -52,6 +52,43 @@ pub enum FindPathToolOutput {
     },
 }
 
+impl FindPathToolOutput {
+    fn emit_update(&self, event_stream: &ToolCallEventStream) {
+        let title = match self {
+            Self::Success {
+                current_matches_page,
+                ..
+            } => match current_matches_page.len() {
+                0 => "No matches".into(),
+                1 => "1 match".into(),
+                count => format!("{count} matches"),
+            },
+            Self::Error { .. } => "Path search failed".into(),
+        };
+        let content = match self {
+            Self::Success {
+                current_matches_page,
+                ..
+            } if !current_matches_page.is_empty() => current_matches_page
+                .iter()
+                .map(|path| {
+                    let uri = MentionUri::File {
+                        abs_path: path.clone(),
+                    };
+                    acp::ToolCallContent::from(acp::ContentBlock::ResourceLink(
+                        acp::ResourceLink::new(path.to_string_lossy(), uri.to_uri().to_string()),
+                    ))
+                })
+                .collect(),
+            Self::Success { .. } => {
+                vec![acp::ToolCallContent::from("No matches found".to_string())]
+            }
+            Self::Error { error } => vec![acp::ToolCallContent::from(error.clone())],
+        };
+        event_stream.update_fields(|update| update.title(title).content(content));
+    }
+}
+
 impl From<FindPathToolOutput> for LanguageModelToolResultContent {
     fn from(output: FindPathToolOutput) -> Self {
         match output {
@@ -141,41 +178,27 @@ impl AgentTool for FindPathTool {
                 }
             };
             let paginated_matches: &[PathBuf] = &matches[cmp::min(input.offset, matches.len())
-                ..cmp::min(input.offset + RESULTS_PER_PAGE, matches.len())];
+                ..cmp::min(input.offset.saturating_add(RESULTS_PER_PAGE), matches.len())];
 
-            event_stream.update_fields(
-                |update| update
-                    .title(if paginated_matches.is_empty() {
-                        "No matches".to_string()
-                    } else if paginated_matches.len() == 1 {
-                        "1 match".to_string()
-                    } else {
-                        format!("{} matches", paginated_matches.len())
-                    })
-                    .content(
-                        paginated_matches
-                            .iter()
-                            .map(|path| {
-                                let uri = MentionUri::File {
-                                    abs_path: path.clone(),
-                                };
-                                acp::ToolCallContent::from(
-                                    acp::ContentBlock::ResourceLink(acp::ResourceLink::new(
-                                        path.to_string_lossy(),
-                                        uri.to_uri().to_string(),
-                                    )),
-                                )
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-            );
-
-            Ok(FindPathToolOutput::Success {
+            let output = FindPathToolOutput::Success {
                 offset: input.offset,
                 current_matches_page: paginated_matches.to_vec(),
                 all_matches_len: matches.len(),
-            })
+            };
+            output.emit_update(&event_stream);
+            Ok(output)
         })
+    }
+
+    fn replay(
+        &self,
+        _input: Self::Input,
+        output: Self::Output,
+        event_stream: ToolCallEventStream,
+        _cx: &mut App,
+    ) -> Result<()> {
+        output.emit_update(&event_stream);
+        Ok(())
     }
 }
 
