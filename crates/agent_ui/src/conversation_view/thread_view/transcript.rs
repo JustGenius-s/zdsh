@@ -788,9 +788,11 @@ impl ThreadView {
             return Empty.into_any_element();
         }
 
+        let button_size = KitSize::Size(turn_footer_button_size(cx));
+
         let copy_response_button = copy_response_index.map(|response_index| {
             PillButton::new(("copy_agent_response", entry_ix))
-                .size(KitSize::XSmall)
+                .size(button_size)
                 .icon(IconName::Copy)
                 .tooltip(Tooltip::text("Copy This Agent Response"))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -804,7 +806,7 @@ impl ThreadView {
 
         let scroll_to_recent_user_prompt =
             PillButton::new(("scroll_to_recent_user_prompt", entry_ix))
-                .size(KitSize::XSmall)
+                .size(button_size)
                 .icon(IconName::UserArrowUp)
                 .tooltip(Tooltip::text("Scroll to User Message"))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -813,7 +815,7 @@ impl ThreadView {
 
         let scroll_to_top = is_thread_bottom.then(|| {
             PillButton::new(("scroll_to_top", entry_ix))
-                .size(KitSize::XSmall)
+                .size(button_size)
                 .icon(IconName::ArrowUp)
                 .tooltip(Tooltip::text("Scroll to Top"))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -853,7 +855,7 @@ impl ThreadView {
                         .gap_0p5()
                         .child(
                             PillButton::new("feedback-thumbs-up")
-                                .size(KitSize::XSmall)
+                                .size(button_size)
                                 .icon(IconName::ThumbsUp)
                                 .toggle_state(feedback == Some(ThreadFeedback::Positive))
                                 .tooltip(move |window, cx| match feedback {
@@ -873,7 +875,7 @@ impl ThreadView {
                         )
                         .child(
                             PillButton::new("feedback-thumbs-down")
-                                .size(KitSize::XSmall)
+                                .size(button_size)
                                 .icon(IconName::ThumbsDown)
                                 .toggle_state(feedback == Some(ThreadFeedback::Negative))
                                 .tooltip(move |window, cx| match feedback {
@@ -1744,14 +1746,22 @@ impl ParentElement for TurnFooter {
     }
 }
 
+/// Sizes the turn footer's icon buttons so their icons match the transcript's text, since
+/// GPUI Kit draws a button's icon at three quarters of the button's size.
+fn turn_footer_button_size(cx: &App) -> Pixels {
+    ThemeSettings::get_global(cx).agent_ui_font_size(cx) / 0.75
+}
+
 impl RenderOnce for TurnFooter {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let button_size = turn_footer_button_size(cx);
+        let icon_padding = (button_size - button_size * 0.75) / 2.;
         h_flex()
             .id(self.id)
             .w_full()
             .pt_2()
             // Lines the icons, rather than the buttons around them, up with the text.
-            .pl(TEXT_INSET - px(4.))
+            .pl(TEXT_INSET - icon_padding)
             .pr(TEXT_INSET)
             .gap_0p5()
             .text_xs()
