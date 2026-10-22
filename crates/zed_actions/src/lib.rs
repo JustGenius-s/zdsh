@@ -595,6 +595,13 @@ pub mod agent {
     #[serde(deny_unknown_fields)]
     pub struct NewThread;
 
+    /// Adds files or directories to the current Agent draft.
+    #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+    #[action(namespace = agent)]
+    pub struct AddPathsToThread {
+        pub paths: Vec<std::path::PathBuf>,
+    }
+
     /// Selects the agent used for new threads in the agent panel, without
     /// opening the panel. The selected agent is launched the next time the
     /// panel is opened.

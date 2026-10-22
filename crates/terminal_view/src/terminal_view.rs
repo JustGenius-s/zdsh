@@ -1664,6 +1664,31 @@ impl Item for TerminalView {
         TabCategory::Terminal
     }
 
+    fn tab_status(&self, cx: &App) -> Option<(SharedString, Color)> {
+        let terminal = self.terminal().read(cx);
+        if let Some(task) = terminal.task() {
+            return match task.status {
+                TaskStatus::Running => Some(("Running".into(), Color::Accent)),
+                TaskStatus::Completed { success: true } => {
+                    Some(("Completed".into(), Color::Success))
+                }
+                TaskStatus::Completed { success: false } => Some(("Failed".into(), Color::Error)),
+                TaskStatus::Unknown => None,
+            };
+        }
+        match terminal.command_input_state() {
+            terminal::CommandInputState::Running => Some(("Running".into(), Color::Accent)),
+            terminal::CommandInputState::Starting => Some(("Starting".into(), Color::Muted)),
+            terminal::CommandInputState::Exited => Some(("Exited".into(), Color::Muted)),
+            _ => terminal
+                .command_blocks()
+                .last()
+                .and_then(|block| block.exit_code)
+                .filter(|code| *code != 0)
+                .map(|code| (format!("Exit {code}").into(), Color::Error)),
+        }
+    }
+
     fn tab_tooltip_content(&self, cx: &App) -> Option<TabTooltipContent> {
         Some(TabTooltipContent::Custom(Box::new(Tooltip::element({
             let terminal = self.terminal().read(cx);

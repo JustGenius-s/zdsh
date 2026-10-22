@@ -203,7 +203,7 @@ impl ThreadView {
                 let expanded = self.entry_view_state.read(cx).is_turn_fold_expanded(&fold);
                 let header = (entry_ix == fold.entries.start)
                     .then(|| self.render_turn_fold_header(&fold, expanded, cx));
-                let content = expanded.then(|| {
+                let content = (expanded || entry_ix == fold.reply_entry_ix).then(|| {
                     self.render_unfolded_entry(entry_ix, total_entries, entry, window, cx)
                 });
                 if header.is_none() && content.is_none() {
@@ -369,8 +369,14 @@ impl ThreadView {
                 let thread = self.thread.read(cx);
                 if let Some((_, elicitation)) = thread.elicitation(elicitation_id)
                     && should_render_elicitation(elicitation)
+                    && (self.is_subagent() || !self.questionnaires.contains_key(elicitation_id))
                 {
-                    let elicitation = self.render_elicitation(entry_ix, elicitation, window, cx);
+                    let elicitation =
+                        if let Some(questionnaire) = self.questionnaires.get(elicitation_id) {
+                            div().px(TEXT_INSET).child(questionnaire.clone())
+                        } else {
+                            self.render_elicitation(entry_ix, elicitation, window, cx)
+                        };
 
                     if let Some(handle) = self
                         .entry_view_state
@@ -601,6 +607,8 @@ impl ThreadView {
                 .map(|this| {
                     if is_first_indented {
                         this.pt_0p5()
+                    } else if !is_indented && entry_ix > 0 {
+                        this.pt(px(32.))
                     } else {
                         this.pt(ROW_GAP)
                     }
@@ -636,6 +644,11 @@ impl ThreadView {
         let is_last = entry_ix + 1 == total_entries;
         let is_generating = self.thread.read(cx).status() == ThreadStatus::Generating;
         let last_chunk_ix = message.chunks.len().saturating_sub(1);
+        let thoughts_folded =
+            TurnFold::containing(self.thread.read(cx), entry_ix, cx).is_some_and(|fold| {
+                entry_ix == fold.reply_entry_ix
+                    && !self.entry_view_state.read(cx).is_turn_fold_expanded(&fold)
+            });
 
         let chunks = message
             .chunks
@@ -652,19 +665,12 @@ impl ThreadView {
                             .into_any_element()
                     })
                 }
-                AssistantMessageChunk::Thought { block, .. } => {
-                    block.visible_content(cx).then(|| {
-                        let is_streaming = is_generating && is_last && chunk_ix == last_chunk_ix;
-                        self.render_thinking_block(
-                            entry_ix,
-                            chunk_ix,
-                            block,
-                            is_streaming,
-                            window,
-                            cx,
-                        )
-                    })
-                }
+                AssistantMessageChunk::Thought { block, .. } => (!thoughts_folded
+                    && block.visible_content(cx))
+                .then(|| {
+                    let is_streaming = is_generating && is_last && chunk_ix == last_chunk_ix;
+                    self.render_thinking_block(entry_ix, chunk_ix, block, is_streaming, window, cx)
+                }),
             })
             .collect::<Vec<_>>();
 
@@ -735,35 +741,44 @@ impl ThreadView {
         let copy_response_button = copy_response_index.map(|response_index| {
             PillButton::new(("copy_agent_response", entry_ix))
                 .size(button_size)
-                .icon(IconName::Copy)
+                .icon(if self.copied_response_index == Some(response_index) {
+                    IconName::Check
+                } else {
+                    IconName::Copy
+                })
                 .tooltip(Tooltip::text("Copy This Agent Response"))
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     let entries = this.thread.read(cx).entries();
                     if let Some(text) = Self::get_agent_message_content(entries, response_index, cx)
                     {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        this.copied_response_index = Some(response_index);
+                        this.show_success_toast("Response copied", window, cx);
+                        this.copied_response_reset = Some(cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(Duration::from_secs(2)).await;
+                            this.update(cx, |this, cx| {
+                                this.copied_response_index = None;
+                                cx.notify();
+                            })
+                            .log_err();
+                        }));
+                        cx.notify();
                     }
                 }))
         });
 
-        let scroll_to_recent_user_prompt =
-            PillButton::new(("scroll_to_recent_user_prompt", entry_ix))
-                .size(button_size)
-                .icon(IconName::UserArrowUp)
-                .tooltip(Tooltip::text("Scroll to User Message"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.scroll_to_user_message_index(user_message_index, cx);
-                }));
-
-        let scroll_to_top = is_thread_bottom.then(|| {
-            PillButton::new(("scroll_to_top", entry_ix))
-                .size(button_size)
-                .icon(IconName::ArrowUp)
-                .tooltip(Tooltip::text("Scroll to Top"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.scroll_to_top(cx);
-                }))
-        });
+        let fork_response = copy_response_index
+            .filter(|_| self.as_native_thread(cx).is_some() && !self.is_subagent())
+            .map(|response_index| {
+                PillButton::new(("fork-response", entry_ix))
+                    .size(button_size)
+                    .icon(IconName::GitBranch)
+                    .disabled(is_generating || needs_confirmation)
+                    .tooltip(Tooltip::text("Fork Conversation Here"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.fork_at_response(response_index, window, cx);
+                    }))
+            });
 
         let show_stats = is_thread_bottom && AgentSettings::get_global(cx).show_turn_stats;
 
@@ -795,7 +810,7 @@ impl ThreadView {
                         "Rating the thread sends all of your current conversation to the Zed team.";
 
                     h_flex()
-                        .gap_0p5()
+                        .gap_2()
                         .child(
                             PillButton::new("feedback-thumbs-up")
                                 .size(button_size)
@@ -848,8 +863,7 @@ impl ThreadView {
         )
         .children(feedback_buttons)
         .children(copy_response_button)
-        .child(scroll_to_recent_user_prompt)
-        .children(scroll_to_top)
+        .children(fork_response)
         .into_any_element()
     }
 
@@ -1730,7 +1744,7 @@ impl RenderOnce for TurnFooter {
             // Lines the icons, rather than the buttons around them, up with the text.
             .pl(TEXT_INSET - icon_padding)
             .pr(TEXT_INSET)
-            .gap_0p5()
+            .gap_2()
             .text_xs()
             .text_color(text_shades(cx).tertiary)
             .opacity(0.5)

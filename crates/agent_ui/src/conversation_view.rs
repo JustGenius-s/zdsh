@@ -112,6 +112,7 @@ pub(crate) const DRAFT_PROMPT_PERSIST_DEBOUNCE: Duration = Duration::from_millis
 
 pub(crate) mod elicitation;
 mod message_queue;
+mod questionnaire;
 mod thread_search_bar;
 mod thread_view;
 pub use message_queue::*;
@@ -407,6 +408,9 @@ impl Conversation {
             PermissionOptions::DropdownWithPatterns { patterns, .. } => patterns.len(),
             _ => 0,
         };
+        if pattern_index >= pattern_count {
+            return;
+        }
         match self.permission_selections.get_mut(&request_id) {
             Some(selection @ thread_view::PermissionSelection::SelectedPatterns(_)) => {
                 selection.toggle_pattern(pattern_index);
@@ -414,9 +418,7 @@ impl Conversation {
             _ => {
                 self.permission_selections.insert(
                     request_id,
-                    thread_view::PermissionSelection::SelectedPatterns(
-                        (0..pattern_count).collect(),
-                    ),
+                    thread_view::PermissionSelection::SelectedPatterns(vec![pattern_index]),
                 );
             }
         }
@@ -795,6 +797,8 @@ pub struct ConversationView {
     pub(crate) root_session_id: Option<acp_v2::SessionId>,
     server_state: ServerState,
     pending_selections: Vec<AgentContextSelection>,
+    pending_paths: Vec<project::ProjectPath>,
+    pending_worktrees: Vec<Entity<project::Worktree>>,
     focus_handle: FocusHandle,
     notifications: Vec<WindowHandle<AgentNotification>>,
     notification_subscriptions: HashMap<WindowHandle<AgentNotification>, Vec<Subscription>>,
@@ -1120,6 +1124,8 @@ impl ConversationView {
                 cx,
             ),
             pending_selections: Vec::new(),
+            pending_paths: Vec::new(),
+            pending_worktrees: Vec::new(),
             notifications: Vec::new(),
             notification_subscriptions: HashMap::default(),
             auth_task: None,
@@ -1434,6 +1440,14 @@ impl ConversationView {
                                 thread.message_editor.update(cx, |editor, cx| {
                                     for selection in std::mem::take(&mut this.pending_selections) {
                                         editor.insert_selections(selection, window, cx);
+                                    }
+                                    if !this.pending_paths.is_empty() {
+                                        editor.insert_dragged_files(
+                                            std::mem::take(&mut this.pending_paths),
+                                            std::mem::take(&mut this.pending_worktrees),
+                                            window,
+                                            cx,
+                                        );
                                     }
                                 });
                             });
@@ -3553,7 +3567,7 @@ impl ConversationView {
     }
 
     pub(crate) fn insert_dragged_files(
-        &self,
+        &mut self,
         paths: Vec<project::ProjectPath>,
         added_worktrees: Vec<Entity<project::Worktree>>,
         window: &mut Window,
@@ -3566,6 +3580,10 @@ impl ConversationView {
                     editor.focus_handle(cx).focus(window, cx);
                 })
             });
+        } else {
+            self.pending_paths.extend(paths);
+            self.pending_worktrees.extend(added_worktrees);
+            cx.notify();
         }
     }
 
@@ -3627,7 +3645,7 @@ impl ConversationView {
     }
 
     pub(crate) fn has_pending_selections(&self) -> bool {
-        !self.pending_selections.is_empty()
+        !self.pending_selections.is_empty() || !self.pending_paths.is_empty()
     }
 
     /// Inserts the selected text into the message editor or the message being

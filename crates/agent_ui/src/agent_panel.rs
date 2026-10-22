@@ -607,6 +607,51 @@ pub fn init(cx: &mut App) {
                     },
                 )
                 .register_action(
+                    |workspace: &mut Workspace,
+                     action: &zed_actions::agent::AddPathsToThread,
+                     window,
+                     cx| {
+                        let Some(panel) = workspace.panel::<AgentPanel>(cx) else {
+                            return;
+                        };
+                        let paths = action
+                            .paths
+                            .iter()
+                            .filter_map(|path| {
+                                workspace.project().read(cx).find_project_path(path, cx)
+                            })
+                            .collect::<Vec<_>>();
+                        if paths.is_empty() {
+                            return;
+                        }
+                        if !panel.focus_handle(cx).contains_focused(window, cx) {
+                            workspace.toggle_panel_focus::<AgentPanel>(window, cx);
+                        }
+                        window.defer(cx, move |window, cx| {
+                            panel.update(cx, |panel, cx| {
+                                if panel.active_conversation_view().is_none() {
+                                    panel.activate_new_thread(
+                                        true,
+                                        AgentThreadSource::AgentPanel,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                                if let Some(conversation) = panel.active_conversation_view() {
+                                    conversation.update(cx, |conversation, cx| {
+                                        conversation.insert_dragged_files(
+                                            paths,
+                                            Vec::new(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }
+                            })
+                        });
+                    },
+                )
+                .register_action(
                     |workspace: &mut Workspace, _: &AddSelectionToThread, window, cx| {
                         let Some(agent_panel) = workspace.panel::<AgentPanel>(cx) else {
                             return;

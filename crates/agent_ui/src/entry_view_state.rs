@@ -179,7 +179,7 @@ pub(crate) struct TurnFold {
     pub(crate) prompt_entry_ix: usize,
     /// The folded entries.
     pub(crate) entries: Range<usize>,
-    pub(crate) is_last_turn: bool,
+    pub(crate) reply_entry_ix: usize,
 }
 
 impl TurnFold {
@@ -208,14 +208,9 @@ impl TurnFold {
                 Some(AgentThreadEntry::AssistantMessage(message)) if has_reply(message, cx)
             )
         })?;
-        let last_work_ix = (turn.start..reply_ix).rev().find(|&ix| {
-            entries
-                .get(ix)
-                .is_some_and(|entry| is_work(entry, cx) && is_foldable(thread, entry))
-        })?;
         // Elicitations, compactions and answered questions stay in view, so only the work after
         // the last of them folds.
-        let start = (turn.start..last_work_ix)
+        let start = (turn.start..reply_ix)
             .rev()
             .find(|&ix| {
                 entries
@@ -223,11 +218,18 @@ impl TurnFold {
                     .is_some_and(|entry| !is_foldable(thread, entry))
             })
             .map_or(turn.start, |ix| ix + 1);
-        let folded = start..last_work_ix + 1;
+        let folded = start..reply_ix + 1;
+        if !folded.clone().any(|ix| {
+            entries
+                .get(ix)
+                .is_some_and(|entry| is_work(entry, cx) && is_foldable(thread, entry))
+        }) {
+            return None;
+        }
         folded.contains(&entry_ix).then_some(Self {
             prompt_entry_ix,
             entries: folded,
-            is_last_turn,
+            reply_entry_ix: reply_ix,
         })
     }
 
@@ -252,7 +254,9 @@ fn has_reply(message: &AssistantMessage, cx: &App) -> bool {
 fn is_work(entry: &AgentThreadEntry, cx: &App) -> bool {
     match entry {
         AgentThreadEntry::ToolCall(tool_call) => !is_hidden_canceled_tool_call(tool_call, cx),
-        AgentThreadEntry::AssistantMessage(message) => is_thought_only(message, cx),
+        AgentThreadEntry::AssistantMessage(message) => message.chunks.iter().any(|chunk| {
+            matches!(chunk, AssistantMessageChunk::Thought { block, .. } if block.visible_content(cx))
+        }),
         _ => false,
     }
 }
@@ -260,7 +264,11 @@ fn is_work(entry: &AgentThreadEntry, cx: &App) -> bool {
 fn is_foldable(thread: &AcpThread, entry: &AgentThreadEntry) -> bool {
     match entry {
         AgentThreadEntry::AssistantMessage(message) => !message.indented,
-        AgentThreadEntry::ToolCall(_) => !thread.is_user_authored_scroll_target(entry),
+        AgentThreadEntry::ToolCall(call) => {
+            // Restored native questions retain their answers in tool output, without a live elicitation.
+            call.tool_name.as_deref() != Some("ask_user")
+                && !thread.is_user_authored_scroll_target(entry)
+        }
         AgentThreadEntry::UserMessage(_)
         | AgentThreadEntry::Elicitation(_)
         | AgentThreadEntry::ContextCompaction(_) => false,
@@ -327,7 +335,6 @@ pub struct EntryViewState {
     expanded_activity_groups: HashSet<acp_v2::ToolCallId>,
     /// Turn folds the user opened or closed, by their prompt's entry index.
     toggled_turn_folds: HashMap<usize, bool>,
-    saw_live_turn: bool,
 }
 
 impl EntryViewState {
@@ -352,7 +359,6 @@ impl EntryViewState {
             expanded_tool_calls: HashSet::default(),
             expanded_activity_groups: HashSet::default(),
             toggled_turn_folds: HashMap::default(),
-            saw_live_turn: false,
         }
     }
 
@@ -387,12 +393,11 @@ impl EntryViewState {
         }
     }
 
-    /// Turns start folded, except the last one when this view watched the agent work.
     pub(crate) fn is_turn_fold_expanded(&self, fold: &TurnFold) -> bool {
         self.toggled_turn_folds
             .get(&fold.prompt_entry_ix)
             .copied()
-            .unwrap_or(fold.is_last_turn && self.saw_live_turn)
+            .unwrap_or(false)
     }
 
     pub(crate) fn toggle_turn_fold_expansion(&mut self, fold: &TurnFold) {
@@ -401,16 +406,12 @@ impl EntryViewState {
             .insert(fold.prompt_entry_ix, !expanded);
     }
 
-    pub(crate) fn note_live_turn(&mut self) {
-        self.saw_live_turn = true;
-    }
-
     /// Whether the entry at `entry_ix` is folded away, into a collapsed turn or activity group.
     pub(crate) fn is_entry_folded(&self, thread: &AcpThread, entry_ix: usize, cx: &App) -> bool {
-        TurnFold::containing(thread, entry_ix, cx)
-            .is_some_and(|fold| !self.is_turn_fold_expanded(&fold))
-            || ActivityGroup::containing(thread, entry_ix, cx)
-                .is_some_and(|group| !self.is_activity_group_expanded(&group))
+        TurnFold::containing(thread, entry_ix, cx).is_some_and(|fold| {
+            entry_ix != fold.reply_entry_ix && !self.is_turn_fold_expanded(&fold)
+        }) || ActivityGroup::containing(thread, entry_ix, cx)
+            .is_some_and(|group| !self.is_activity_group_expanded(&group))
     }
 
     pub(crate) fn toggle_tool_call_expansion(&mut self, tool_call_id: &acp_v2::ToolCallId) {

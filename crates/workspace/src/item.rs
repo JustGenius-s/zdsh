@@ -216,6 +216,10 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
         None
     }
 
+    fn tab_status(&self, _cx: &App) -> Option<(SharedString, Color)> {
+        None
+    }
+
     /// Group for the persistent tab sidebar.
     ///
     /// A singleton buffer is a file. Agent and terminal views override this;
@@ -522,6 +526,7 @@ pub trait ItemHandle: 'static + Send {
     fn tab_content_text(&self, detail: usize, cx: &App) -> SharedString;
     fn suggested_filename(&self, cx: &App) -> SharedString;
     fn tab_icon(&self, window: &Window, cx: &App) -> Option<Icon>;
+    fn tab_status(&self, cx: &App) -> Option<(SharedString, Color)>;
     fn tab_category(&self, cx: &App) -> TabCategory;
     fn tab_tooltip_text(&self, cx: &App) -> Option<SharedString>;
     fn tab_tooltip_content(&self, cx: &App) -> Option<TabTooltipContent>;
@@ -678,6 +683,10 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn tab_icon(&self, window: &Window, cx: &App) -> Option<Icon> {
         self.read(cx).tab_icon(window, cx)
+    }
+
+    fn tab_status(&self, cx: &App) -> Option<(SharedString, Color)> {
+        self.read(cx).tab_status(cx)
     }
 
     fn tab_category(&self, cx: &App) -> TabCategory {

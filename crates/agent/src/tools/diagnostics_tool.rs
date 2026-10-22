@@ -36,8 +36,8 @@ type Result<T, E = String> = core::result::Result<T, E>;
 /// </example>
 ///
 /// <guidelines>
-/// - If you think you can fix a diagnostic, make 1-2 attempts and then give up.
-/// - Don't remove code you've generated just because you can't fix an error. The user can help you fix it.
+/// - Investigate relevant diagnostics and fix their cause. Recheck after making a correction; if blocked, explain the remaining error and what is needed to resolve it.
+/// - Language-server diagnostics can be stale or incomplete. Use the project's build or checks when needed to verify the result, and distinguish existing problems from regressions.
 /// </guidelines>
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DiagnosticsToolInput {

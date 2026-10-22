@@ -12,6 +12,7 @@ use crate::{
 use acp_thread::MentionUri;
 use agent::ThreadStore;
 use agent_client_protocol::schema::v2 as acp_v2;
+use agent_settings::AgentSettings;
 use anyhow::{Result, anyhow};
 use base64::Engine as _;
 use editor::{
@@ -211,6 +212,8 @@ impl PromptCompletionProviderDelegate for MessageEditorCompletionDelegate {
 }
 
 pub struct MessageEditor {
+    prediction: Option<String>,
+    placeholder: String,
     mention_set: Entity<MentionSet>,
     editor: Entity<Editor>,
     workspace: WeakEntity<Workspace>,
@@ -625,6 +628,15 @@ impl MessageEditor {
             }
         }));
 
+        subscriptions.push(cx.observe_global_in::<settings::SettingsStore>(
+            window,
+            |this, window, cx| {
+                if !AgentSettings::get_global(cx).show_composer_predictions {
+                    this.set_prediction(None, window, cx);
+                }
+            },
+        ));
+
         if let Some(language_registry) = language_registry {
             let editor = editor.clone();
             cx.spawn(async move |_, cx| {
@@ -651,6 +663,8 @@ impl MessageEditor {
             thread_store,
             _subscriptions: subscriptions,
             _parse_slash_command_task: Task::ready(()),
+            prediction: None,
+            placeholder: placeholder.to_owned(),
         }
     }
 
@@ -1114,7 +1128,11 @@ impl MessageEditor {
         self.send(cx);
     }
 
-    fn cancel(&mut self, _: &editor::actions::Cancel, _: &mut Window, cx: &mut Context<Self>) {
+    fn cancel(&mut self, _: &editor::actions::Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        if self.prediction.take().is_some() {
+            self.refresh_placeholder(window, cx);
+            return;
+        }
         cx.emit(MessageEditorEvent::Cancel)
     }
 
@@ -1984,9 +2002,63 @@ impl MessageEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.placeholder = placeholder.to_owned();
+        self.refresh_placeholder(window, cx);
+    }
+
+    fn refresh_placeholder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let placeholder = self
+            .prediction
+            .as_ref()
+            .map(|prediction| format!("{prediction}  ⇥ Tab"))
+            .unwrap_or_else(|| self.placeholder.clone());
         self.editor.update(cx, |editor, cx| {
-            editor.set_placeholder_text(placeholder, window, cx);
+            editor.set_placeholder_text(&placeholder, window, cx)
         });
+        cx.notify();
+    }
+
+    pub fn set_prediction(
+        &mut self,
+        prediction: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.prediction == prediction {
+            return;
+        }
+        self.prediction = prediction;
+        self.refresh_placeholder(window, cx);
+    }
+
+    pub(crate) fn can_show_prediction(&self, cx: &App) -> bool {
+        !self.editor.read(cx).read_only(cx)
+            && self.text(cx).is_empty()
+            && self.mention_set.read(cx).is_empty()
+    }
+
+    fn accept_prediction(
+        &mut self,
+        _: &editor::actions::Tab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !AgentSettings::get_global(cx).show_composer_predictions {
+            self.set_prediction(None, window, cx);
+            cx.propagate();
+            return;
+        }
+        if !self.can_show_prediction(cx) {
+            cx.propagate();
+            return;
+        }
+        let Some(prediction) = self.prediction.take() else {
+            cx.propagate();
+            return;
+        };
+        self.refresh_placeholder(window, cx);
+        self.editor
+            .update(cx, |editor, cx| editor.insert(&prediction, window, cx));
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -2200,7 +2272,10 @@ impl Render for ImagePreview {
 }
 
 impl Render for MessageEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !AgentSettings::get_global(cx).show_composer_predictions {
+            self.set_prediction(None, window, cx);
+        }
         let can_remove = !self.editor.read(cx).read_only(cx);
         let attachments = self
             .mention_set
@@ -2227,6 +2302,7 @@ impl Render for MessageEditor {
             .on_action(cx.listener(Self::send_immediately))
             .on_action(cx.listener(Self::chat_with_follow))
             .on_action(cx.listener(Self::cancel))
+            .capture_action(cx.listener(Self::accept_prediction))
             .capture_action(cx.listener(Self::copy))
             .capture_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste_raw))

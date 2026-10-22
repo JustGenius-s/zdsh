@@ -1,5 +1,6 @@
 mod auto_review;
 mod db;
+pub mod debug_session;
 mod legacy_thread;
 mod native_agent_server;
 pub mod outline;

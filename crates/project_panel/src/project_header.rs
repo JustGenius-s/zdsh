@@ -1,16 +1,22 @@
 use std::path::Path;
+use util::ResultExt as _;
 
 use git_ui_core::worktree_picker::WorktreePicker;
 use gpui::{
     Anchor, AnyElement, Context, Entity, Focusable as _, IntoElement, ParentElement, SharedString,
+};
+use gpui_kit::component::{
+    Icon as KitIcon, Sizable,
+    button::{Button as KitButton, ButtonVariants},
+    popover::Popover,
 };
 use project::{
     git_store::Repository, linked_worktree_short_name, project_settings::ProjectSettings,
     repo_identity_path, repo_identity_path_if_local,
 };
 use settings::Settings as _;
-use ui::{PopoverMenu, Tooltip, prelude::*};
-use workspace::{PickerTrigger, panel_header};
+use ui::prelude::*;
+use workspace::panel_header;
 
 use crate::ProjectPanel;
 
@@ -92,7 +98,7 @@ impl ProjectPanel {
         let is_git_enabled = ProjectSettings::get_global(cx).git.enabled.status;
         Some(
             panel_header()
-                .child(self.render_project_name(project_name, cx))
+                .child(self.render_project_name(project_name))
                 .children(
                     repository
                         .filter(|_| is_git_enabled)
@@ -101,41 +107,43 @@ impl ProjectPanel {
         )
     }
 
-    fn render_project_name(
-        &self,
-        name: Option<SharedString>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_project_name(&self, name: Option<SharedString>) -> AnyElement {
         let workspace = self.workspace.clone();
         let display_name = match &name {
             Some(name) => util::truncate_and_trailoff(name, MAX_PROJECT_NAME_LENGTH),
             None => "Open Recent Project".to_string(),
         };
-        let focus_handle = workspace
-            .upgrade()
-            .map(|workspace| workspace.read(cx).focus_handle(cx))
-            .unwrap_or_else(|| cx.focus_handle());
-        let window_project_groups = workspace
-            .upgrade()
-            .and_then(|workspace| workspace.read(cx).multi_workspace()?.upgrade())
-            .map(|multi_workspace| multi_workspace.read(cx).project_group_keys())
-            .unwrap_or_default();
-
-        PopoverMenu::new("recent-projects-menu")
-            .menu(move |window, cx| {
-                Some(recent_projects::RecentProjects::popover(
-                    workspace.clone(),
-                    window_project_groups.clone(),
-                    None,
-                    focus_handle.clone(),
-                    window,
-                    cx,
-                ))
+        Popover::new("recent-projects-menu")
+            .content(move |_, window, cx| {
+                let popover = cx.weak_entity();
+                let state = window.use_keyed_state("recent-projects-content", cx, |window, cx| {
+                    let picker = cx.new(|cx| {
+                        recent_projects::sidebar_recent_projects::SidebarRecentProjects::new(
+                            workspace.clone(),
+                            window,
+                            cx,
+                        )
+                    });
+                    let subscription = cx.subscribe_in(
+                        &picker,
+                        window,
+                        move |_, _, _: &gpui::DismissEvent, window, cx| {
+                            popover
+                                .update(cx, |popover, cx| popover.dismiss(window, cx))
+                                .log_err();
+                        },
+                    );
+                    (picker, subscription)
+                });
+                state.read(cx).0.clone()
             })
             .trigger(
-                PickerTrigger::new("project-name-trigger", display_name).tooltip(|_, cx| {
-                    Tooltip::for_action("Recent Projects", &zed_actions::OpenRecent::default(), cx)
-                }),
+                KitButton::new("project-name-trigger")
+                    .ghost()
+                    .small()
+                    .label(display_name)
+                    .icon(KitIcon::empty().path(IconName::ChevronDown.path()))
+                    .tooltip("Recent Projects"),
             )
             .anchor(Anchor::TopLeft)
             .into_any_element()
@@ -163,26 +171,35 @@ impl ProjectPanel {
 
         let project = self.project.clone();
         let workspace = self.workspace.clone();
-        PopoverMenu::new("worktree-picker-menu")
-            .menu(move |window, cx| {
-                Some(
-                    cx.new(|cx| {
+        Popover::new("worktree-picker-menu")
+            .content(move |_, window, cx| {
+                let popover = cx.weak_entity();
+                let state = window.use_keyed_state("worktree-picker-content", cx, |window, cx| {
+                    let picker = cx.new(|cx| {
                         WorktreePicker::new(project.clone(), workspace.clone(), window, cx)
-                    }),
-                )
+                    });
+                    picker.focus_handle(cx).focus(window, cx);
+                    let subscription = cx.subscribe_in(
+                        &picker,
+                        window,
+                        move |_, _, _: &gpui::DismissEvent, window, cx| {
+                            popover
+                                .update(cx, |popover, cx| popover.dismiss(window, cx))
+                                .log_err();
+                        },
+                    );
+                    (picker, subscription)
+                });
+                state.read(cx).0.clone()
             })
             .trigger(
-                PickerTrigger::new("worktree-picker-trigger", display_label)
-                    .icon(IconName::GitWorktree)
+                KitButton::new("worktree-picker-trigger")
+                    .ghost()
+                    .small()
+                    .label(display_label)
+                    .icon(KitIcon::empty().path(IconName::GitWorktree.path()))
                     .loading(creation_in_progress.is_some())
-                    .tooltip(move |_, cx| {
-                        Tooltip::with_meta(
-                            "Worktree",
-                            Some(&zed_actions::git::Worktree),
-                            format!("Currently In Use: {}", worktree_label),
-                            cx,
-                        )
-                    }),
+                    .tooltip(format!("Worktree: {worktree_label}")),
             )
             .anchor(Anchor::TopLeft)
             .into_any_element()

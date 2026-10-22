@@ -20,8 +20,8 @@ use agent_ui::threads_archive_view::{
 use agent_ui::{
     AcpThreadImportOnboarding, Agent, AgentPanel, AgentPanelEvent, AgentThreadSource,
     ArchiveSelectedThread, CrossChannelImportOnboarding, DEFAULT_THREAD_TITLE, NewTerminalThread,
-    NewThread, RenameSelectedThread, TerminalId, ThreadId, ThreadImportModal,
-    ThreadTitleRegenerationResult, channels_with_threads, import_threads_from_other_channels,
+    RenameSelectedThread, TerminalId, ThreadId, ThreadImportModal, ThreadTitleRegenerationResult,
+    channels_with_threads, import_threads_from_other_channels,
 };
 use agent_ui::{MessageEditorEvent, StateChange, thread_worktree_archive};
 use chrono::{DateTime, Utc};
@@ -32,8 +32,8 @@ use feature_flags::{
 use gpui::{
     Action as _, Animation, AnimationExt as _, AnyElement, App, ClickEvent, Context, DismissEvent,
     Entity, EntityId, FocusHandle, Focusable, KeyContext, ListState, Modifiers, MouseButton,
-    Pixels, Render, SharedString, Task, TaskExt, WeakEntity, Window, anchored, deferred, list,
-    prelude::*, pulsating_between, px, rems,
+    Pixels, Render, SharedString, Task, TaskExt, WeakEntity, Window, list, prelude::*,
+    pulsating_between, px, rems,
 };
 use gpui_kit::{
     base::{Scrollbar, ScrollbarAxis, ScrollbarMode, StyledExt as _},
@@ -42,7 +42,6 @@ use gpui_kit::{
         button::{Button as KitButton, ButtonVariants as _},
         h_flex,
         label::Label as KitLabel,
-        menu::{DropdownMenu as _, PopupMenuItem},
         spinner::Spinner,
         tooltip::Tooltip as KitTooltip,
         v_flex,
@@ -57,7 +56,6 @@ use notifications::status_toast::StatusToast;
 use project::{
     AgentId, AgentRegistryStore, Event as ProjectEvent, WorktreeId, repo_identity_path_if_local,
 };
-use recent_projects::sidebar_recent_projects::SidebarRecentProjects;
 use remote::{RemoteConnectionOptions, same_remote_connection_identity};
 
 use serde::{Deserialize, Serialize};
@@ -85,9 +83,7 @@ use workspace::{
     notifications::NotificationId,
 };
 
-use git_ui_core::worktree_service::{RemoteBranchName, worktree_create_targets};
 use zed_actions::editor::{MoveDown, MoveUp};
-use zed_actions::{CreateWorktree, NewWorktreeBranchTarget, OpenRecent};
 
 use zed_actions::agents_sidebar::{FocusSidebarFilter, ToggleThreadSwitcher};
 use zed_actions::unified_search::{self, SearchTab};
@@ -128,7 +124,6 @@ enum SerializedSidebarView {
 
 #[derive(Clone, Copy)]
 enum NewEntryTarget {
-    Agent,
     LastCreatedKind,
     Terminal,
 }
@@ -711,35 +706,6 @@ fn connect_remote(
     remote_connection::connect_with_modal(&modal_workspace, connection_options, window, cx)
 }
 
-// Per-project-group cache of the remote default branch, used to populate the
-// "Create New Worktree" submenu without doing git I/O while the menu is open.
-enum DefaultBranchCache {
-    Pending,
-    Resolved(Option<RemoteBranchName>),
-}
-
-// Mirrors the behavior of the worktree picker's "Create new worktree" entries.
-fn create_worktree_in_workspace(
-    workspace: &Entity<Workspace>,
-    branch_target: NewWorktreeBranchTarget,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    workspace.update(cx, |workspace, cx| {
-        let focused_dock = workspace.focused_dock_position(window, cx);
-        git_ui_core::worktree_service::handle_create_worktree(
-            workspace,
-            &CreateWorktree {
-                worktree_name: None,
-                branch_target,
-            },
-            window,
-            focused_dock,
-            cx,
-        );
-    });
-}
-
 /// The sidebar re-derives its entire entry list from scratch on every
 /// change via `update_entries` → `rebuild_contents`. Avoid adding
 /// incremental or inter-event coordination state — if something can
@@ -790,11 +756,8 @@ pub struct Sidebar {
     view: SidebarView,
     restoring_tasks: HashMap<agent_ui::ThreadId, Task<()>>,
     /// The picker for adding a project, open under the "Workspaces" header.
-    recent_projects: Option<Entity<SidebarRecentProjects>>,
     project_header_menu_handles: HashMap<usize, PopoverMenuHandle<ContextMenu>>,
-    project_header_new_thread_menu_handles: HashMap<usize, PopoverMenuHandle<ContextMenu>>,
     project_header_menu_ix: Option<usize>,
-    worktree_default_branches: HashMap<ProjectGroupKey, DefaultBranchCache>,
     _subscriptions: Vec<gpui::Subscription>,
     _draft_editor_observations: Vec<gpui::Subscription>,
     update_task: Option<Task<()>>,
@@ -924,11 +887,8 @@ impl Sidebar {
             draft_kinds: HashMap::new(),
             view: SidebarView::default(),
             restoring_tasks: HashMap::new(),
-            recent_projects: None,
             project_header_menu_handles: HashMap::new(),
-            project_header_new_thread_menu_handles: HashMap::new(),
             project_header_menu_ix: None,
-            worktree_default_branches: HashMap::new(),
             _subscriptions: Vec::new(),
             _draft_editor_observations: Vec::new(),
             update_task: None,
@@ -1330,7 +1290,6 @@ impl Sidebar {
         cx.spawn_in(window, async move |this, cx| {
             let workspace = task.await?;
             this.update_in(cx, |this, window, cx| match target {
-                NewEntryTarget::Agent => this.create_new_thread(&workspace, window, cx),
                 NewEntryTarget::LastCreatedKind => this.create_new_entry(&workspace, window, cx),
                 NewEntryTarget::Terminal => this.create_new_terminal(&workspace, window, cx),
             })?;
@@ -1931,8 +1890,6 @@ impl Sidebar {
         // Preserve measurements for unchanged entries so sticky headers do not flicker.
         self.apply_list_state_diff(&previous_shapes, multi_workspace.read(cx));
 
-        self.prefetch_worktree_default_branches(cx);
-
         if had_notifications != self.has_notifications(cx) {
             multi_workspace.update(cx, |_, cx| {
                 cx.notify();
@@ -2124,9 +2081,6 @@ impl Sidebar {
                 has_threads,
             } => {
                 self.project_header_menu_handles.entry(ix).or_default();
-                self.project_header_new_thread_menu_handles
-                    .entry(ix)
-                    .or_default();
 
                 self.render_project_header(
                     ix,
@@ -2298,13 +2252,6 @@ impl Sidebar {
                     .end(
                         h_flex()
                             .gap_1()
-                            .child(self.render_new_thread_button(
-                                ix,
-                                id_prefix,
-                                key,
-                                &group_name,
-                                cx,
-                            ))
                             .child(self.render_project_header_ellipsis_menu(
                                 ix,
                                 id_prefix,
@@ -2348,291 +2295,6 @@ impl Sidebar {
         } else {
             header.into_any_element()
         }
-    }
-
-    fn render_new_thread_button(
-        &self,
-        ix: usize,
-        id_prefix: &str,
-        key: &ProjectGroupKey,
-        group_name: &SharedString,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let menu_handle = self
-            .project_header_new_thread_menu_handles
-            .get(&ix)
-            .cloned()
-            .unwrap_or_default();
-        let is_menu_open = menu_handle.is_deployed();
-
-        let button = sidebar_icon_button(
-            SharedString::from(format!("{id_prefix}project-header-new-thread-{ix}")),
-            IconName::Plus,
-        )
-        .tooltip_with_action("New Thread", &NewThread, Some("Workspace"))
-        .when(!is_menu_open, |this| this.visible_on_hover(group_name));
-
-        let open_workspaces = self
-            .multi_workspace
-            .upgrade()
-            .map(|mw| mw.read(cx).workspaces_for_project_group(key, cx))
-            .unwrap_or_default();
-
-        if open_workspaces.is_empty() {
-            let key = key.clone();
-            return button
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.set_group_expanded(&key, true, cx);
-                    this.selection = None;
-                    if let Some(workspace) = this.workspace_for_group(&key, cx) {
-                        this.create_new_entry(&workspace, window, cx);
-                    } else {
-                        this.open_workspace_and_create_entry(
-                            &key,
-                            NewEntryTarget::LastCreatedKind,
-                            window,
-                            cx,
-                        );
-                    }
-                }))
-                .into_any_element();
-        }
-
-        let this = cx.weak_entity();
-        let key = key.clone();
-
-        PopoverMenu::new(SharedString::from(format!(
-            "{id_prefix}project-header-new-thread-menu-{ix}"
-        )))
-        .with_handle(menu_handle)
-        .trigger(MenuTrigger(button))
-        .anchor(gpui::Anchor::TopLeft)
-        .on_open(Rc::new({
-            let this = this.clone();
-            move |_window, cx| {
-                this.update(cx, |_sidebar, cx| cx.notify()).ok();
-            }
-        }))
-        .menu(move |window, cx| {
-            let this = this.clone();
-            let key = key.clone();
-            let open_workspaces = open_workspaces.clone();
-            let active_workspace = this
-                .read_with(cx, |sidebar, cx| {
-                    sidebar
-                        .multi_workspace
-                        .upgrade()
-                        .map(|mw| mw.read(cx).workspace().clone())
-                })
-                .ok()
-                .flatten();
-            let workspace_labels: Vec<_> = open_workspaces
-                .iter()
-                .map(|workspace| workspace_menu_worktree_labels(workspace, cx))
-                .collect();
-
-            Some(ContextMenu::build(
-                window,
-                cx,
-                move |mut menu, _window, cx| {
-                    menu = menu.header("New Thread In…");
-
-                    for (workspace, labels) in open_workspaces
-                        .iter()
-                        .cloned()
-                        .zip(workspace_labels.iter().cloned())
-                    {
-                        let is_active_workspace = active_workspace.as_ref() == Some(&workspace);
-                        menu = menu.custom_entry(
-                            move |_window, _cx| {
-                                h_flex()
-                                    .w_full()
-                                    .gap_2()
-                                    .justify_between()
-                                    .child(h_flex().min_w_0().gap_1().children(
-                                        labels.iter().enumerate().map(|(label_ix, label)| {
-                                            h_flex()
-                                                .gap_1()
-                                                .when(label_ix > 0, |this| {
-                                                    this.child(Label::new("•").alpha(0.25))
-                                                })
-                                                .child(label.render())
-                                                .into_any_element()
-                                        }),
-                                    ))
-                                    .when(is_active_workspace, |this| {
-                                        this.child(
-                                            Icon::new(IconName::Check)
-                                                .size(IconSize::Small)
-                                                .color(Color::Accent),
-                                        )
-                                    })
-                                    .into_any_element()
-                            },
-                            {
-                                let this = this.clone();
-                                let key = key.clone();
-                                let workspace = workspace.clone();
-                                move |window, cx| {
-                                    this.update(cx, |sidebar, cx| {
-                                        sidebar.set_group_expanded(&key, true, cx);
-                                        sidebar.selection = None;
-                                        sidebar.create_new_entry(&workspace, window, cx);
-                                    })
-                                    .ok();
-                                }
-                            },
-                        );
-                    }
-
-                    let base_workspace = active_workspace
-                        .as_ref()
-                        .filter(|workspace| open_workspaces.contains(workspace))
-                        .cloned()
-                        .or_else(|| open_workspaces.first().cloned());
-
-                    // Only offer worktree creation when the base project can
-                    // actually create one; otherwise the submenu would expand to
-                    // nothing. Mirrors the picker's `creation_blocked_reason`.
-                    let creation_blocked = base_workspace.as_ref().is_none_or(|base_workspace| {
-                        let project = base_workspace.read(cx).project().read(cx);
-                        project.is_via_collab() || project.repositories(cx).is_empty()
-                    });
-
-                    if let Some(base_workspace) = base_workspace.filter(|_| !creation_blocked) {
-                        menu = menu.separator().submenu("Create New Worktree…", {
-                            let this = this.clone();
-                            move |mut submenu, _window, submenu_cx| {
-                                let project = base_workspace.read(submenu_cx).project().clone();
-                                let project_ref = project.read(submenu_cx);
-                                let has_multiple_repositories =
-                                    project_ref.repositories(submenu_cx).len() > 1;
-                                let current_branch =
-                                    project_ref.active_repository(submenu_cx).and_then(|repo| {
-                                        repo.read(submenu_cx)
-                                            .branch
-                                            .as_ref()
-                                            .map(|branch| branch.name().to_string())
-                                    });
-                                let default_branch = this
-                                    .read_with(submenu_cx, |sidebar, _| {
-                                        match sidebar.worktree_default_branches.get(&key) {
-                                            Some(DefaultBranchCache::Resolved(branch)) => {
-                                                branch.clone()
-                                            }
-                                            _ => None,
-                                        }
-                                    })
-                                    .ok()
-                                    .flatten();
-
-                                let targets = worktree_create_targets(
-                                    has_multiple_repositories,
-                                    default_branch,
-                                    current_branch.as_deref(),
-                                );
-                                for target in targets {
-                                    let label = format!(
-                                        "Based on {}",
-                                        target.branch_label(
-                                            has_multiple_repositories,
-                                            current_branch.as_deref(),
-                                        )
-                                    );
-                                    let branch_target = target.branch_target();
-                                    let workspace = base_workspace.clone();
-                                    submenu = submenu.entry(label, None, move |window, cx| {
-                                        create_worktree_in_workspace(
-                                            &workspace,
-                                            branch_target.clone(),
-                                            window,
-                                            cx,
-                                        );
-                                    });
-                                }
-
-                                submenu
-                            }
-                        });
-                    }
-
-                    menu
-                },
-            ))
-        })
-        .anchor(gpui::Anchor::TopRight)
-        .offset(gpui::Point {
-            x: px(0.),
-            y: px(1.),
-        })
-        .into_any_element()
-    }
-
-    // Warms `worktree_default_branches` for every project group with at least one
-    // open workspace. The git query runs off the menu path so the submenu can read
-    // the result synchronously when it opens. Worktrees of a repository share the
-    // same default branch, so any workspace in the group yields the same answer.
-    fn prefetch_worktree_default_branches(&mut self, cx: &mut Context<Self>) {
-        let Some(multi_workspace) = self.multi_workspace.upgrade() else {
-            return;
-        };
-        let keys: Vec<ProjectGroupKey> = self
-            .contents
-            .entries
-            .iter()
-            .filter_map(|entry| match entry {
-                ListEntry::ProjectHeader { key, .. } => Some(key.clone()),
-                _ => None,
-            })
-            .collect();
-        for key in keys {
-            if self.worktree_default_branches.contains_key(&key) {
-                continue;
-            }
-            let Some(base) = multi_workspace
-                .read(cx)
-                .workspaces_for_project_group(&key, cx)
-                .first()
-                .cloned()
-            else {
-                continue;
-            };
-            self.prefetch_worktree_default_branch(&key, &base, cx);
-        }
-    }
-
-    fn prefetch_worktree_default_branch(
-        &mut self,
-        key: &ProjectGroupKey,
-        workspace: &Entity<Workspace>,
-        cx: &mut Context<Self>,
-    ) {
-        // Presence of the key means the group is already pending or resolved. The
-        // no-repository case is deliberately not inserted so it retries on a
-        // later rebuild once the repository has finished loading.
-        if self.worktree_default_branches.contains_key(key) {
-            return;
-        }
-        let Some(repository) = workspace.read(cx).project().read(cx).active_repository(cx) else {
-            return;
-        };
-        let request = repository.update(cx, |repository, _| repository.default_branch(true));
-        self.worktree_default_branches
-            .insert(key.clone(), DefaultBranchCache::Pending);
-        let key = key.clone();
-        cx.spawn(async move |this, cx| {
-            let default_branch = request.await.ok().and_then(Result::ok).flatten();
-            let parsed = default_branch.as_deref().and_then(RemoteBranchName::parse);
-            this.update(cx, |sidebar, cx| {
-                sidebar
-                    .worktree_default_branches
-                    .insert(key, DefaultBranchCache::Resolved(parsed));
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
     }
 
     fn render_project_header_ellipsis_menu(
@@ -6511,164 +6173,39 @@ impl Sidebar {
             .into_any_element()
     }
 
-    fn toggle_recent_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.recent_projects.take().is_some() {
-            cx.notify();
-            return;
-        }
-        let Some(multi_workspace) = self.multi_workspace.upgrade() else {
-            return;
-        };
-        let workspace = multi_workspace.read(cx).workspace().clone();
-        let window_project_groups = multi_workspace.read(cx).project_group_keys();
-        let focus_handle = workspace.read(cx).focus_handle(cx);
-        let recent_projects = SidebarRecentProjects::popover(
-            workspace.downgrade(),
-            window_project_groups,
-            focus_handle,
-            window,
-            cx,
-        );
-
-        let previous_focus = window.focused(cx);
-        cx.subscribe_in(
-            &recent_projects,
-            window,
-            move |this, recent_projects, _: &DismissEvent, window, cx| {
-                if recent_projects
-                    .focus_handle(cx)
-                    .contains_focused(window, cx)
-                    && let Some(previous_focus) = previous_focus.as_ref()
-                {
-                    window.focus(previous_focus, cx);
-                }
-                this.recent_projects = None;
-                cx.notify();
-            },
-        )
-        .detach();
-
-        // Like popover menus, the picker is drawn deferred, so it can only take focus once it's
-        // part of a frame.
-        let picker_focus = recent_projects.focus_handle(cx);
-        window.on_next_frame(move |window, _cx| {
-            window.on_next_frame(move |window, cx| {
-                window.focus(&picker_focus, cx);
-            });
-        });
-        self.recent_projects = Some(recent_projects);
-        cx.notify();
-    }
-
     fn render_collection_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let sidebar = cx.weak_entity();
-        let menu = sidebar_icon_button("sidebar-collection-menu", IconName::Ellipsis)
-            .tooltip("More Actions")
-            .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
-                let sidebar = sidebar.clone();
-                menu.item(
-                    PopupMenuItem::new("Open Project…").on_click(|_, window, cx| {
-                        window.dispatch_action(search_projects_action(), cx);
-                    }),
-                )
-                .item(
-                    PopupMenuItem::new("Recent Projects…").on_click(move |_, window, cx| {
-                        sidebar
-                            .update(cx, |sidebar, cx| sidebar.toggle_recent_projects(window, cx))
-                            .log_err();
-                    }),
-                )
-            });
-
-        let recent_projects = self.recent_projects.clone().map(|recent_projects| {
-            div().absolute().top_full().right_0().child(
-                deferred(
-                    anchored()
-                        .anchor(gpui::Anchor::TopRight)
-                        .snap_to_window_with_margin(px(8.))
-                        .child(
-                            div()
-                                .occlude()
-                                .mt_1()
-                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                    this.recent_projects = None;
-                                    cx.notify();
-                                }))
-                                .child(recent_projects),
-                        ),
-                )
-                .with_priority(1),
-            )
-        });
-
-        v_flex()
+        h_flex()
             .flex_none()
             .w_full()
-            .gap_2()
             .px_3()
-            .pt_2()
-            .pb_3()
+            .py_2()
+            .min_h(rems(2.5))
+            .justify_between()
+            .gap_2()
+            .child(KitLabel::new("Threads").font_semibold().truncate())
             .child(
                 h_flex()
-                    .w_full()
-                    .min_h(rems(2.))
-                    .justify_between()
-                    .gap_2()
-                    .child(KitLabel::new("Threads").font_semibold().truncate())
+                    .flex_none()
+                    .gap_1p5()
                     .child(
-                        h_flex()
-                            .flex_none()
-                            .gap_1p5()
-                            .child(
-                                sidebar_icon_button("search-threads", IconName::MagnifyingGlass)
-                                    .tooltip_with_action(
-                                        "Search Threads",
-                                        &FocusSidebarFilter,
-                                        Some("ThreadsSidebar"),
-                                    )
-                                    .on_click(|_, window, cx| open_thread_search(window, cx)),
+                        sidebar_icon_button("search-threads", IconName::MagnifyingGlass)
+                            .tooltip_with_action(
+                                "Search Threads",
+                                &FocusSidebarFilter,
+                                Some("ThreadsSidebar"),
                             )
-                            .child(
-                                sidebar_icon_button("thread-history", IconName::Archive)
-                                    .tooltip_with_action(
-                                        "Thread History",
-                                        &ToggleThreadHistory,
-                                        Some("ThreadsSidebar"),
-                                    )
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_archive(window, cx)
-                                    })),
-                            )
-                            .child(div().relative().child(menu).children(recent_projects)),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(
-                        KitButton::new("new-sidebar-thread")
-                            .primary()
-                            .small()
-                            .flex_1()
-                            .icon(sidebar_icon(IconName::Plus))
-                            .label("New Thread")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.create_entry_in_selected_group(
-                                    NewEntryTarget::Agent,
-                                    window,
-                                    cx,
-                                );
-                            })),
+                            .on_click(|_, window, cx| open_thread_search(window, cx)),
                     )
                     .child(
-                        KitButton::new("new-sidebar-terminal")
-                            .small()
-                            .child(sidebar_icon(IconName::Terminal).size(rems(1.125)))
-                            .tooltip("New Terminal")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_terminal_thread(&NewTerminalThread, window, cx);
-                            })),
+                        sidebar_icon_button("thread-history", IconName::Archive)
+                            .tooltip_with_action(
+                                "Thread History",
+                                &ToggleThreadHistory,
+                                Some("ThreadsSidebar"),
+                            )
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.show_archive(window, cx)),
+                            ),
                     ),
             )
     }
@@ -6713,7 +6250,6 @@ impl Sidebar {
 
         if let Some(workspace) = workspace {
             match target {
-                NewEntryTarget::Agent => self.create_new_thread(&workspace, window, cx),
                 NewEntryTarget::Terminal => self.create_new_terminal(&workspace, window, cx),
                 NewEntryTarget::LastCreatedKind => self.create_new_entry(&workspace, window, cx),
             }
@@ -7543,12 +7079,6 @@ fn open_thread_search(window: &mut Window, cx: &mut App) {
     );
 }
 
-fn search_projects_action() -> Box<dyn gpui::Action> {
-    Box::new(unified_search::Toggle {
-        tab: Some(SearchTab::Projects),
-    })
-}
-
 fn render_import_onboarding_banner(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
@@ -7741,9 +7271,6 @@ impl Render for Sidebar {
             .on_action(cx.listener(Self::on_previous_project))
             .on_action(cx.listener(Self::on_next_thread))
             .on_action(cx.listener(Self::on_previous_thread))
-            .on_action(cx.listener(|this, _: &OpenRecent, window, cx| {
-                this.toggle_recent_projects(window, cx);
-            }))
             .font(ui_font)
             .size_full()
             .min_w_0()

@@ -10,6 +10,11 @@ use gpui::{
     InteractiveElement, IntoElement, Modifiers, ModifiersChangedEvent, ParentElement, PromptLevel,
     Render, SharedString, Styled, Subscription, Task, TaskExt, WeakEntity, Window, actions,
 };
+use gpui_kit::component::{
+    Icon as KitIcon, IndexPath,
+    button::{Button as KitButton, ButtonVariants},
+    list::{List as KitList, ListDelegate, ListEvent, ListItem as KitListItem, ListState},
+};
 use picker::{Picker, PickerDelegate, PickerEditorPosition};
 use project::{Project, git_store::RepositoryEvent, repo_identity_path_if_local};
 use ui::{
@@ -41,6 +46,7 @@ actions!(
 
 pub struct WorktreePicker {
     picker: Entity<Picker<WorktreePickerDelegate>>,
+    kit_list: Option<Entity<ListState<WorktreeListDelegate>>>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -213,9 +219,47 @@ impl WorktreePicker {
             cx.emit(DismissEvent);
         }));
 
+        let kit_list = (!show_footer).then(|| {
+            let list = cx.new(|cx| {
+                ListState::new(
+                    WorktreeListDelegate {
+                        picker: picker.clone(),
+                    },
+                    window,
+                    cx,
+                )
+                .searchable(true)
+            });
+            let observed_list = list.clone();
+            subscriptions.push(
+                cx.observe_in(&picker, window, move |_, picker, window, cx| {
+                    let indices = WorktreeListDelegate::indices(&picker.read(cx).delegate);
+                    let selected = picker.read(cx).delegate.selected_index;
+                    let index = indices
+                        .iter()
+                        .position(|index| *index == selected)
+                        .map(|row| IndexPath::new(row));
+                    observed_list.update(cx, |list, cx| {
+                        list.set_selected_index(index, window, cx);
+                        cx.notify();
+                    });
+                }),
+            );
+            subscriptions.push(cx.subscribe(&list, |_, _, event, cx| {
+                if matches!(event, ListEvent::Cancel) {
+                    cx.emit(DismissEvent);
+                }
+            }));
+            list
+        });
+        let focus_handle = kit_list
+            .as_ref()
+            .map(|list| list.focus_handle(cx))
+            .unwrap_or_else(|| picker.focus_handle(cx));
         Self {
-            focus_handle: picker.focus_handle(cx),
+            focus_handle,
             picker,
+            kit_list,
             _subscriptions: subscriptions,
         }
     }
@@ -247,7 +291,14 @@ impl Render for WorktreePicker {
         v_flex()
             .key_context("WorktreePicker")
             .elevation_3(cx)
-            .child(self.picker.clone())
+            .child(match &self.kit_list {
+                Some(list) => KitList::new(list)
+                    .w(rems(26.))
+                    .h(rems(24.))
+                    .search_placeholder("Select or create a worktree…")
+                    .into_any_element(),
+                None => self.picker.clone().into_any_element(),
+            })
             .on_modifiers_changed(cx.listener(Self::handle_modifiers_changed))
             .on_mouse_down_out(cx.listener(|_, _, _, cx| {
                 cx.emit(DismissEvent);
@@ -268,6 +319,227 @@ impl Render for WorktreePicker {
                     picker.delegate.delete_worktree(ix, true, window, cx);
                 });
             }))
+    }
+}
+
+struct WorktreeListDelegate {
+    picker: Entity<Picker<WorktreePickerDelegate>>,
+}
+impl WorktreeListDelegate {
+    fn indices(delegate: &WorktreePickerDelegate) -> Vec<usize> {
+        delegate
+            .matches
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                (!matches!(
+                    entry,
+                    WorktreeEntry::Separator | WorktreeEntry::SectionHeader(_)
+                ))
+                .then_some(index)
+            })
+            .collect()
+    }
+}
+impl ListDelegate for WorktreeListDelegate {
+    type Item = KitListItem;
+    fn items_count(&self, _: usize, cx: &App) -> usize {
+        Self::indices(&self.picker.read(cx).delegate).len()
+    }
+    fn perform_search(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Task<()> {
+        self.picker.update(cx, |picker, cx| {
+            picker.set_query(query, window, cx);
+        });
+        Task::ready(())
+    }
+    fn set_selected_index(
+        &mut self,
+        index: Option<IndexPath>,
+        _: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) {
+        let Some(index) = index.and_then(|index| {
+            Self::indices(&self.picker.read(cx).delegate)
+                .get(index.row)
+                .copied()
+        }) else {
+            return;
+        };
+        self.picker.update(cx, |picker, _| {
+            picker.delegate.selected_index = index;
+        });
+    }
+    fn confirm(&mut self, secondary: bool, window: &mut Window, cx: &mut Context<ListState<Self>>) {
+        self.picker.update(cx, |picker, cx| {
+            picker.delegate.confirm(secondary, window, cx);
+        });
+    }
+    fn render_item(
+        &mut self,
+        index: IndexPath,
+        _: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let delegate = &self.picker.read(cx).delegate;
+        let original_index = *Self::indices(delegate).get(index.row)?;
+        let entry = delegate.matches.get(original_index)?;
+        let mut current = false;
+        let mut deleting = false;
+        let mut can_delete = false;
+        let mut worktree_path = None;
+        let mut can_remove = false;
+        let (label, description, disabled) = match entry {
+            WorktreeEntry::CreateFromCurrentBranch => (
+                "New Worktree".to_string(),
+                format!(
+                    "From {}",
+                    delegate
+                        .current_branch_name
+                        .as_deref()
+                        .unwrap_or("current branch")
+                ),
+                delegate.creation_blocked_reason(cx),
+            ),
+            WorktreeEntry::CreateFromDefaultBranch { default_branch } => (
+                "New Worktree".to_string(),
+                format!("From {}", default_branch.branch_name),
+                delegate.creation_blocked_reason(cx),
+            ),
+            WorktreeEntry::CreateNamed {
+                name,
+                from_branch,
+                disabled_reason,
+            } => (
+                format!("Create {name}"),
+                from_branch
+                    .as_ref()
+                    .map(|branch| format!("From {}", branch.branch_name))
+                    .unwrap_or_else(|| "From current branch".into()),
+                disabled_reason.clone().map(SharedString::from),
+            ),
+            WorktreeEntry::Worktree { worktree, .. } => {
+                current = delegate.active_worktree_paths.contains(&worktree.path);
+                deleting = delegate.deleting_worktree_paths.contains(&worktree.path);
+                can_delete = delegate.can_delete_worktree(worktree);
+                can_remove = !current && delegate.project_worktree_paths.contains(&worktree.path);
+                worktree_path = Some(worktree.path.clone());
+                (
+                    worktree.directory_name(delegate.worktree_name_anchor()),
+                    format!(
+                        "{} · {}",
+                        worktree.ref_name.as_deref().unwrap_or("Detached"),
+                        worktree.path.compact().display()
+                    ),
+                    None,
+                )
+            }
+            _ => return None,
+        };
+        let icon = if current {
+            IconName::Check
+        } else if worktree_path.is_some() {
+            IconName::GitWorktree
+        } else {
+            IconName::Plus
+        };
+        let picker = self.picker.clone();
+        Some(
+            KitListItem::new(original_index)
+                .h(rems(3.))
+                .disabled(disabled.is_some() || deleting)
+                .child(
+                    gpui_kit::base::h_flex()
+                        .gap_2()
+                        .min_w_0()
+                        .child(KitIcon::empty().path(icon.path()).size_4())
+                        .child(
+                            gpui_kit::base::v_flex()
+                                .min_w_0()
+                                .child(div().truncate().child(label))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .opacity(0.65)
+                                        .truncate()
+                                        .child(disabled.unwrap_or_else(|| description.into())),
+                                ),
+                        ),
+                )
+                .when(!current && worktree_path.is_some(), |item| {
+                    item.suffix(move |_, _| {
+                        let path = worktree_path.clone();
+                        gpui_kit::base::h_flex()
+                            .gap_1()
+                            .child(
+                                KitButton::new(("open-worktree-window", original_index))
+                                    .ghost()
+                                    .icon(KitIcon::empty().path(IconName::ArrowUpRight.path()))
+                                    .tooltip("Open in New Window")
+                                    .on_click(move |_, window, cx| {
+                                        cx.stop_propagation();
+                                        if let Some(path) = &path {
+                                            window.dispatch_action(
+                                                Box::new(OpenWorktreeInNewWindow {
+                                                    path: path.clone(),
+                                                }),
+                                                cx,
+                                            );
+                                        }
+                                    }),
+                            )
+                            .when(can_remove, |row| {
+                                let picker = picker.clone();
+                                row.child(
+                                    KitButton::new(("remove-worktree-window", original_index))
+                                        .ghost()
+                                        .icon(KitIcon::empty().path(IconName::Close.path()))
+                                        .tooltip("Remove from Window")
+                                        .on_click(move |_, window, cx| {
+                                            cx.stop_propagation();
+                                            picker.update(cx, |picker, cx| {
+                                                if let Some(WorktreeEntry::Worktree {
+                                                    worktree,
+                                                    ..
+                                                }) = picker.delegate.matches.get(original_index)
+                                                {
+                                                    let path = worktree.path.clone();
+                                                    picker.delegate.remove_worktree_from_window(
+                                                        &path, window, cx,
+                                                    );
+                                                }
+                                            });
+                                        }),
+                                )
+                            })
+                            .when(can_delete, |row| {
+                                let picker = picker.clone();
+                                row.child(
+                                    KitButton::new(("delete-worktree", original_index))
+                                        .ghost()
+                                        .icon(KitIcon::empty().path(IconName::Trash.path()))
+                                        .tooltip("Delete Worktree (Alt: force)")
+                                        .on_click(move |_, window, cx| {
+                                            cx.stop_propagation();
+                                            picker.update(cx, |picker, cx| {
+                                                let force = picker.delegate.modifiers.alt;
+                                                picker.delegate.delete_worktree(
+                                                    original_index,
+                                                    force,
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        }),
+                                )
+                            })
+                    })
+                }),
+        )
     }
 }
 

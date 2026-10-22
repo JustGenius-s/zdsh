@@ -1,8 +1,8 @@
 use agent_settings::AgentSettings;
 use gpui::{
-    Anchor, App, ElementId, Entity, EntityId, Focusable as _, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement as _, Styled, TaskExt, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px, rems,
+    Anchor, App, ElementId, Entity, EntityId, Focusable as _, InteractiveElement as _, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement as _, Styled, TaskExt, WeakEntity,
+    Window, div, prelude::FluentBuilder as _, px, rems,
 };
 use gpui_kit::{
     assets::IconName as KitIconName,
@@ -10,11 +10,13 @@ use gpui_kit::{
         Collapsible, Icon, Side, Sizable as _,
         button::{Button, ButtonVariants as _},
         h_flex,
+        list::ListItem,
         menu::{DropdownMenu, PopupMenu},
-        sidebar::{Sidebar, SidebarCollapsible, SidebarItem, SidebarMenu, SidebarMenuItem},
+        sidebar::{Sidebar, SidebarCollapsible, SidebarItem},
     },
 };
 use settings::Settings as _;
+use std::rc::Rc;
 use ui::Tooltip;
 use util::ResultExt as _;
 
@@ -50,12 +52,10 @@ impl Workspace {
 
         for pane in self.panes() {
             for item in pane.read(cx).items() {
-                let menu_item = tab_menu_item(
-                    item.as_ref(),
-                    active_item_id == Some(item.item_id()),
-                    &workspace,
-                    cx,
-                );
+                let menu_item = TabSidebarItem {
+                    item: Rc::from(item.boxed_clone()),
+                    active: active_item_id == Some(item.item_id()),
+                };
                 match item.tab_category(cx) {
                     TabCategory::Agent => agent_items.push(menu_item),
                     TabCategory::Terminal => terminal_items.push(menu_item),
@@ -161,9 +161,15 @@ impl Workspace {
 }
 
 #[derive(Clone)]
+struct TabSidebarItem {
+    item: Rc<dyn ItemHandle>,
+    active: bool,
+}
+
+#[derive(Clone)]
 struct TabGroup {
     category: TabCategory,
-    items: Vec<SidebarMenuItem>,
+    items: Vec<TabSidebarItem>,
     workspace: WeakEntity<Workspace>,
     collapsed: bool,
 }
@@ -186,15 +192,21 @@ impl SidebarItem for TabGroup {
         cx: &mut App,
     ) -> impl IntoElement {
         let id = id.into();
-        let menu = SidebarMenu::new()
-            .children(self.items)
-            .collapsed(self.collapsed)
-            .pl(if self.collapsed { rems(0.) } else { rems(1.) });
+        let menu = div()
+            .id(id)
+            .flex()
+            .flex_col()
+            .gap_2()
+            .pl(if self.collapsed { rems(0.) } else { rems(1.) })
+            .children(self.items.into_iter().map(|item| {
+                tab_menu_item(item.item.as_ref(), item.active, &self.workspace, window, cx)
+            }));
         let category_color = theme::ActiveTheme::theme(cx).colors().text_accent;
         let workspace = self.workspace;
         div()
             .flex()
             .flex_col()
+            .group("tab-category")
             .when(!self.collapsed, |group| {
                 group.child(
                     Button::new(self.category.label())
@@ -212,7 +224,12 @@ impl SidebarItem for TabGroup {
                                 .child(Icon::new(category_icon(self.category)).size(rems(1.)))
                                 .child(self.category.label()),
                         )
-                        .child(Icon::new(KitIconName::Ellipsis).size(rems(1.)))
+                        .child(
+                            div()
+                                .invisible()
+                                .group_hover("tab-category", |style| style.visible())
+                                .child(Icon::new(KitIconName::Ellipsis).size(rems(1.))),
+                        )
                         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
                             let Some(workspace) = workspace.upgrade() else {
                                 return menu;
@@ -223,14 +240,14 @@ impl SidebarItem for TabGroup {
                         }),
                 )
             })
-            .child(menu.render(id, window, cx))
+            .child(menu)
             .into_any_element()
     }
 }
 
 fn tab_group(
     category: TabCategory,
-    items: Vec<SidebarMenuItem>,
+    items: Vec<TabSidebarItem>,
     workspace: &WeakEntity<Workspace>,
 ) -> TabGroup {
     TabGroup {
@@ -245,11 +262,21 @@ fn tab_menu_item(
     item: &dyn ItemHandle,
     active: bool,
     workspace: &WeakEntity<Workspace>,
+    window: &Window,
     cx: &App,
-) -> SidebarMenuItem {
+) -> ListItem {
     let item_id = item.item_id();
     let category = item.tab_category(cx);
     let title = item.tab_content_text(0, cx);
+    let status = item.tab_status(cx);
+    let icon = item
+        .tab_icon(window, cx)
+        .map(|icon| icon.into_any_element())
+        .unwrap_or_else(|| {
+            Icon::new(category_icon(category))
+                .size(rems(1.))
+                .into_any_element()
+        });
     let accessible_name = item.tab_tooltip_text(cx).unwrap_or_else(|| title.clone());
     let dirty_color = if item.has_conflict(cx) {
         Some(theme::ActiveTheme::theme(cx).status().warning)
@@ -263,10 +290,17 @@ fn tab_menu_item(
     let activate_item = item.boxed_clone();
     let close_id = SharedString::from(format!("tab-sidebar-close-{item_id}"));
 
-    SidebarMenuItem::new(title)
+    ListItem::new(SharedString::from(format!("tab-sidebar-{item_id}")))
         .accessibility_label(accessible_name)
-        .icon(category_icon(category))
-        .active(active)
+        .selected(active)
+        .child(
+            h_flex()
+                .gap_2()
+                .min_w_0()
+                .flex_1()
+                .child(icon)
+                .child(div().min_w_0().truncate().child(title)),
+        )
         .on_click(move |_, window, cx| {
             workspace_for_activate
                 .update(cx, |workspace, cx| {
@@ -280,6 +314,16 @@ fn tab_menu_item(
             h_flex()
                 .items_center()
                 .gap_1()
+                .when_some(status.clone(), |row, (label, color)| {
+                    row.child(
+                        div()
+                            .id("tab-status")
+                            .text_xs()
+                            .text_color(color.color(cx))
+                            .tooltip(Tooltip::text(label.clone()))
+                            .child(label),
+                    )
+                })
                 .when_some(dirty_color, |row, color| {
                     row.child(div().size(px(6.)).flex_shrink_0().rounded_full().bg(color))
                 })

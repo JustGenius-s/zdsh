@@ -167,6 +167,9 @@ impl Item for ConversationItem {
     fn tab_category(&self, _: &App) -> TabCategory {
         TabCategory::Agent
     }
+    fn tab_status(&self, cx: &App) -> Option<(SharedString, Color)> {
+        self.status(cx).map(|(label, color)| (label.into(), color))
+    }
     fn tab_content(&self, params: TabContentParams, _: &Window, cx: &App) -> AnyElement {
         h_flex()
             .min_w_0()

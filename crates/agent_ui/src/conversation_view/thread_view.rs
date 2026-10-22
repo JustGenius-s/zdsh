@@ -529,13 +529,6 @@ impl PermissionSelection {
         }
     }
 
-    fn has_any_checked_patterns(&self) -> bool {
-        match self {
-            Self::SelectedPatterns(checked) => !checked.is_empty(),
-            _ => false,
-        }
-    }
-
     pub(super) fn toggle_pattern(&mut self, index: usize) {
         if let Self::SelectedPatterns(checked) = self {
             if let Some(pos) = checked.iter().position(|&i| i == index) {
@@ -576,7 +569,7 @@ pub struct ThreadView {
     pub mode_selector: Option<Entity<ModeSelector>>,
     pub model_selector: Option<Entity<ModelSelectorPopover>>,
     pub profile_selector: Option<Entity<ProfileSelector>>,
-    pub permission_dropdown_handle: PopoverMenuHandle<ContextMenu>,
+    pub permission_dropdown_handle: PopoverMenuHandle<PopupMenu>,
     pub thread_retry_status: Option<RetryStatus>,
     pub(super) thread_error: Option<ThreadError>,
     pub thread_error_markdown: Option<Entity<Markdown>>,
@@ -598,6 +591,8 @@ pub struct ThreadView {
     pub subagent_scroll_handles: RefCell<HashMap<acp_v2::ToolCallId, ScrollHandle>>,
     pub edits_expanded: bool,
     branch_chip_hovered: bool,
+    copied_response_index: Option<usize>,
+    copied_response_reset: Option<Task<()>>,
     pub plan_expanded: bool,
     pub queue_expanded: bool,
     pub editor_expanded: bool,
@@ -610,6 +605,7 @@ pub struct ThreadView {
     pub new_server_version_available: Option<SharedString>,
     pub resumed_without_history: bool,
     elicitation_form_states: HashMap<ElicitationEntryId, ElicitationFormState>,
+    questionnaires: HashMap<ElicitationEntryId, Entity<super::questionnaire::Questionnaire>>,
     pub _cancel_task: Option<Task<()>>,
     _save_task: Option<Task<()>>,
     _draft_resolve_task: Option<Task<()>>,
@@ -624,6 +620,9 @@ pub struct ThreadView {
     composer_bounds: Rc<Cell<Option<gpui::Bounds<Pixels>>>>,
     context_usage_expanded: bool,
     cursor_usage_expanded: bool,
+    debug_panel_expanded: bool,
+    debug_reproduction_seen: Option<usize>,
+    prediction_task: Option<Task<()>>,
     /// Whether the docked composer puts its controls on a row below the input, as it does once
     /// the input takes more than one line.
     composer_stacked: bool,
@@ -990,6 +989,18 @@ impl ThreadView {
             // usable model
             if let Some(native_thread) = native_connection.thread(thread.read(cx).session_id(), cx)
             {
+                subscriptions.push(cx.observe_in(
+                    &native_thread,
+                    window,
+                    |this, thread, window, cx| {
+                        if thread.read(cx).profile().as_str()
+                            == agent_settings::builtin_profiles::DEBUG
+                        {
+                            this.clear_composer_prediction(window, cx);
+                        }
+                        cx.notify();
+                    },
+                ));
                 subscriptions.push(cx.subscribe(
                     &native_thread,
                     |this: &mut Self, _thread, _event: &agent::ModelChanged, cx| {
@@ -1004,11 +1015,23 @@ impl ThreadView {
         if let Some(cursor_state) = cursor_agent::State::global(cx) {
             subscriptions.push(cx.observe(&cursor_state, |_, _, cx| cx.notify()));
         }
-        subscriptions.push(cx.subscribe(
+        subscriptions.push(cx.observe_global_in::<settings::SettingsStore>(
+            window,
+            |this, window, cx| {
+                if !AgentSettings::get_global(cx).show_composer_predictions {
+                    this.clear_composer_prediction(window, cx);
+                }
+            },
+        ));
+        subscriptions.push(cx.subscribe_in(
             &thread,
-            |this, _, event: &acp_thread::AcpThreadEvent, cx| {
-                if matches!(event, acp_thread::AcpThreadEvent::Stopped { .. }) {
+            window,
+            |this, _, event: &acp_thread::AcpThreadEvent, window, cx| {
+                if let acp_thread::AcpThreadEvent::Stopped { stop_reason, .. } = event {
                     this.refresh_cursor_usage_after_turn(cx);
+                    if matches!(stop_reason, Some(acp_v2::StopReason::EndTurn)) {
+                        this.request_composer_prediction(window, cx);
+                    }
                 }
             },
         ));
@@ -1084,6 +1107,8 @@ impl ThreadView {
             subagent_scroll_handles: RefCell::new(HashMap::default()),
             edits_expanded: false,
             branch_chip_hovered: false,
+            copied_response_index: None,
+            copied_response_reset: None,
             plan_expanded: false,
             queue_expanded: true,
             editor_expanded: false,
@@ -1095,6 +1120,7 @@ impl ThreadView {
             is_loading_contents: false,
             new_server_version_available: None,
             elicitation_form_states: HashMap::default(),
+            questionnaires: HashMap::default(),
             _cancel_task: None,
             _save_task: None,
             _draft_resolve_task: None,
@@ -1106,6 +1132,9 @@ impl ThreadView {
             composer_bounds: Rc::default(),
             context_usage_expanded: false,
             cursor_usage_expanded: false,
+            debug_panel_expanded: false,
+            debug_reproduction_seen: None,
+            prediction_task: None,
             composer_stacked: false,
             empty_thread_placeholder: placeholder,
             placeholder_shows_follow_up: None,
@@ -1218,6 +1247,15 @@ impl ThreadView {
             }
         }
 
+        if matches!(
+            event,
+            MessageEditorEvent::Edited
+                | MessageEditorEvent::Send
+                | MessageEditorEvent::SendImmediately
+                | MessageEditorEvent::Cancel
+        ) {
+            self.clear_composer_prediction(window, cx);
+        }
         match event {
             MessageEditorEvent::Send => self.send(window, cx),
             MessageEditorEvent::SendImmediately => self.interrupt_and_send(window, cx),
@@ -1237,6 +1275,59 @@ impl ThreadView {
             MessageEditorEvent::InputAttempted { .. } => {}
             MessageEditorEvent::Edited => {}
         }
+    }
+
+    fn clear_composer_prediction(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.prediction_task = None;
+        self.message_editor
+            .update(cx, |editor, cx| editor.set_prediction(None, window, cx));
+    }
+
+    fn request_composer_prediction(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !AgentSettings::get_global(cx).show_composer_predictions
+            || !self.message_editor.read(cx).can_show_prediction(cx)
+            || self.editing_message.is_some()
+        {
+            return;
+        }
+        let Some(thread) = self.as_native_thread(cx) else {
+            return;
+        };
+        if thread.read(cx).profile().as_str() == agent_settings::builtin_profiles::DEBUG {
+            return;
+        }
+        let submission = self.thread.read(cx).latest_submission_id();
+        self.prediction_task = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(400))
+                .await;
+            let prediction = thread
+                .update(cx, |thread, cx| thread.predict_follow_up(cx))
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                if this.thread.read(cx).latest_submission_id() != submission
+                    || !this.message_editor.read(cx).can_show_prediction(cx)
+                    || this.editing_message.is_some()
+                    || this.thread.read(cx).status() != ThreadStatus::Idle
+                    || !AgentSettings::get_global(cx).show_composer_predictions
+                {
+                    return;
+                }
+                match prediction {
+                    Ok(prediction) => this.message_editor.update(cx, |editor, cx| {
+                        editor.set_prediction(prediction, window, cx)
+                    }),
+                    Err(error) => {
+                        log::warn!("Composer prediction failed: {error:#}");
+                        window.push_notification(
+                            Notification::error(format!("Could not suggest a follow-up: {error}")),
+                            cx,
+                        );
+                    }
+                }
+            })
+            .log_err();
+        }));
     }
 
     fn run_local_command(
@@ -1284,6 +1375,108 @@ impl ThreadView {
         let acp_thread = self.thread.read(cx);
         self.as_native_connection(cx)?
             .thread(acp_thread.session_id(), cx)
+    }
+
+    fn fork_at_response(
+        &mut self,
+        entry_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(native_thread) = self.as_native_thread(cx) else {
+            return;
+        };
+        if self.thread.read(cx).status() != ThreadStatus::Idle {
+            return;
+        }
+        let next_prompt = self
+            .thread
+            .read(cx)
+            .entries()
+            .iter()
+            .skip(entry_index + 1)
+            .find_map(|entry| match entry {
+                AgentThreadEntry::UserMessage(message) if !message.indented => {
+                    Some(message.client_id.clone())
+                }
+                _ => None,
+            });
+        let next_prompt = match next_prompt {
+            Some(Some(id)) => Some(id),
+            None => None,
+            Some(None) => {
+                window.push_notification(
+                    Notification::error("This response has no saved boundary to fork from"),
+                    cx,
+                );
+                return;
+            }
+        };
+        let snapshot = native_thread.read(cx).to_db(cx);
+        let source_thread = self.thread.clone();
+        let store = agent::ThreadStore::global(cx);
+        let workspace = self.workspace.clone();
+        let work_dirs = self
+            .project
+            .upgrade()
+            .map(|project| {
+                project
+                    .read(cx)
+                    .worktree_paths(cx)
+                    .folder_path_list()
+                    .clone()
+            })
+            .unwrap_or_default();
+        cx.spawn_in(window, async move |this, cx| {
+            let result: Result<()> = async {
+                let mut snapshot = snapshot.await;
+                if let Some(next_prompt) = &next_prompt {
+                    let cutoff = snapshot.messages.iter().position(|message| {
+                        matches!(message.as_ref(), agent::Message::User(message) if &message.id == next_prompt)
+                    }).ok_or_else(|| anyhow!("The selected response is no longer available to fork"))?;
+                    snapshot.messages.truncate(cutoff);
+                }
+                let retained_prompts = snapshot.messages.iter().filter_map(|message| match message.as_ref() {
+                    agent::Message::User(message) => Some(message.id.clone()),
+                    _ => None,
+                }).collect::<HashSet<_>>();
+                snapshot.request_token_usage.retain(|id, _| retained_prompts.contains(id));
+                if next_prompt.is_some() {
+                    snapshot.cumulative_token_usage = snapshot.request_token_usage.values().copied()
+                        .fold(Default::default(), |total, usage| total + usage);
+                }
+                snapshot.title = format!("{} (fork)", snapshot.title).into();
+                snapshot.updated_at = chrono::Utc::now();
+                snapshot.detailed_summary = None;
+                snapshot.draft_prompt = None;
+                snapshot.ui_scroll_position = None;
+                snapshot.subagent_context = None;
+                // Grants and temporary directories belong to the original session.
+                snapshot.sandbox_grants = Default::default();
+                snapshot.sandboxed_terminal_temp_dir = None;
+                snapshot.auto_reviews.clear();
+                let title = snapshot.title.clone();
+                let session_id = acp_v2::SessionId::new(uuid::Uuid::new_v4().to_string());
+                source_thread.update(cx, |thread, cx| thread.fork_timings(&session_id, entry_index, cx)).await?;
+                store.update(cx, |store, cx| store.save_thread(session_id.clone(), snapshot, work_dirs.clone(), cx)).await?;
+                // Opening a tab reads the previous conversation, so release its entity borrow first.
+                cx.update(|window, cx| {
+                    let workspace = workspace.upgrade().ok_or_else(|| anyhow!("Workspace closed"))?;
+                    let panel = workspace.read(cx).panel::<AgentPanel>(cx).ok_or_else(|| anyhow!("Agent panel unavailable"))?;
+                    panel.update(cx, |panel, cx| panel.open_thread(session_id, Some(work_dirs), Some(title), window, cx));
+                    anyhow::Ok(())
+                })??;
+                Ok(())
+            }.await;
+            if let Err(error) = result {
+                log::error!("Failed to fork conversation: {error:#}");
+                this.update_in(cx, |_, window, cx| {
+                    if window.root::<KitRoot>().flatten().is_some() {
+                        window.push_notification(Notification::error(format!("Could not fork conversation: {error}")), cx);
+                    }
+                }).log_err();
+            }
+        }).detach();
     }
 
     /// Resolves the message editor's contents into content blocks. For profiles
@@ -1396,6 +1589,7 @@ impl ThreadView {
         if self.editing_message_index() == Some(entry_index) {
             return;
         }
+        self.clear_composer_prediction(window, cx);
         let Some(message) = self
             .thread
             .read(cx)
@@ -1647,8 +1841,6 @@ impl ThreadView {
         self.turn_fields.last_turn_duration = None;
         self.turn_fields.last_turn_tokens = None;
         self.turn_fields.turn_tokens = Some(0);
-        self.entry_view_state
-            .update(cx, |state, _cx| state.note_live_turn());
         self.turn_fields._turn_timer_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -3254,7 +3446,7 @@ impl ThreadView {
         if self.pending_allow_blocked_by_confusables(cx) {
             return;
         }
-        self.authorize_pending_with_granularity(true, window, cx);
+        self.authorize_pending_tool_call(acp_v2::PermissionOptionKind::AllowOnce, window, cx);
     }
 
     /// Whether the currently pending permission prompt is blocked by an
@@ -3279,7 +3471,7 @@ impl ThreadView {
     }
 
     pub fn reject_once(&mut self, _: &RejectOnce, window: &mut Window, cx: &mut Context<Self>) {
-        self.authorize_pending_with_granularity(false, window, cx);
+        self.authorize_pending_tool_call(acp_v2::PermissionOptionKind::RejectOnce, window, cx);
     }
 
     pub fn authorize_pending_tool_call(
@@ -3349,6 +3541,34 @@ impl ThreadView {
         };
 
         if is_pending
+            && self.as_native_thread(cx).is_some()
+            && let Some(form) = schema
+                .as_ref()
+                .and_then(agent::AskUserQuestionnaire::from_schema)
+            && !form.questions.is_empty()
+        {
+            if !self.questionnaires.contains_key(&id) {
+                let questionnaire =
+                    cx.new(|cx| super::questionnaire::Questionnaire::new(form, window, cx));
+                let elicitation_id = id.clone();
+                self._subscriptions.push(cx.subscribe(
+                    &questionnaire,
+                    move |this, _, response, cx| {
+                        this.respond_to_elicitation(elicitation_id.clone(), response.clone(), cx);
+                    },
+                ));
+                if self.questionnaires.is_empty() {
+                    questionnaire.focus_handle(cx).focus(window, cx);
+                }
+                self.questionnaires.insert(id, questionnaire);
+            }
+            return;
+        }
+        if !is_pending {
+            self.questionnaires.remove(&id);
+        }
+
+        if is_pending
             && let Some(schema) = schema
             && !self.elicitation_form_states.contains_key(&id)
         {
@@ -3368,7 +3588,7 @@ impl ThreadView {
 
     #[cfg(test)]
     pub(crate) fn has_elicitation_form_state(&self, id: &ElicitationEntryId) -> bool {
-        self.elicitation_form_states.contains_key(id)
+        self.elicitation_form_states.contains_key(id) || self.questionnaires.contains_key(id)
     }
 
     fn submit_elicitation(
@@ -3486,6 +3706,7 @@ impl ThreadView {
         cx: &mut Context<Self>,
     ) {
         self.elicitation_form_states.remove(&elicitation_id);
+        self.questionnaires.remove(&elicitation_id);
         self.thread.update(cx, |thread, cx| {
             thread.cancel_elicitation(&elicitation_id, cx);
         });
@@ -3500,6 +3721,7 @@ impl ThreadView {
     ) {
         let session_id = self.session_id.clone();
         self.elicitation_form_states.remove(&elicitation_id);
+        self.questionnaires.remove(&elicitation_id);
         self.conversation.update(cx, |conversation, cx| {
             conversation.respond_to_elicitation(session_id, elicitation_id, response, cx);
         });
@@ -3603,20 +3825,6 @@ impl ThreadView {
                 cx,
             );
         });
-    }
-
-    fn authorize_pending_with_granularity(
-        &mut self,
-        is_allow: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<()> {
-        let session_id = self.thread.read(cx).session_id().clone();
-        let (returned_session_id, request) = self
-            .conversation
-            .read(cx)
-            .pending_permission_request(&session_id, cx)?;
-        self.authorize_with_granularity(returned_session_id, request.id, is_allow, window, cx)
     }
 
     fn authorize_with_granularity(
@@ -6207,11 +6415,38 @@ impl ThreadView {
                             .separator()
                         })
                         .when_some(selected_text, |menu, selected_text| {
-                            menu.entry("Copy", Some(Box::new(markdown::Copy)), move |_, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                    selected_text.to_string(),
-                                ));
+                            let quoted_text = selected_text.clone();
+                            let entity = entity.clone();
+                            menu.entry("Add to Chat", None, move |window, cx| {
+                                entity.update(cx, |this, cx| {
+                                    let quote = quoted_text
+                                        .lines()
+                                        .map(|line| format!("> {line}"))
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    this.message_editor.update(cx, |editor, cx| {
+                                        editor.append_message(
+                                            vec![acp_v2::ContentBlock::Text(
+                                                acp_v2::TextContent::new(format!("{quote}\n\n")),
+                                            )],
+                                            Some("\n\n"),
+                                            window,
+                                            cx,
+                                        );
+                                        window.focus(&editor.focus_handle(cx), cx);
+                                    });
+                                    cx.notify();
+                                });
                             })
+                            .entry(
+                                "Copy",
+                                Some(Box::new(markdown::Copy)),
+                                move |_, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        selected_text.to_string(),
+                                    ));
+                                },
+                            )
                         })
                         .when_some(selected_markdown, |menu, selected_markdown| {
                             menu.entry(
@@ -6374,6 +6609,7 @@ impl ThreadView {
         entry_ix: usize,
         tool_call_id: &acp_v2::ToolCallId,
         details: &SandboxAuthorizationDetails,
+        compact: bool,
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -6488,52 +6724,34 @@ impl ThreadView {
         });
 
         let unsandboxed_section = details.unsandboxed.then(|| {
-            h_flex()
+            gpui_kit::base::h_flex()
                 .px_2()
                 .py_1()
                 .gap_1p5()
+                .text_size(theme_settings::ThemeSettings::get_global(cx).ui_font_size(cx) * 0.75)
+                .text_color(KitTheme::global(cx).muted_foreground)
                 .child(
-                    Icon::new(IconName::Warning)
-                        .color(Color::Warning)
-                        .size(IconSize::Small),
+                    KitIcon::empty()
+                        .path(IconName::Warning.path())
+                        .text_color(KitTheme::global(cx).warning)
+                        .with_size(KitSize::XSmall),
                 )
-                .child(
-                    Label::new("Runs without the OS sandbox")
-                        .size(LabelSize::Small)
-                        .color(Color::Muted),
-                )
+                .child("Runs without the OS sandbox")
+                .when(compact && !has_windows_fs_warning, |this| {
+                    let url = zed_urls::sandboxing_docs(None, cx);
+                    this.child(
+                        KitButton::new("sandbox-authorization-docs-link")
+                            .ghost()
+                            .xsmall()
+                            .icon(KitIcon::empty().path(IconName::ArrowUpRight.path()))
+                            .tooltip("View Sandboxing Docs")
+                            .on_click(move |_, _, cx| cx.open_url(&url)),
+                    )
+                })
         });
 
-        let reason_section = (!details.reason.is_empty()).then(|| {
-            v_flex()
-                .px_2()
-                .py_1()
-                .gap_0p5()
-                .child(
-                    Label::new("Reason")
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
-                )
-                .child(Label::new(details.reason.clone()).size(LabelSize::Small))
-        });
-
-        let auto_review_section = details.auto_review.clone().map(|auto_review| {
-            v_flex()
-                .px_2()
-                .py_1()
-                .gap_0p5()
-                .child(
-                    Label::new("Auto Review Didn't Allow This")
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
-                )
-                .child(Label::new(auto_review).size(LabelSize::Small))
-        });
-
-        // The command stays in the tool-call title above; here we show what the
-        // command is asking for (paths) and the agent's reason.
         v_flex()
-            .border_t_1()
+            .when(!compact, |this| this.border_t_1())
             .border_color(self.tool_card_border_color(cx))
             .when(has_windows_fs_warning, |this| {
                 this.child(self.render_sandbox_windows_fs_warning(cx))
@@ -6548,22 +6766,23 @@ impl ThreadView {
             })
             .children(write_section)
             .children(unsandboxed_section)
-            .children(reason_section)
-            .children(auto_review_section)
-            .when(!has_windows_fs_warning, |this| {
-                // The Windows-drive warning banner carries its own docs link, so
-                // skip the default one that every other sandbox prompt appends.
-                this.child(
-                    h_flex()
-                        .px_1()
-                        .py_0p5()
-                        .child(self.render_sandbox_docs_link(
-                            "sandbox-authorization-docs-link",
-                            None,
-                            cx,
-                        )),
-                )
-            })
+            .when(
+                !has_windows_fs_warning && !(compact && details.unsandboxed),
+                |this| {
+                    // The Windows-drive warning banner carries its own docs link, so
+                    // skip the default one that every other sandbox prompt appends.
+                    this.child(
+                        h_flex()
+                            .px_1()
+                            .py_0p5()
+                            .child(self.render_sandbox_docs_link(
+                                "sandbox-authorization-docs-link",
+                                None,
+                                cx,
+                            )),
+                    )
+                },
+            )
             .into_any_element()
     }
 

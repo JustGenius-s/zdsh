@@ -1,171 +1,159 @@
-use std::sync::Arc;
-
+use crate::{icon_for_remote_connection, open_remote_project};
 use fuzzy_nucleo::{StringMatch, StringMatchCandidate, match_strings};
 use gpui::{
-    Action, AnyElement, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    Subscription, Task, TaskExt, WeakEntity, Window,
+    Action, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Subscription,
+    Task, WeakEntity, Window,
 };
-use picker::{
-    Picker, PickerDelegate,
-    highlighted_match_with_paths::{HighlightedMatch, HighlightedMatchWithPaths},
+use gpui_kit::component::{
+    Icon as KitIcon, IndexPath,
+    button::{Button, ButtonVariants},
+    list::{List, ListDelegate, ListEvent, ListItem, ListState},
 };
 use remote::RemoteConnectionOptions;
 use settings::Settings;
-use ui::{ButtonLike, KeyBinding, ListItem, ListItemSpacing, Tooltip, prelude::*};
+use ui::prelude::*;
 use util::{ResultExt, paths::PathExt};
 use workspace::{
-    MultiWorkspaceWindow, OpenMode, OpenOptions, ProjectGroupKey, RecentWorkspace,
-    SerializedWorkspaceLocation, Workspace, WorkspaceDb, notifications::DetachAndPromptErr,
+    MultiWorkspaceWindow, OpenMode, OpenOptions, RecentWorkspace, SerializedWorkspaceLocation,
+    Workspace, WorkspaceDb, notifications::DetachAndPromptErr,
 };
-
 use zed_actions::OpenRemote;
 
-use crate::{highlights_for_path, icon_for_remote_connection, open_remote_project};
-
 pub struct SidebarRecentProjects {
-    pub picker: Entity<Picker<SidebarRecentProjectsDelegate>>,
+    list: Entity<ListState<SidebarRecentProjectsDelegate>>,
     _subscription: Subscription,
 }
 
 impl SidebarRecentProjects {
-    pub fn popover(
+    pub fn new(
         workspace: WeakEntity<Workspace>,
-        window_project_groups: Vec<ProjectGroupKey>,
-        _focus_handle: FocusHandle,
         window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self> {
+        cx: &mut Context<Self>,
+    ) -> Self {
         let fs = workspace
             .upgrade()
-            .map(|ws| ws.read(cx).app_state().fs.clone());
-
-        cx.new(|cx| {
-            let delegate = SidebarRecentProjectsDelegate {
-                workspace,
-                window_project_groups,
-                workspaces: Vec::new(),
-                filtered_workspaces: Vec::new(),
-                selected_index: 0,
-                has_any_non_local_projects: false,
-                focus_handle: cx.focus_handle(),
-            };
-
-            let picker: Entity<Picker<SidebarRecentProjectsDelegate>> = cx.new(|cx| {
-                Picker::list(delegate, window, cx)
-                    .list_measure_all()
-                    .show_scrollbar(true)
-                    .initial_width(rems(18.))
-                    .popover()
-            });
-
-            let picker_focus_handle = picker.focus_handle(cx);
-            picker.update(cx, |picker, _| {
-                picker.delegate.focus_handle = picker_focus_handle;
-            });
-
-            let _subscription =
-                cx.subscribe(&picker, |_this: &mut Self, _, _, cx| cx.emit(DismissEvent));
-
-            let db = WorkspaceDb::global(cx);
-            cx.spawn_in(window, async move |this, cx| {
-                let Some(fs) = fs else { return };
-                let workspaces = db
-                    .recent_project_workspaces(fs.as_ref())
-                    .await
-                    .log_err()
-                    .unwrap_or_default();
-                this.update_in(cx, move |this, window, cx| {
-                    this.picker.update(cx, move |picker, cx| {
-                        picker.delegate.set_workspaces(workspaces);
-                        picker.update_matches(picker.query(cx), window, cx)
-                    })
-                })
-                .ok();
-            })
-            .detach();
-
-            picker.focus_handle(cx).focus(window, cx);
-
-            Self {
-                picker,
-                _subscription,
+            .map(|workspace| workspace.read(cx).app_state().fs.clone());
+        let list = cx.new(|cx| {
+            ListState::new(
+                SidebarRecentProjectsDelegate {
+                    workspace,
+                    workspaces: Vec::new(),
+                    filtered_workspaces: Vec::new(),
+                    selected_index: None,
+                    query: String::new(),
+                },
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+        let subscription = cx.subscribe(&list, |_, _, event, cx| {
+            if matches!(event, ListEvent::Confirm(_) | ListEvent::Cancel) {
+                cx.emit(DismissEvent);
             }
+        });
+        let db = WorkspaceDb::global(cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(fs) = fs else { return };
+            let workspaces = db
+                .recent_project_workspaces(fs.as_ref())
+                .await
+                .log_err()
+                .unwrap_or_default();
+            this.update_in(cx, |this, window, cx| {
+                this.list.update(cx, |list, cx| {
+                    list.delegate_mut().workspaces = workspaces;
+                    let query = list.delegate().query.clone();
+                    list.delegate_mut()
+                        .perform_search(&query, window, cx)
+                        .detach();
+                    list.set_selected_index(Some(IndexPath::default()), window, cx);
+                    cx.notify();
+                });
+            })
+            .log_err();
         })
+        .detach();
+        list.focus_handle(cx).focus(window, cx);
+        Self {
+            list,
+            _subscription: subscription,
+        }
     }
 }
-
 impl EventEmitter<DismissEvent> for SidebarRecentProjects {}
-
 impl Focusable for SidebarRecentProjects {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.picker.focus_handle(cx)
+        self.list.focus_handle(cx)
     }
 }
-
 impl Render for SidebarRecentProjects {
-    fn render(&mut self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .key_context("SidebarRecentProjects")
-            .w(rems(18.))
-            .child(self.picker.clone())
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        gpui_kit::base::v_flex()
+            .w(rems(22.))
+            .gap_1()
+            .child(List::new(&self.list).h(rems(20.)))
+            .child(
+                Button::new("open-local-folder")
+                    .ghost()
+                    .label("Open Local Folders")
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(
+                            workspace::Open {
+                                create_new_window: Some(false),
+                            }
+                            .boxed_clone(),
+                            cx,
+                        );
+                        cx.emit(DismissEvent);
+                    })),
+            )
+            .child(
+                Button::new("open-remote-folder")
+                    .ghost()
+                    .label("Open Remote Folder")
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(
+                            OpenRemote {
+                                from_existing_connection: false,
+                                create_new_window: Some(false),
+                            }
+                            .boxed_clone(),
+                            cx,
+                        );
+                        cx.emit(DismissEvent);
+                    })),
+            )
     }
 }
 
-pub struct SidebarRecentProjectsDelegate {
+struct SidebarRecentProjectsDelegate {
     workspace: WeakEntity<Workspace>,
-    window_project_groups: Vec<ProjectGroupKey>,
     workspaces: Vec<RecentWorkspace>,
     filtered_workspaces: Vec<StringMatch>,
-    selected_index: usize,
-    has_any_non_local_projects: bool,
-    focus_handle: FocusHandle,
+    selected_index: Option<usize>,
+    query: String,
 }
-
-impl SidebarRecentProjectsDelegate {
-    pub fn set_workspaces(&mut self, workspaces: Vec<RecentWorkspace>) {
-        self.has_any_non_local_projects = workspaces
-            .iter()
-            .any(|workspace| !matches!(workspace.location, SerializedWorkspaceLocation::Local));
-        self.workspaces = workspaces;
-    }
-}
-
-impl EventEmitter<DismissEvent> for SidebarRecentProjectsDelegate {}
-
-impl PickerDelegate for SidebarRecentProjectsDelegate {
-    type ListItem = AnyElement;
-
-    fn name() -> &'static str {
-        "sidebar recent projects"
-    }
-
-    fn placeholder_text(&self, _window: &mut Window, _cx: &mut App) -> Arc<str> {
-        "Search projects…".into()
-    }
-
-    fn match_count(&self) -> usize {
+impl ListDelegate for SidebarRecentProjectsDelegate {
+    type Item = ListItem;
+    fn items_count(&self, _: usize, _: &App) -> usize {
         self.filtered_workspaces.len()
     }
-
-    fn selected_index(&self) -> usize {
-        self.selected_index
-    }
-
     fn set_selected_index(
         &mut self,
-        ix: usize,
-        _window: &mut Window,
-        _cx: &mut Context<Picker<Self>>,
-    ) {
-        self.selected_index = ix;
-    }
-
-    fn update_matches(
-        &mut self,
-        query: String,
+        index: Option<IndexPath>,
         _: &mut Window,
-        cx: &mut Context<Picker<Self>>,
+        _: &mut Context<ListState<Self>>,
+    ) {
+        self.selected_index = index.map(|index| index.row);
+    }
+    fn perform_search(
+        &mut self,
+        query: &str,
+        _: &mut Window,
+        cx: &mut Context<ListState<Self>>,
     ) -> Task<()> {
+        self.query = query.to_owned();
         let query = query.trim_start();
         let case = fuzzy_nucleo::Case::smart_if_uppercase_in(query);
         let is_empty_query = query.is_empty();
@@ -179,13 +167,7 @@ impl PickerDelegate for SidebarRecentProjectsDelegate {
             .workspaces
             .iter()
             .enumerate()
-            .filter(|(_, workspace)| {
-                Some(workspace.workspace_id) != current_workspace_id
-                    && !self
-                        .window_project_groups
-                        .iter()
-                        .any(|key| key.matches(&workspace.project_group_key()))
-            })
+            .filter(|(_, workspace)| Some(workspace.workspace_id) != current_workspace_id)
             .map(|(id, workspace)| {
                 let combined_string = workspace
                     .identity_paths
@@ -217,12 +199,15 @@ impl PickerDelegate for SidebarRecentProjectsDelegate {
             );
         }
 
-        self.selected_index = 0;
+        self.selected_index = Some(0);
         Task::ready(())
     }
 
-    fn confirm(&mut self, _secondary: bool, window: &mut Window, cx: &mut Context<Picker<Self>>) {
-        let Some(hit) = self.filtered_workspaces.get(self.selected_index) else {
+    fn confirm(&mut self, _: bool, window: &mut Window, cx: &mut Context<ListState<Self>>) {
+        let Some(hit) = self
+            .selected_index
+            .and_then(|index| self.filtered_workspaces.get(index))
+        else {
             return;
         };
         let Some(recent_workspace) = self.workspaces.get(hit.candidate_id) else {
@@ -276,166 +261,56 @@ impl PickerDelegate for SidebarRecentProjectsDelegate {
                 });
             }
         }
-        cx.emit(DismissEvent);
     }
 
-    fn dismissed(&mut self, _window: &mut Window, _cx: &mut Context<Picker<Self>>) {}
-
-    fn no_matches_text(&self, _window: &mut Window, _cx: &mut App) -> Option<SharedString> {
-        let text = if self.workspaces.is_empty() {
-            "Recently opened projects will show up here"
-        } else {
-            "No matches"
-        };
-        Some(text.into())
-    }
-
-    fn render_match(
-        &self,
-        ix: usize,
-        selected: bool,
-        window: &mut Window,
-        cx: &mut Context<Picker<Self>>,
-    ) -> Option<Self::ListItem> {
-        let hit = self.filtered_workspaces.get(ix)?;
+    fn render_item(
+        &mut self,
+        index: IndexPath,
+        _: &mut Window,
+        _: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let hit = self.filtered_workspaces.get(index.row)?;
         let workspace = self.workspaces.get(hit.candidate_id)?;
-
-        let ordered_paths: Vec<_> = workspace
+        let label = workspace
             .identity_paths
             .ordered_paths()
-            .map(|p| p.compact().to_string_lossy().to_string())
-            .collect();
-
-        let tooltip_path: SharedString = match &workspace.location {
-            SerializedWorkspaceLocation::Remote(options) => {
-                let host = options.display_name();
-                if ordered_paths.len() == 1 {
-                    format!("{} ({})", ordered_paths[0], host).into()
-                } else {
-                    format!("{}\n({})", ordered_paths.join("\n"), host).into()
-                }
-            }
-            _ => ordered_paths.join("\n").into(),
-        };
-
-        let mut path_start_offset = 0;
-        let match_labels: Vec<_> = workspace
-            .identity_paths
-            .ordered_paths()
-            .map(|p| p.compact())
             .map(|path| {
-                let (label, path_match) =
-                    highlights_for_path(path.as_ref(), &hit.positions, path_start_offset);
-                path_start_offset += path_match.text.len();
-                label
+                path.file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
             })
-            .collect();
-
-        let prefix = match &workspace.location {
-            SerializedWorkspaceLocation::Remote(options) => {
-                Some(SharedString::from(options.display_name()))
-            }
-            _ => None,
-        };
-
-        let highlighted_match = HighlightedMatchWithPaths {
-            prefix,
-            match_label: HighlightedMatch::join(match_labels.into_iter().flatten(), ", "),
-            paths: Vec::new(),
-            active: false,
-        };
-
-        let icon = icon_for_remote_connection(match &workspace.location {
+            .collect::<Vec<_>>()
+            .join(", ");
+        let path = workspace
+            .identity_paths
+            .ordered_paths()
+            .map(|path| path.compact().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let connection = match &workspace.location {
             SerializedWorkspaceLocation::Local => None,
-            SerializedWorkspaceLocation::Remote(options) => Some(options),
-        });
-
+            SerializedWorkspaceLocation::Remote(connection) => Some(connection),
+        };
+        let subtitle = connection
+            .map(|connection| format!("{} · {}", connection.display_name(), path))
+            .unwrap_or(path);
         Some(
-            ListItem::new(ix)
-                .toggle_state(selected)
-                .inset(true)
-                .spacing(ListItemSpacing::Sparse)
-                .child(
-                    h_flex()
-                        .w_full()
-                        .min_w_0()
-                        .gap_3()
-                        .flex_grow_1()
-                        .when(self.has_any_non_local_projects, |this| {
-                            this.child(Icon::new(icon).color(Color::Muted))
-                        })
-                        .child(highlighted_match.render(window, cx)),
-                )
-                .tooltip(move |_, cx| {
-                    Tooltip::with_meta(
-                        "Open Project in This Window",
-                        None,
-                        tooltip_path.clone(),
-                        cx,
+            ListItem::new(index.row).child(
+                gpui_kit::base::h_flex()
+                    .gap_2()
+                    .min_w_0()
+                    .child(
+                        KitIcon::empty()
+                            .path(icon_for_remote_connection(connection).path())
+                            .size_4(),
                     )
-                })
-                .into_any_element(),
-        )
-    }
-
-    fn render_footer(&self, _: &mut Window, cx: &mut Context<Picker<Self>>) -> Option<AnyElement> {
-        let focus_handle = self.focus_handle.clone();
-
-        Some(
-            v_flex()
-                .p_1p5()
-                .flex_1()
-                .gap_1()
-                .border_t_1()
-                .border_color(cx.theme().colors().border_variant)
-                .child({
-                    let open_action = workspace::Open {
-                        create_new_window: Some(false),
-                    };
-
-                    ButtonLike::new("open_local_folder")
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .gap_1()
-                                .justify_between()
-                                .child(Label::new("Open Local Folders"))
-                                .child(KeyBinding::for_action_in(&open_action, &focus_handle, cx)),
-                        )
-                        .on_click(cx.listener(move |_, _, window, cx| {
-                            window.dispatch_action(open_action.boxed_clone(), cx);
-                            cx.emit(DismissEvent);
-                        }))
-                })
-                .child(
-                    ButtonLike::new("open_remote_folder")
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .gap_1()
-                                .justify_between()
-                                .child(Label::new("Open Remote Folder"))
-                                .child(KeyBinding::for_action(
-                                    &OpenRemote {
-                                        from_existing_connection: false,
-                                        create_new_window: Some(false),
-                                    },
-                                    cx,
-                                )),
-                        )
-                        .on_click(cx.listener(|_, _, window, cx| {
-                            window.dispatch_action(
-                                OpenRemote {
-                                    from_existing_connection: false,
-                                    create_new_window: Some(false),
-                                }
-                                .boxed_clone(),
-                                cx,
-                            );
-                            cx.emit(DismissEvent);
-                        })),
-                )
-                .into_any(),
+                    .child(
+                        gpui_kit::base::v_flex()
+                            .min_w_0()
+                            .child(div().truncate().child(label))
+                            .child(div().text_sm().opacity(0.65).truncate().child(subtitle)),
+                    ),
+            ),
         )
     }
 }

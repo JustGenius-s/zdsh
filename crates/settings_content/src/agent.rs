@@ -389,6 +389,10 @@ pub struct AgentSettingsContent {
     ///
     /// Default: false
     pub use_modifier_to_send: Option<bool>,
+    /// Suggest a follow-up draft after a native Agent response. Tab accepts without sending.
+    /// Uses the configured summarization model, falling back to the conversation model.
+    /// Default: true
+    pub show_composer_predictions: Option<bool>,
     /// Minimum number of lines of height the agent message editor should have.
     ///
     /// Default: 1

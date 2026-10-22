@@ -1,6 +1,1 @@
-Generate a detailed summary of this conversation. Include:
-1. A brief overview of what was discussed
-2. Key facts or information discovered
-3. Outcomes or conclusions reached
-4. Any action items or next steps if any
-Format it in Markdown with headings and bullet points.
+Summarize this conversation for someone who has not read it. State the user's goal and the outcome first. Include the important decisions and why they were made, relevant files or artifacts, evidence-backed findings, validation that actually ran and its result, and unresolved work. Reflect the user's latest corrections and constraints. Separate completed changes from proposals or unverified behavior. Use concise Markdown with only the sections the conversation needs. Preserve important paths, commands, and references accurately; omit repetitive narration and raw tool logs.

@@ -6,11 +6,8 @@ use super::*;
 use crate::entry_view_state::ActivityGroup;
 use gpui::{HighlightStyle, StyledText};
 use gpui_kit::component::{
-    Disableable as _, Icon as KitIcon, Size as KitSize, Theme as KitTheme,
-    button::{Button as KitButton, ButtonVariant},
-    hover_card::HoverCard,
-    shimmer::ShimmerText,
-    skeleton::Skeleton,
+    Disableable as _, Icon as KitIcon, Selectable as _, Size as KitSize, Theme as KitTheme,
+    button::ButtonVariant, hover_card::HoverCard, shimmer::ShimmerText, skeleton::Skeleton,
     spinner::Spinner,
 };
 use markdown::parser::MarkdownEvent;
@@ -45,7 +42,11 @@ impl ThreadView {
         )));
 
         div().w_full().id(container_id).map(|this| {
-            if tool_call.is_subagent() && tool_call.authorization_id().is_none() {
+            if tool_call.tool_name.as_deref() == Some("ask_user")
+                && self.as_native_thread(cx).is_some()
+            {
+                this.child(self.render_question_answers(tool_call, cx))
+            } else if tool_call.is_subagent() && tool_call.authorization_id().is_none() {
                 this.child(
                     self.render_subagent_tool_call(
                         active_session_id,
@@ -965,6 +966,35 @@ fn scrollable_output(id: impl Into<ElementId>, output: impl IntoElement) -> Stat
         .child(output)
 }
 
+// The existing permission shortcut opens a PopoverMenu handle, whose trigger traits predate Kit.
+#[derive(IntoElement)]
+struct PermissionMenuTrigger(KitButton);
+
+impl Toggleable for PermissionMenuTrigger {
+    fn toggle_state(mut self, selected: bool) -> Self {
+        self.0 = self.0.selected(selected);
+        self
+    }
+}
+
+impl Clickable for PermissionMenuTrigger {
+    fn on_click(mut self, listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
+        self.0 = self.0.on_click(listener);
+        self
+    }
+
+    fn cursor_style(mut self, cursor: CursorStyle) -> Self {
+        self.0 = self.0.cursor(cursor);
+        self
+    }
+}
+
+impl RenderOnce for PermissionMenuTrigger {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        self.0
+    }
+}
+
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 pub(super) struct TerminalSandboxWarning {
@@ -974,6 +1004,92 @@ pub(super) struct TerminalSandboxWarning {
 }
 
 impl ThreadView {
+    fn render_question_answers(&self, tool_call: &ToolCall, cx: &Context<Self>) -> AnyElement {
+        let input = tool_call.raw_input.as_ref().and_then(|input| {
+            serde_json::from_value::<agent::AskUserToolInput>(input.clone()).ok()
+        });
+        let output = tool_call.raw_output.as_ref().and_then(|output| {
+            serde_json::from_value::<agent::AskUserToolOutput>(output.clone()).ok()
+        });
+        let theme = KitTheme::global(cx);
+        let Some(input) = input else {
+            return Empty.into_any_element();
+        };
+        let form = agent::AskUserQuestionnaire::from_input(&input);
+        let answers = match output {
+            Some(agent::AskUserToolOutput::QuestionsAnswered { answers }) => answers,
+            Some(agent::AskUserToolOutput::Answered { selected }) => vec![agent::AskUserAnswer {
+                question_id: "question".into(),
+                selected_option_ids: Vec::new(),
+                freeform_text: Some(selected),
+            }],
+            Some(agent::AskUserToolOutput::Error { error }) => {
+                return gpui_kit::base::h_flex()
+                    .px(TEXT_INSET)
+                    .py_2()
+                    .gap_2()
+                    .text_color(theme.muted_foreground)
+                    .child(kit_icon(IconName::Info).small())
+                    .child(error)
+                    .into_any_element();
+            }
+            None => {
+                return gpui_kit::base::h_flex()
+                    .px(TEXT_INSET)
+                    .py_2()
+                    .gap_2()
+                    .text_color(theme.muted_foreground)
+                    .child(kit_icon(IconName::Info).small())
+                    .child(
+                        if matches!(
+                            tool_call.status(),
+                            ToolCallStatus::Pending | ToolCallStatus::InProgress
+                        ) {
+                            "Waiting for answers"
+                        } else {
+                            "Questions"
+                        },
+                    )
+                    .into_any_element();
+            }
+        };
+        gpui_kit::base::v_flex()
+            .px(TEXT_INSET)
+            .py_2()
+            .gap_3()
+            .children(form.questions.iter().map(|question| {
+                let answer = answers
+                    .iter()
+                    .find(|answer| answer.question_id == question.id);
+                let text = answer
+                    .map(|answer| {
+                        question
+                            .options
+                            .iter()
+                            .filter(|option| answer.selected_option_ids.contains(&option.id))
+                            .map(|option| option.label.clone())
+                            .chain(answer.freeform_text.clone())
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    })
+                    .unwrap_or_default();
+                gpui_kit::base::v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_color(theme.muted_foreground)
+                            .child(question.prompt.clone()),
+                    )
+                    .child(
+                        gpui_kit::base::h_flex()
+                            .gap_2()
+                            .child(kit_icon(IconName::Check).small())
+                            .child(text),
+                    )
+            }))
+            .into_any_element()
+    }
+
     fn is_first_tool_call(
         &self,
         active_session_id: &acp_v2::SessionId,
@@ -1053,6 +1169,7 @@ impl ThreadView {
                 failed_or_canceled,
                 cx,
             )
+            .compact(is_terminal_tool && needs_confirmation)
             .when(has_location && !is_terminal_tool, |header| {
                 header.hover_action(
                     PillButton::new(("open-tool-call-location", entry_ix))
@@ -1146,6 +1263,7 @@ impl ThreadView {
                                 entry_ix,
                                 &tool_call.id,
                                 details,
+                                is_terminal_tool,
                                 window,
                                 cx,
                             ))
@@ -1212,6 +1330,7 @@ impl ThreadView {
             });
 
         let card = ToolCard::new(("tool-card", entry_ix), header)
+            .command_approval(is_terminal_tool && needs_confirmation)
             .sections(sections)
             .dashed(failed_or_canceled)
             .bare(matches!(
@@ -1219,9 +1338,32 @@ impl ThreadView {
                 ToolCallLayout::Embedded | ToolCallLayout::Floating
             ));
 
-        v_flex()
+        let reason = needs_confirmation
+            .then(|| tool_call.sandbox_authorization_details.as_ref())
+            .flatten()
+            .filter(|details| !details.reason.is_empty() || details.auto_review.is_some())
+            .map(|details| {
+                gpui_kit::base::v_flex()
+                    .px_2()
+                    .pt_1p5()
+                    .pb_1()
+                    .gap_1()
+                    .text_size(rems(0.75))
+                    .line_height(relative(1.42))
+                    .text_color(KitTheme::global(cx).muted_foreground)
+                    .when(!details.reason.is_empty(), |strip| {
+                        strip.child(format!("Agent request: {}", details.reason))
+                    })
+                    .when_some(details.auto_review.clone(), |strip, review| {
+                        strip.child(format!("Approval required: {review}"))
+                    })
+            });
+        let card_with_reason = v_flex()
             .w_full()
-            .when_some(layout.row_gap(), |this, gap| this.px(TEXT_INSET).pt(gap))
+            .rounded(rems(0.5))
+            .when(reason.is_some(), |this| {
+                this.bg(KitTheme::global(cx).secondary.opacity(0.3))
+            })
             .map(|this| {
                 if layout == ToolCallLayout::Floating {
                     // The buttons stay in view while a long request scrolls.
@@ -1235,7 +1377,7 @@ impl ThreadView {
                     .children(permission_buttons.map(|buttons| {
                         div()
                             .w_full()
-                            .p_1p5()
+                            .when(!is_terminal_tool, |footer| footer.p_1p5())
                             .border_t_1()
                             .border_color(KitTheme::global(cx).border)
                             .child(buttons)
@@ -1246,6 +1388,11 @@ impl ThreadView {
                     )
                 }
             })
+            .children(reason);
+        v_flex()
+            .w_full()
+            .when_some(layout.row_gap(), |this, gap| this.px(TEXT_INSET).pt(gap))
+            .child(card_with_reason)
     }
 
     fn render_tool_card_header(
@@ -1294,8 +1441,12 @@ impl ThreadView {
                 Some(description) => {
                     let needs_confirmation =
                         matches!(tool_call.status(), ToolCallStatus::WaitingForConfirmation);
-                    description_title(command_verb(needs_confirmation, running), &description, cx)
-                        .into_any_element()
+                    if needs_confirmation {
+                        div().truncate().child(description).into_any_element()
+                    } else {
+                        description_title(command_verb(false, running), &description, cx)
+                            .into_any_element()
+                    }
                 }
                 None => {
                     let command = command_text(tool_call.label.read(cx));
@@ -1433,7 +1584,19 @@ impl ThreadView {
     ) -> Div {
         let mut style =
             MarkdownStyle::themed(MarkdownFont::Agent, window, cx).with_agent_buffer_font(cx);
-        style.height_is_multiple_of_line_height = true;
+        let font_size = ThemeSettings::get_global(cx).ui_font_size(cx);
+        style.height_is_multiple_of_line_height = false;
+        style.paragraph_spacing = px(0.);
+        style.base_text_style.font_size = (font_size * 0.8125).into();
+        style.paragraph_line_height = (font_size * 1.125).into();
+        style.inline_code.font_size = Some((font_size * 0.8125).into());
+        style.inline_code.line_height = Some(relative(18. / 13.));
+        style.inline_code.background_color = None;
+        style.code_block.text.font_size = Some((font_size * 0.8125).into());
+        style.code_block.text.line_height = Some(relative(18. / 13.));
+        style.code_block.padding = gpui::EdgesRefinement::default();
+        style.code_block.margin = gpui::EdgesRefinement::default();
+        style.code_block.background = None;
         // Soft-wrap the command instead of horizontally scrolling it: the card is
         // narrow, and in scroll mode a long command wraps anyway but its wrapped
         // lines don't pick up the code block's left padding. Wrap mode lays the
@@ -1451,7 +1614,20 @@ impl ThreadView {
                 border: false,
             });
 
-        v_flex().px_1p5().py_1().child(markdown_element)
+        gpui_kit::base::h_flex()
+            .items_start()
+            .gap_1()
+            .px_2p5()
+            .py_1p5()
+            .child(
+                div()
+                    .text_size(font_size * 0.8125)
+                    .line_height(relative(18. / 13.))
+                    .font_family(KitTheme::global(cx).mono_font_family.clone())
+                    .text_color(KitTheme::global(cx).muted_foreground)
+                    .child("$"),
+            )
+            .child(div().flex_1().min_w_0().child(markdown_element))
     }
 
     pub(super) fn render_terminal_tool_call(
@@ -1833,6 +2009,29 @@ impl ThreadView {
         else {
             return div();
         };
+        if self
+            .thread
+            .read(cx)
+            .tool_call(tool_call_id)
+            .is_some_and(|(_, call)| matches!(call.kind(), acp_v2::ToolKind::Execute))
+            && options
+                .first_option_of_kind(acp_v2::PermissionOptionKind::AllowOnce)
+                .is_some()
+            && options
+                .first_option_of_kind(acp_v2::PermissionOptionKind::RejectOnce)
+                .is_some()
+        {
+            return self.render_command_permission_buttons(
+                session_id,
+                is_first,
+                request.id,
+                options,
+                entry_ix,
+                focus_handle,
+                allow_disabled,
+                cx,
+            );
+        }
         match options {
             PermissionOptions::Flat(options) => self.render_permission_buttons_flat(
                 session_id,
@@ -1873,6 +2072,267 @@ impl ThreadView {
                 cx,
             ),
         }
+    }
+
+    fn render_command_permission_buttons(
+        &self,
+        session_id: acp_v2::SessionId,
+        is_first: bool,
+        request_id: PermissionRequestId,
+        options: &PermissionOptions,
+        entry_ix: usize,
+        focus_handle: &FocusHandle,
+        allow_disabled: bool,
+        cx: &Context<Self>,
+    ) -> Div {
+        let font_size = ThemeSettings::get_global(cx).ui_font_size(cx);
+        let available_width = self
+            .composer_bounds
+            .get()
+            .map(|bounds| bounds.size.width)
+            .unwrap_or(font_size * 50.);
+        let show_shortcuts = is_first && available_width >= font_size * 35.;
+        let button = |id, label: &'static str| {
+            KitButton::new(id)
+                .ghost()
+                .small()
+                .h(font_size * 1.25)
+                .rounded(font_size * 0.25)
+                .px_1p5()
+                .accessibility_label(label)
+                .when(!label.is_empty(), |button| {
+                    button.child(div().text_size(font_size * 0.8125).child(label))
+                })
+        };
+        let patterns = match options {
+            PermissionOptions::DropdownWithPatterns { patterns, .. } => patterns.clone(),
+            _ => Vec::new(),
+        };
+        let permanent_choices = match options {
+            PermissionOptions::Flat(options) => options
+                .iter()
+                .filter(|option| option.kind == acp_v2::PermissionOptionKind::AllowAlways)
+                .map(|option| {
+                    (
+                        SharedString::from(option.name.clone()),
+                        SelectedPermissionOutcome::new(
+                            option.option_id.clone(),
+                            option.kind.clone(),
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            PermissionOptions::Dropdown(choices)
+            | PermissionOptions::DropdownWithPatterns { choices, .. } => choices
+                .iter()
+                .filter(|choice| choice.allow.kind == acp_v2::PermissionOptionKind::AllowAlways)
+                .map(|choice| (choice.label(), choice.build_outcome(true)))
+                .collect(),
+        };
+        let allow_once = options
+            .first_option_of_kind(acp_v2::PermissionOptionKind::AllowOnce)
+            .cloned();
+        let reject_once = options
+            .first_option_of_kind(acp_v2::PermissionOptionKind::RejectOnce)
+            .cloned();
+        let permanent_outcome = if patterns.is_empty() {
+            permanent_choices
+                .first()
+                .filter(|_| permanent_choices.len() == 1)
+                .map(|(_, outcome)| outcome.clone())
+        } else {
+            match self
+                .conversation
+                .read(cx)
+                .permission_selections
+                .get(&request_id)
+            {
+                Some(PermissionSelection::SelectedPatterns(selected)) if !selected.is_empty() => {
+                    options.build_outcome_for_checked_patterns(selected, true)
+                }
+                _ => None,
+            }
+        };
+        let permanent_tooltip = if patterns.is_empty() {
+            permanent_choices
+                .iter()
+                .map(|(label, _)| label.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else if let Some(PermissionSelection::SelectedPatterns(selected)) = self
+            .conversation
+            .read(cx)
+            .permission_selections
+            .get(&request_id)
+        {
+            selected
+                .iter()
+                .filter_map(|index| patterns.get(*index))
+                .map(|pattern| pattern.display_name.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            "Choose commands to always allow".to_owned()
+        };
+        let conversation = self.conversation.downgrade();
+        let view = cx.weak_entity();
+        let menu_session = session_id.clone();
+        let popup = (!permanent_choices.is_empty() && available_width >= font_size * 25.).then(|| {
+            PopoverMenu::new(("command-always-run", entry_ix))
+                .with_handle(self.permission_dropdown_handle.clone())
+                .trigger(PermissionMenuTrigger(button(("always-run-options", entry_ix), "")
+                    .secondary()
+                    .w(font_size * 1.25)
+                    .px_0()
+                    .border_l_1()
+                    .border_color(KitTheme::global(cx).border)
+                    .rounded_tl(px(0.))
+                    .rounded_bl(px(0.))
+                    .dropdown_caret(true)
+                    .accessibility_label("Choose commands to always allow")
+                    .tooltip("Choose commands to always allow")
+                    .disabled(allow_disabled)))
+                .menu(move |window, cx| {
+                    Some(PopupMenu::build(window, cx, |mut menu, _, cx| {
+                        menu = menu.max_h(font_size * 20.);
+                        if patterns.is_empty() {
+                            for (label, outcome) in &permanent_choices {
+                                let outcome = outcome.clone();
+                                let view = view.clone();
+                                let session = menu_session.clone();
+                                menu = menu.item(PopupMenuItem::new(label.clone()).on_click(move |_, window, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.authorize_permission_request(session.clone(), request_id, outcome.clone(), window, cx);
+                                    }).log_err();
+                                }));
+                            }
+                            return menu;
+                        }
+                        menu = menu.label("Always run matching commands");
+                        for (index, pattern) in patterns.iter().enumerate() {
+                            let conversation = conversation.clone();
+                            let keyboard_conversation = conversation.clone();
+                            let session = menu_session.clone();
+                            let keyboard_session = session.clone();
+                            let label = pattern.display_name.clone();
+                            let nested = label.split_whitespace().count() > 1;
+                            let popup = cx.weak_entity();
+                            menu = menu.item(PopupMenuItem::element(move |_, cx| {
+                                let checked = conversation.upgrade().is_some_and(|conversation| {
+                                    conversation.read(cx).permission_selections.get(&request_id).is_some_and(|selection| selection.is_pattern_checked(index))
+                                });
+                                let conversation = conversation.clone();
+                                let session = session.clone();
+                                let popup = popup.clone();
+                                div().when(nested, |row| row.pl_4()).child(
+                                    gpui_kit::component::checkbox::Checkbox::new(("always-command", index)).label(label.clone()).checked(checked)
+                                        .on_click(move |_, _, cx| {
+                                            cx.stop_propagation();
+                                            conversation.update(cx, |conversation, cx| conversation.toggle_permission_pattern(&session, request_id, index, cx)).log_err();
+                                            popup.update(cx, |_, cx| cx.notify()).log_err();
+                                        })
+                                )
+                            }).on_click(move |_, _, cx| {
+                                keyboard_conversation.update(cx, |conversation, cx| conversation.toggle_permission_pattern(&keyboard_session, request_id, index, cx)).log_err();
+                            }));
+                        }
+                        let conversation = conversation.clone();
+                        let view = view.clone();
+                        let session = menu_session.clone();
+                        let popup = cx.weak_entity();
+                        menu.separator().item(PopupMenuItem::element(move |_, cx| {
+                            let enabled = conversation.upgrade().is_some_and(|conversation| {
+                                matches!(conversation.read(cx).permission_selections.get(&request_id), Some(PermissionSelection::SelectedPatterns(patterns)) if !patterns.is_empty())
+                            });
+                            let view = view.clone();
+                            let session = session.clone();
+                            let popup = popup.clone();
+                            KitButton::new("confirm-always-run").primary().small().w_full().label("Always Run").disabled(!enabled)
+                                .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    view.update(cx, |this, cx| {
+                                        this.authorize_with_granularity(session.clone(), request_id, true, window, cx);
+                                    }).log_err();
+                                    popup.update(cx, |_, cx| cx.emit(gpui::DismissEvent)).log_err();
+                                })
+                        }))
+                    }))
+                })
+        });
+        let always_run = popup.map(|popup| {
+            let session_id = session_id.clone();
+            gpui_kit::base::h_flex()
+                .min_w_0()
+                .child(
+                    button(("always-run", entry_ix), "Always Run")
+                        .secondary()
+                        .rounded_tr(px(0.))
+                        .rounded_br(px(0.))
+                        .tooltip(permanent_tooltip)
+                        .disabled(allow_disabled || permanent_outcome.is_none())
+                        .when_some(permanent_outcome, |button, outcome| {
+                            button.on_click(cx.listener(move |this, _, window, cx| {
+                                this.authorize_permission_request(
+                                    session_id.clone(),
+                                    request_id,
+                                    outcome.clone(),
+                                    window,
+                                    cx,
+                                );
+                            }))
+                        }),
+                )
+                .child(popup)
+        });
+        gpui_kit::base::h_flex()
+            .w_full()
+            .justify_end()
+            .gap_1p5()
+            .pt_1()
+            .pb_2()
+            .pr_2()
+            .children(reject_once.map(|option| {
+                let session_id = session_id.clone();
+                button(("skip-command", entry_ix), "Skip").on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.authorize_permission_request(
+                            session_id.clone(),
+                            request_id,
+                            SelectedPermissionOutcome::new(
+                                option.option_id.clone(),
+                                option.kind.clone(),
+                            ),
+                            window,
+                            cx,
+                        );
+                    },
+                ))
+            }))
+            .children(always_run)
+            .children(allow_once.map(|option| {
+                button(("run-command", entry_ix), "Run")
+                    .primary()
+                    .disabled(allow_disabled)
+                    .children((show_shortcuts && !allow_disabled).then(|| {
+                        KeyBinding::for_action_in(&AllowOnce, focus_handle, cx)
+                            .size(font_size * 0.75)
+                            .color(Color::Custom(
+                                KitTheme::global(cx).primary_foreground.opacity(0.65),
+                            ))
+                    }))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.authorize_permission_request(
+                            session_id.clone(),
+                            request_id,
+                            SelectedPermissionOutcome::new(
+                                option.option_id.clone(),
+                                option.kind.clone(),
+                            ),
+                            window,
+                            cx,
+                        );
+                    }))
+            }))
     }
 
     fn render_permission_buttons_with_dropdown(
@@ -1947,6 +2407,7 @@ impl ThreadView {
         h_flex()
             .w_full()
             .debug_selector(permission_buttons_selector)
+            .flex_wrap()
             .gap_2()
             .justify_between()
             .child(dropdown)
@@ -1975,7 +2436,18 @@ impl ThreadView {
                         PillButton::new(("allow-btn", entry_ix))
                             .size(KitSize::Small)
                             .variant(ButtonVariant::Primary)
-                            .label("Allow")
+                            .label(
+                                if selected_index == choices.len().saturating_sub(1)
+                                    && !matches!(
+                                        selection,
+                                        Some(PermissionSelection::SelectedPatterns(_))
+                                    )
+                                {
+                                    "Allow Once"
+                                } else {
+                                    "Allow"
+                                },
+                            )
                             .disabled(allow_disabled)
                             .children(
                                 (is_first && !allow_disabled).then(|| key_binding(&AllowOnce)),
@@ -2026,49 +2498,30 @@ impl ThreadView {
         is_first: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let menu_options: Vec<(usize, SharedString)> = choices
+        let choices = choices
             .iter()
             .enumerate()
-            .map(|(i, choice)| (i, choice.label()))
-            .collect();
-
-        let permission_dropdown_handle = self.permission_dropdown_handle.clone();
-
+            .map(|(index, choice)| (index, choice.label()))
+            .collect::<Vec<_>>();
+        let focus_handle = self.focus_handle.clone();
         PopoverMenu::new(("permission-granularity", entry_ix))
-            .with_handle(permission_dropdown_handle)
+            .with_handle(self.permission_dropdown_handle.clone())
             .trigger(self.permission_dropdown_trigger(current_label, entry_ix, is_first, cx))
             .menu(move |window, cx| {
-                let tool_call_id = tool_call_id.clone();
-                let session_id = session_id.clone();
-                let options = menu_options.clone();
-
-                Some(ContextMenu::build(window, cx, move |mut menu, _, _| {
-                    for (index, display_name) in options.iter() {
-                        let display_name = display_name.clone();
-                        let index = *index;
-                        let tool_call_id_for_entry = tool_call_id.clone();
-                        let session_id = session_id.clone();
-                        let is_selected = index == selected_index;
-                        menu = menu.toggleable_entry(
-                            display_name,
-                            is_selected,
-                            IconPosition::End,
-                            None,
-                            move |window, cx| {
-                                window.dispatch_action(
-                                    SelectPermissionGranularity {
-                                        tool_call_id: tool_call_id_for_entry.0.to_string(),
-                                        request_id: Some(request_id),
-                                        session_id: Some(session_id.0.to_string()),
-                                        index,
-                                    }
-                                    .boxed_clone(),
-                                    cx,
-                                );
-                            },
+                Some(PopupMenu::build(window, cx, |mut menu, _, _| {
+                    menu = menu.action_context(focus_handle.clone());
+                    for (index, label) in &choices {
+                        menu = menu.item(
+                            PopupMenuItem::new(label.clone())
+                                .checked(*index == selected_index)
+                                .action(Box::new(SelectPermissionGranularity {
+                                    tool_call_id: tool_call_id.0.to_string(),
+                                    request_id: Some(request_id),
+                                    session_id: Some(session_id.0.to_string()),
+                                    index: *index,
+                                })),
                         );
                     }
-
                     menu
                 }))
             })
@@ -2087,147 +2540,140 @@ impl ThreadView {
         is_first: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let default_choice_index = choices.len().saturating_sub(1);
-        let menu_options: Vec<(usize, SharedString)> = choices
+        let default_index = choices.len().saturating_sub(1);
+        let choices = choices
             .iter()
             .enumerate()
-            .map(|(i, choice)| (i, choice.label()))
-            .collect();
-
-        let pattern_options: Vec<(usize, SharedString)> = patterns
+            .map(|(index, choice)| (index, choice.label()))
+            .collect::<Vec<_>>();
+        let patterns = patterns
             .iter()
             .enumerate()
-            .map(|(i, cp)| {
+            .map(|(index, pattern)| {
                 (
-                    i,
-                    SharedString::from(format!("Always for `{}` commands", cp.display_name)),
+                    index,
+                    SharedString::from(format!("Always for `{}`", pattern.display_name)),
                 )
             })
-            .collect();
-
-        let permission_dropdown_handle = self.permission_dropdown_handle.clone();
+            .collect::<Vec<_>>();
         let conversation = self.conversation.downgrade();
-
+        let focus_handle = self.focus_handle.clone();
         PopoverMenu::new(("permission-granularity", entry_ix))
-            .with_handle(permission_dropdown_handle.clone())
-            .anchor(gpui::Anchor::TopRight)
-            .attach(gpui::Anchor::BottomRight)
+            .with_handle(self.permission_dropdown_handle.clone())
             .trigger(self.permission_dropdown_trigger(current_label, entry_ix, is_first, cx))
             .menu(move |window, cx| {
-                let session_id = session_id.clone();
-                let options = menu_options.clone();
-                let patterns = pattern_options.clone();
-                let conversation = conversation.clone();
-                let dropdown_handle = permission_dropdown_handle.clone();
-
-                Some(ContextMenu::build_persistent(
-                    window,
-                    cx,
-                    move |menu, _window, cx| {
-                        let mut menu = menu;
-
-                        let selection = conversation.upgrade().and_then(|conversation| {
-                            conversation
-                                .read(cx)
-                                .permission_selections
-                                .get(&request_id)
-                                .cloned()
-                        });
-
-                        let is_pattern_mode =
-                            matches!(selection, Some(PermissionSelection::SelectedPatterns(_)));
-
-                        // Granularity choices: "Always for terminal", "Only this time"
-                        for (index, display_name) in options.iter() {
-                            let display_name = display_name.clone();
-                            let index = *index;
-                            let session_id = session_id.clone();
-                            let is_selected = !is_pattern_mode
-                                && selection
+                Some(PopupMenu::build(window, cx, |mut menu, _, cx| {
+                    menu = menu.action_context(focus_handle.clone());
+                    for (index, label) in &choices {
+                        let conversation = conversation.clone();
+                        let selection_conversation = conversation.clone();
+                        let session_id = session_id.clone();
+                        let index = *index;
+                        let label = label.clone();
+                        menu = menu.item(
+                            PopupMenuItem::element(move |_, cx| {
+                                let selection =
+                                    selection_conversation.upgrade().and_then(|conversation| {
+                                        conversation
+                                            .read(cx)
+                                            .permission_selections
+                                            .get(&request_id)
+                                            .cloned()
+                                    });
+                                let checked = selection
                                     .as_ref()
-                                    .and_then(|s| s.choice_index())
-                                    .map_or(index == default_choice_index, |ci| ci == index);
-
-                            let conversation = conversation.clone();
-                            menu = menu.toggleable_entry(
-                                display_name,
-                                is_selected,
-                                IconPosition::End,
-                                None,
-                                move |_window, cx| {
+                                    .and_then(|selection| selection.choice_index())
+                                    .unwrap_or(default_index)
+                                    == index
+                                    && !matches!(
+                                        selection,
+                                        Some(PermissionSelection::SelectedPatterns(_))
+                                    );
+                                gpui_kit::base::h_flex()
+                                    .gap_2()
+                                    .child(div().w(rems(1.)).when(checked, |icon| {
+                                        icon.child(
+                                            KitIcon::empty()
+                                                .path(IconName::Check.path())
+                                                .size(rems(1.)),
+                                        )
+                                    }))
+                                    .child(label.clone())
+                            })
+                            .on_click(move |_, _, cx| {
+                                conversation
+                                    .update(cx, |conversation, cx| {
+                                        conversation.set_permission_choice(
+                                            &session_id,
+                                            request_id,
+                                            index,
+                                            cx,
+                                        )
+                                    })
+                                    .log_err();
+                            }),
+                        );
+                    }
+                    menu = menu.separator().label("Allow matching commands");
+                    for (index, label) in &patterns {
+                        let conversation = conversation.clone();
+                        let keyboard_conversation = conversation.clone();
+                        let session_id = session_id.clone();
+                        let keyboard_session_id = session_id.clone();
+                        let index = *index;
+                        let label = label.clone();
+                        let popup = cx.weak_entity();
+                        menu = menu.item(
+                            PopupMenuItem::element(move |_, cx| {
+                                let checked = conversation.upgrade().is_some_and(|conversation| {
                                     conversation
-                                        .update(cx, |conversation, cx| {
-                                            conversation.set_permission_choice(
-                                                &session_id,
-                                                request_id,
-                                                index,
-                                                cx,
-                                            );
+                                        .read(cx)
+                                        .permission_selections
+                                        .get(&request_id)
+                                        .is_some_and(|selection| {
+                                            selection.is_pattern_checked(index)
                                         })
-                                        .log_err();
-                                },
-                            );
-                        }
-
-                        menu = menu.separator().header("Select Options…");
-
-                        for (pattern_index, label) in patterns.iter() {
-                            let label = label.clone();
-                            let pattern_index = *pattern_index;
-                            let session_id = session_id.clone();
-                            let is_checked = selection
-                                .as_ref()
-                                .is_some_and(|s| s.is_pattern_checked(pattern_index));
-
-                            let conversation = conversation.clone();
-                            menu = menu.toggleable_entry(
-                                label,
-                                is_checked,
-                                IconPosition::End,
-                                None,
-                                move |_window, cx| {
+                                });
+                                let conversation = conversation.clone();
+                                let session_id = session_id.clone();
+                                let popup = popup.clone();
+                                gpui_kit::component::checkbox::Checkbox::new((
+                                    "command-pattern",
+                                    index,
+                                ))
+                                .label(label.clone())
+                                .checked(checked)
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
                                     conversation
                                         .update(cx, |conversation, cx| {
                                             conversation.toggle_permission_pattern(
                                                 &session_id,
                                                 request_id,
-                                                pattern_index,
+                                                index,
                                                 cx,
-                                            );
+                                            )
                                         })
                                         .log_err();
-                                },
-                            );
-                        }
-
-                        let any_patterns_checked = selection
-                            .as_ref()
-                            .is_some_and(|s| s.has_any_checked_patterns());
-                        let dropdown_handle = dropdown_handle.clone();
-                        menu = menu.custom_row(move |_window, _cx| {
-                            div()
-                                .py_1()
-                                .w_full()
-                                .child(
-                                    KitButton::new("apply-patterns")
-                                        .outline()
-                                        .small()
-                                        .w_full()
-                                        .label("Apply")
-                                        .disabled(!any_patterns_checked)
-                                        .on_click({
-                                            let dropdown_handle = dropdown_handle.clone();
-                                            move |_event, _window, cx| {
-                                                dropdown_handle.hide(cx);
-                                            }
-                                        }),
-                                )
-                                .into_any_element()
-                        });
-
-                        menu
-                    },
-                ))
+                                    popup.update(cx, |_, cx| cx.notify()).log_err();
+                                })
+                            })
+                            .on_click(move |_, _, cx| {
+                                keyboard_conversation
+                                    .update(cx, |conversation, cx| {
+                                        conversation.toggle_permission_pattern(
+                                            &keyboard_session_id,
+                                            request_id,
+                                            index,
+                                            cx,
+                                        );
+                                    })
+                                    .log_err();
+                            }),
+                        );
+                    }
+                    menu.separator().item(PopupMenuItem::new("Done"))
+                }))
             })
             .into_any_element()
     }
@@ -3039,6 +3485,7 @@ pub(super) struct ToolCardHeader {
     hover_actions: Vec<AnyElement>,
     actions: Vec<AnyElement>,
     expanded: Option<bool>,
+    compact: bool,
     on_click: Option<ClickHandler>,
 }
 
@@ -3056,8 +3503,14 @@ impl ToolCardHeader {
             hover_actions: Vec::new(),
             actions: Vec::new(),
             expanded: None,
+            compact: false,
             on_click: None,
         }
+    }
+
+    fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
     }
 
     /// Adds status beside the title, such as a diff stat or an exit code.
@@ -3108,6 +3561,10 @@ impl RenderOnce for ToolCardHeader {
             .px_2()
             .gap_1p5()
             .text_size(ThemeSettings::get_global(cx).agent_ui_font_size(cx))
+            .when(self.compact, |this| {
+                let font_size = ThemeSettings::get_global(cx).ui_font_size(cx);
+                this.min_h(font_size * 1.75).text_size(font_size * 0.875)
+            })
             .text_color(theme.muted_foreground)
             .when(self.on_click.is_some(), |this| {
                 this.cursor_pointer()
@@ -3164,6 +3621,7 @@ pub(super) struct ToolCard {
     footer: Option<AnyElement>,
     dashed: bool,
     bare: bool,
+    command_approval: bool,
 }
 
 impl ToolCard {
@@ -3175,7 +3633,13 @@ impl ToolCard {
             footer: None,
             dashed: false,
             bare: false,
+            command_approval: false,
         }
+    }
+
+    fn command_approval(mut self, pending: bool) -> Self {
+        self.command_approval = pending;
+        self
     }
 
     /// Adds sections below the header, each set off by a rule.
@@ -3205,12 +3669,17 @@ impl ToolCard {
 
 impl RenderOnce for ToolCard {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let border = KitTheme::global(cx).border;
+        let border = if self.command_approval {
+            KitTheme::global(cx).foreground.opacity(0.2)
+        } else {
+            KitTheme::global(cx).border
+        };
+        let command_approval = self.command_approval;
         let dashed = self.dashed;
         let section = move |content: AnyElement| {
             div()
                 .w_full()
-                .border_t_1()
+                .when(!command_approval, |section| section.border_t_1())
                 .border_color(border)
                 .when(dashed, |this| this.border_dashed())
                 .child(content)
@@ -3219,14 +3688,22 @@ impl RenderOnce for ToolCard {
         let card = if self.bare {
             v_flex().w_full()
         } else {
-            transcript_card(cx).when(dashed, |this| this.border_dashed())
+            transcript_card(cx)
+                .border_color(border)
+                .when(command_approval, |card| card.rounded(rems(0.5)))
+                .when(dashed, |this| this.border_dashed())
         };
         card.id(self.id)
             .child(self.header)
             .children(self.sections.into_iter().map(section))
-            .children(
-                self.footer
-                    .map(|footer| section(div().w_full().p_1p5().child(footer).into_any_element())),
-            )
+            .children(self.footer.map(|footer| {
+                section(
+                    div()
+                        .w_full()
+                        .when(!command_approval, |footer| footer.p_1p5())
+                        .child(footer)
+                        .into_any_element(),
+                )
+            }))
     }
 }

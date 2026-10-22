@@ -14,43 +14,115 @@ const CHOICE_FIELD: &str = "choice";
 /// The free-text field key used when the user may type their own answer.
 const OTHER_FIELD: &str = "other";
 
-/// Ask the user a question, presenting selectable options and/or a free-text
-/// field.
-///
-/// Use this when you need a decision or a piece of information from the user
-/// mid-task — for example choosing between implementation approaches, confirming
-/// an assumption, or supplying a value you can't infer. The question is rendered
-/// as a small form in the conversation, and the user's answer is returned to you
-/// verbatim.
-///
-/// You control the shape of the answer:
-/// - Provide `options` (two or more) to present clickable choices.
-/// - Set `allow_free_text` to `true` to let the user type their own answer. Do
-///   this when the listed options might not be exhaustive, or when you want a
-///   free-form reply with no preset options at all.
-///
-/// You must provide either at least two `options`, or set `allow_free_text` to
-/// `true` (or both). If both are supplied, the user may pick an option or type
-/// their own answer, and a typed answer takes precedence.
+pub const QUESTIONNAIRE_META_KEY: &str = "zdsh.dev/questionnaire";
+
+/// Ask focused questions when an answer is needed to continue the user's task.
+/// Group related questions in one call. Provide stable question and option IDs,
+/// short prompts, and distinct choices. Users can always write their own answer.
+/// Do not ask for information already available in the conversation or tools.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AskUserToolInput {
-    /// The question to ask the user. Keep it short and specific.
+    /// Questions to present together. Keep the group short and relevant to the current task.
+    #[serde(default)]
+    #[schemars(required)]
+    pub questions: Vec<AskUserQuestion>,
+    #[serde(default)]
+    #[schemars(skip)]
     pub question: String,
-    /// The answer choices to present as selectable options. Each entry is the
-    /// exact label shown, and is returned verbatim when chosen. Provide at
-    /// least two options, or leave empty and set `allow_free_text` to `true`.
     #[serde(default)]
+    #[schemars(skip)]
     pub options: Vec<String>,
-    /// Whether the user may type their own free-form answer instead of (or in
-    /// addition to) picking an option. Set to `true` when the options may not
-    /// be exhaustive, or when you want a free-form reply.
-    #[serde(default)]
+    #[serde(default = "default_allow_free_text")]
+    #[schemars(skip)]
     pub allow_free_text: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserQuestion {
+    pub id: String,
+    pub prompt: String,
+    pub options: Vec<AskUserOption>,
+    #[serde(default, alias = "allow_multiple")]
+    pub allow_multiple: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AskUserOption {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserAnswer {
+    pub question_id: String,
+    pub selected_option_ids: Vec<String>,
+    pub freeform_text: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AskUserQuestionnaire {
+    pub questions: Vec<AskUserQuestion>,
+    pub legacy: bool,
+    pub allow_other: bool,
+}
+
+impl AskUserQuestionnaire {
+    pub fn from_input(input: &AskUserToolInput) -> Self {
+        if input.questions.is_empty() {
+            Self {
+                questions: vec![AskUserQuestion {
+                    id: "question".into(),
+                    prompt: input.question.clone(),
+                    options: input
+                        .options
+                        .iter()
+                        .map(|label| AskUserOption {
+                            id: label.clone(),
+                            label: label.clone(),
+                        })
+                        .collect(),
+                    allow_multiple: false,
+                }],
+                legacy: true,
+                allow_other: input.allow_free_text,
+            }
+        } else {
+            Self {
+                questions: input.questions.clone(),
+                legacy: false,
+                allow_other: true,
+            }
+        }
+    }
+
+    pub fn choice_field(&self, index: usize) -> String {
+        if self.legacy {
+            CHOICE_FIELD.into()
+        } else {
+            format!("question_{index}")
+        }
+    }
+
+    pub fn other_field(&self, index: usize) -> String {
+        if self.legacy {
+            OTHER_FIELD.into()
+        } else {
+            format!("other_{index}")
+        }
+    }
+
+    pub fn from_schema(schema: &acp_v2::ElicitationSchema) -> Option<Self> {
+        let metadata = schema.meta.as_ref()?.get(QUESTIONNAIRE_META_KEY)?;
+        serde_json::from_value(metadata.clone()).ok()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AskUserToolOutput {
+    QuestionsAnswered { answers: Vec<AskUserAnswer> },
     Answered { selected: String },
     Error { error: String },
 }
@@ -58,12 +130,19 @@ pub enum AskUserToolOutput {
 impl From<AskUserToolOutput> for LanguageModelToolResultContent {
     fn from(value: AskUserToolOutput) -> Self {
         match value {
+            AskUserToolOutput::QuestionsAnswered { answers } => {
+                serde_json::json!({"answers": answers}).to_string().into()
+            }
             AskUserToolOutput::Answered { selected } => {
                 format!("The user selected: {selected}").into()
             }
             AskUserToolOutput::Error { error } => error.into(),
         }
     }
+}
+
+fn default_allow_free_text() -> bool {
+    true
 }
 
 pub struct AskUserTool;
@@ -84,6 +163,7 @@ impl AgentTool for AskUserTool {
         _cx: &mut App,
     ) -> SharedString {
         match input {
+            Ok(input) if !input.questions.is_empty() => "Questions".into(),
             Ok(input) if !input.question.is_empty() => SharedString::from(input.question),
             _ => "Asking a question".into(),
         }
@@ -103,22 +183,67 @@ impl AgentTool for AskUserTool {
                     error: error.to_string(),
                 })?;
 
-            if !input.allow_free_text && input.options.len() < 2 {
-                return Err(AskUserToolOutput::Error {
-                    error: "The `ask_user` tool needs at least two `options`, or \
-                            `allow_free_text` set to true. Ask an open-ended question \
-                            in prose instead."
-                        .to_string(),
-                });
+            let questionnaire = AskUserQuestionnaire::from_input(&input);
+            let mut question_ids = std::collections::HashSet::new();
+            for question in &questionnaire.questions {
+                let mut option_ids = std::collections::HashSet::new();
+                if question.id.trim().is_empty() || question.prompt.trim().is_empty()
+                    || !question_ids.insert(&question.id)
+                    || question.options.iter().any(|option| option.id.trim().is_empty() || option.label.trim().is_empty() || !option_ids.insert(&option.id))
+                {
+                    return Err(AskUserToolOutput::Error { error: "Provide nonempty prompts and labels, and unique question and option IDs.".into() });
+                }
+                if !questionnaire.allow_other && question.options.len() < 2 {
+                    return Err(AskUserToolOutput::Error { error: "The ask_user tool needs at least two options, or allow_free_text set to true.".into() });
+                }
             }
+            let mut schema = if questionnaire.legacy {
+                build_schema(&input.options, input.allow_free_text)
+            } else {
+                let mut schema = acp_v2::ElicitationSchema::new();
+                for (index, question) in questionnaire.questions.iter().enumerate() {
+                    if !question.options.is_empty() {
+                        let options = question.options.iter().map(|option| acp_v2::EnumOption::new(option.id.clone(), option.label.clone())).collect::<Vec<_>>();
+                        schema = if question.allow_multiple {
+                            schema.property(questionnaire.choice_field(index), acp_v2::MultiSelectPropertySchema::titled(options).title(question.prompt.clone()), false)
+                        } else {
+                            schema.property(questionnaire.choice_field(index), acp_v2::StringPropertySchema::new().title(question.prompt.clone()).one_of(options), false)
+                        };
+                    }
+                    schema = schema.property(questionnaire.other_field(index), acp_v2::StringPropertySchema::new().title("Other"), false);
+                }
+                schema
+            };
+            let metadata = serde_json::to_value(&questionnaire).map_err(|error| AskUserToolOutput::Error { error: error.to_string() })?;
+            schema.meta = Some(acp_v2::Meta::from_iter([(QUESTIONNAIRE_META_KEY.into(), metadata)]));
+            let message = if questionnaire.legacy { input.question.clone() } else { "Questions".into() };
+            let prompt = cx.update(|cx| event_stream.request_elicitation(message, schema, cx));
+            let response = prompt.await.map_err(|error| AskUserToolOutput::Error { error: error.to_string() })?;
 
-            let schema = build_schema(&input.options, input.allow_free_text);
-
-            let prompt = cx
-                .update(|cx| event_stream.request_elicitation(input.question.clone(), schema, cx));
-            let response = prompt.await.map_err(|error| AskUserToolOutput::Error {
-                error: error.to_string(),
-            })?;
+            if !questionnaire.legacy {
+                let acp_v2::ElicitationAction::Accept(accept) = response.action else {
+                    return Err(AskUserToolOutput::Error { error: "The user skipped the questions. Continue without assuming any answer or approval.".into() });
+                };
+                let content = accept.content.unwrap_or_default();
+                let mut answers = Vec::new();
+                for (index, question) in questionnaire.questions.iter().enumerate() {
+                    let selected_option_ids = match content.get(&questionnaire.choice_field(index)) {
+                        Some(acp_v2::ElicitationContentValue::String(value)) => vec![value.clone()],
+                        Some(acp_v2::ElicitationContentValue::StringArray(values)) => values.clone(),
+                        _ => Vec::new(),
+                    };
+                    let freeform_text = string_field(&content, &questionnaire.other_field(index));
+                    if (selected_option_ids.is_empty() && freeform_text.is_none())
+                        || (!question.allow_multiple && selected_option_ids.len() > 1)
+                        || selected_option_ids.iter().any(|id| !question.options.iter().any(|option| &option.id == id))
+                    {
+                        return Err(AskUserToolOutput::Error { error: format!("No valid answer was supplied for question {}", question.id) });
+                    }
+                    answers.push(AskUserAnswer { question_id: question.id.clone(), selected_option_ids, freeform_text });
+                }
+                event_stream.update_fields(|update| update.title("Answered questions"));
+                return Ok(AskUserToolOutput::QuestionsAnswered { answers });
+            }
 
             let selected = match response.action {
                 acp_v2::ElicitationAction::Accept(accept) => {
@@ -200,7 +325,7 @@ fn string_field(
     key: &str,
 ) -> Option<String> {
     match content.get(key) {
-        Some(acp_v2::ElicitationContentValue::String(value)) if !value.is_empty() => {
+        Some(acp_v2::ElicitationContentValue::String(value)) if !value.trim().is_empty() => {
             Some(value.clone())
         }
         _ => None,
@@ -237,6 +362,7 @@ mod tests {
         let task = cx.update(|cx| {
             tool.run(
                 ToolInput::resolved(AskUserToolInput {
+                    questions: Vec::new(),
                     question: "Which approach?".into(),
                     options: vec!["Approach A".into(), "Approach B".into()],
                     allow_free_text: false,
@@ -271,6 +397,7 @@ mod tests {
         let task = cx.update(|cx| {
             tool.run(
                 ToolInput::resolved(AskUserToolInput {
+                    questions: Vec::new(),
                     question: "What should I name it?".into(),
                     options: vec![],
                     allow_free_text: true,
@@ -302,6 +429,7 @@ mod tests {
         let task = cx.update(|cx| {
             tool.run(
                 ToolInput::resolved(AskUserToolInput {
+                    questions: Vec::new(),
                     question: "Pick or type".into(),
                     options: vec!["A".into(), "B".into()],
                     allow_free_text: true,
@@ -333,6 +461,7 @@ mod tests {
         let task = cx.update(|cx| {
             tool.run(
                 ToolInput::resolved(AskUserToolInput {
+                    questions: Vec::new(),
                     question: "Proceed?".into(),
                     options: vec!["Yes".into(), "No".into()],
                     allow_free_text: false,
@@ -366,6 +495,7 @@ mod tests {
             .update(|cx| {
                 tool.run(
                     ToolInput::resolved(AskUserToolInput {
+                        questions: Vec::new(),
                         question: "Proceed?".into(),
                         options: vec!["Only one".into()],
                         allow_free_text: false,

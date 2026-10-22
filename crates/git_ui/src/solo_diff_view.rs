@@ -8,12 +8,16 @@ use editor::{
     file_status_label_color,
 };
 use git::{
-    Commit, Restore, StageAndNext, StageFile, ToggleStaged, UnstageAndNext, UnstageFile,
-    repository::RepoPath, status::StageStatus,
+    Commit, Restore, StageAndNext, ToggleStaged, UnstageAndNext, repository::RepoPath,
+    status::StageStatus,
 };
 use gpui::{
     Action, App, AppContext as _, Context, Empty, Entity, EventEmitter, FocusHandle, Focusable,
     HighlightStyle, IntoElement, Render, Subscription, Task, WeakEntity, Window,
+};
+use gpui_kit::component::{
+    Disableable, Icon as KitIcon, Sizable,
+    button::{Button as KitButton, ButtonVariants},
 };
 use language::{Anchor, Buffer, HighlightedText, OffsetRangeExt as _, Point};
 use multi_buffer::{MultiBuffer, PathKey, excerpt_context_lines};
@@ -27,7 +31,7 @@ use std::{
     ops::Range,
     sync::Arc,
 };
-use ui::{DiffStat, Divider, Tooltip, prelude::*};
+use ui::{DiffStat, Divider, prelude::*};
 use util::paths::{PathExt as _, PathStyle};
 use workspace::{
     Item, ItemHandle, ItemNavHistory, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
@@ -630,12 +634,14 @@ impl Render for SoloDiffStyleToolbar {
         };
 
         h_flex()
-            .pl_0p5()
-            .gap_1()
+            .px_1()
+            .gap_2()
             .child(
-                IconButton::new("solo-diff-toggle-excerpts", expand_icon)
-                    .icon_size(IconSize::Small)
-                    .tooltip(Tooltip::text(expand_tooltip))
+                KitButton::new("solo-diff-toggle-excerpts")
+                    .ghost()
+                    .small()
+                    .icon(KitIcon::empty().path(expand_icon.path()))
+                    .tooltip(expand_tooltip)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_showing_full_file(cx);
                     })),
@@ -760,144 +766,117 @@ impl Render for SoloDiffGitToolbar {
         let Some(solo_diff) = self.solo_diff() else {
             return gpui::Empty.into_any_element();
         };
-
-        let focus_handle = solo_diff.focus_handle(cx);
         let solo_diff = solo_diff.read(cx);
-        let button_states = solo_diff.button_states(cx);
-        let status_entry = solo_diff
+        let buttons = solo_diff.button_states(cx);
+        let diff_stat = solo_diff
             .repository
             .read(cx)
-            .status_for_path(&solo_diff.repo_path);
-        let diff_stat = status_entry.and_then(|entry| entry.diff_stat);
-
-        h_flex()
-            .my_neg_1()
+            .status_for_path(&solo_diff.repo_path)
+            .and_then(|entry| entry.diff_stat);
+        gpui_kit::base::h_flex()
             .py_1()
-            .gap_1p5()
+            .gap_2()
             .flex_wrap()
-            .justify_between()
             .children(diff_stat.map(|stat| {
                 DiffStat::new("solo-diff-stat", stat.added as usize, stat.deleted as usize)
             }))
-            .child(Divider::vertical().ml_1())
-            .child(
-                h_group_sm()
-                    .child(
-                        IconButton::new("up", IconName::ArrowUp)
-                            .icon_size(IconSize::Small)
-                            .disabled(!button_states.prev_next)
-                            .tooltip(Tooltip::for_action_title_in(
-                                "Go to Previous Hunk",
-                                &GoToPreviousHunk,
-                                &focus_handle,
-                            ))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.dispatch_action(&GoToPreviousHunk, window, cx)
-                            })),
-                    )
-                    .child(
-                        IconButton::new("down", IconName::ArrowDown)
-                            .icon_size(IconSize::Small)
-                            .disabled(!button_states.prev_next)
-                            .tooltip(Tooltip::for_action_title_in(
-                                "Go to Next Hunk",
-                                &GoToHunk,
-                                &focus_handle,
-                            ))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.dispatch_action(&GoToHunk, window, cx)
-                            })),
-                    ),
-            )
             .child(Divider::vertical())
             .child(
-                h_group_sm()
-                    .when(button_states.selection, |el| {
-                        el.child(
-                            Button::new("stage", "Toggle Staged")
-                                .disabled(!button_states.stage && !button_states.unstage)
-                                .tooltip(Tooltip::for_action_title_in(
-                                    "Toggle Staged",
-                                    &ToggleStaged,
-                                    &focus_handle,
-                                ))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.dispatch_action(&ToggleStaged, window, cx)
-                                })),
-                        )
-                    })
-                    .when(!button_states.selection, |el| {
-                        el.child(
-                            Button::new("stage", "Stage")
-                                .disabled(!button_states.stage)
-                                .tooltip(Tooltip::for_action_title_in(
-                                    "Stage and Go to Next Hunk",
-                                    &StageAndNext,
-                                    &focus_handle,
-                                ))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.dispatch_action(&StageAndNext, window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("unstage", "Unstage")
-                                .disabled(!button_states.unstage)
-                                .tooltip(Tooltip::for_action_title_in(
-                                    "Unstage and Go to Next Hunk",
-                                    &UnstageAndNext,
-                                    &focus_handle,
-                                ))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.dispatch_action(&UnstageAndNext, window, cx)
-                                })),
-                        )
-                    })
-                    .child(
-                        Button::new("restore", "Restore")
-                            .tooltip(Tooltip::for_action_title_in(
-                                "Restore selected hunk",
-                                &Restore,
-                                &focus_handle,
-                            ))
-                            .disabled(!button_states.restore)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.dispatch_action(&Restore, window, cx)
-                            })),
-                    ),
+                KitButton::new("previous-hunk")
+                    .ghost()
+                    .small()
+                    .icon(KitIcon::empty().path(IconName::ArrowUp.path()))
+                    .tooltip("Previous Change")
+                    .disabled(!buttons.prev_next)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.dispatch_action(&GoToPreviousHunk, window, cx)
+                    })),
+            )
+            .child(
+                KitButton::new("next-hunk")
+                    .ghost()
+                    .small()
+                    .icon(KitIcon::empty().path(IconName::ArrowDown.path()))
+                    .tooltip("Next Change")
+                    .disabled(!buttons.prev_next)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.dispatch_action(&GoToHunk, window, cx)
+                    })),
             )
             .child(Divider::vertical())
-            .child(h_group_sm().child(if button_states.stage_file {
-                Button::new("stage-file", "Stage All")
-                    .width(rems_from_px(80_f32))
-                    .disabled(!button_states.stage_file)
-                    .tooltip(Tooltip::for_action_title_in(
-                        "Stage All",
-                        &StageFile,
-                        &focus_handle,
-                    ))
+            .when(buttons.selection, |row| {
+                row.child(
+                    KitButton::new("stage-selection")
+                        .outline()
+                        .small()
+                        .label("Toggle Staged")
+                        .disabled(!buttons.stage && !buttons.unstage)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.dispatch_action(&ToggleStaged, window, cx)
+                        })),
+                )
+            })
+            .when(!buttons.selection, |row| {
+                row.child(
+                    KitButton::new("stage-hunk")
+                        .outline()
+                        .small()
+                        .label("Stage")
+                        .disabled(!buttons.stage)
+                        .tooltip("Stage and Go to Next Change")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.dispatch_action(&StageAndNext, window, cx)
+                        })),
+                )
+                .child(
+                    KitButton::new("unstage-hunk")
+                        .outline()
+                        .small()
+                        .label("Unstage")
+                        .disabled(!buttons.unstage)
+                        .tooltip("Unstage and Go to Next Change")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.dispatch_action(&UnstageAndNext, window, cx)
+                        })),
+                )
+            })
+            .child(
+                KitButton::new("restore-hunk")
+                    .ghost()
+                    .small()
+                    .label("Restore")
+                    .disabled(!buttons.restore)
+                    .tooltip("Restore Selected Change")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.dispatch_action(&Restore, window, cx)
+                    })),
+            )
+            .child(Divider::vertical())
+            .child(if buttons.stage_file {
+                KitButton::new("stage-file")
+                    .outline()
+                    .small()
+                    .label("Stage All")
+                    .disabled(!buttons.stage_file)
                     .on_click(cx.listener(|this, _, window, cx| this.stage_file(window, cx)))
             } else {
-                Button::new("unstage-file", "Unstage All")
-                    .width(rems_from_px(80_f32))
-                    .disabled(!button_states.unstage_file)
-                    .tooltip(Tooltip::for_action_title_in(
-                        "Unstage All",
-                        &UnstageFile,
-                        &focus_handle,
-                    ))
+                KitButton::new("unstage-file")
+                    .outline()
+                    .small()
+                    .label("Unstage All")
+                    .disabled(!buttons.unstage_file)
                     .on_click(cx.listener(|this, _, window, cx| this.unstage_file(window, cx)))
-            }))
-            .child(Divider::vertical())
+            })
             .child(
-                Button::new("commit", "Commit")
-                    .tooltip(Tooltip::for_action_title_in(
-                        "Commit",
-                        &Commit,
-                        &focus_handle,
-                    ))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.dispatch_action(&Commit, window, cx);
-                    })),
+                KitButton::new("commit")
+                    .primary()
+                    .small()
+                    .label("Commit")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| {
+                            this.dispatch_action(&Commit, window, cx)
+                        }),
+                    ),
             )
             .into_any_element()
     }

@@ -132,8 +132,6 @@ actions!(
         Init,
         /// Opens all modified files in the editor.
         OpenModifiedFiles,
-        /// Opens the current file in a solo diff view.
-        OpenFileDiff,
         /// Clones a repository.
         Clone,
         ViewCommit,
@@ -147,6 +145,14 @@ actions!(
         CreateTagAtHead,
     ]
 );
+
+/// Opens the given file, or the active file, in a solo diff view.
+#[derive(Clone, Default, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = git)]
+pub struct OpenFileDiff {
+    #[serde(default)]
+    pub path: Option<std::path::PathBuf>,
+}
 
 /// Renames a git branch.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, JsonSchema, Action)]

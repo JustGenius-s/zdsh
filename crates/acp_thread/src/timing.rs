@@ -215,6 +215,50 @@ impl ThreadTimings {
 }
 
 impl AcpThread {
+    pub fn fork_timings(
+        &self,
+        session_id: &acp_v2::SessionId,
+        through_entry: usize,
+        cx: &mut App,
+    ) -> Task<Result<()>> {
+        let Some(timings) = &self.timings else {
+            return Task::ready(Ok(()));
+        };
+        let mut saved = SavedTimings::default();
+        for (index, entry) in self
+            .entries
+            .iter()
+            .enumerate()
+            .take(through_entry.saturating_add(1))
+        {
+            if let Some(key) = self.turn_timing_key(index)
+                && let Some(duration) = timings.saved.turns.get(&key)
+            {
+                saved.turns.insert(key, *duration);
+            }
+            if let AgentThreadEntry::AssistantMessage(message) = entry {
+                for chunk_index in 0..message.chunks.len() {
+                    if let Some(key) = self.thought_timing_key(index, chunk_index)
+                        && let Some(duration) = timings.saved.thoughts.get(&key)
+                    {
+                        saved.thoughts.insert(key, *duration);
+                    }
+                }
+            }
+        }
+        let serialized = storage_key(&self.connection.agent_id(), session_id)
+            .and_then(|key| Ok((key, serde_json::to_string(&saved)?)));
+        let (key, payload) = match serialized {
+            Ok(serialized) => serialized,
+            Err(error) => return Task::ready(Err(error)),
+        };
+        let pending = enqueue_write(key, Some(payload), cx);
+        cx.spawn(async move |_| match pending.await {
+            Some(error) => Err(anyhow::anyhow!(error.to_string())),
+            None => Ok(()),
+        })
+    }
+
     pub fn set_replaying_history(&mut self, replaying: bool) {
         if let Some(timings) = &mut self.timings {
             timings.replaying_history = replaying;

@@ -1302,7 +1302,37 @@
         "enable_all_context_servers": true,
         "tools": {
           "apply_code_action": true,
-          "ask_user": false,
+          "ask_user": true,
+          "copy_path": true,
+          "create_directory": true,
+          "create_thread": true,
+          "delete_path": true,
+          "diagnostics": true,
+          "edit_file": true,
+          "fetch": true,
+          "find_path": true,
+          "find_references": true,
+          "get_code_actions": true,
+          "go_to_definition": true,
+          "grep": true,
+          "list_agents_and_models": true,
+          "list_directory": true,
+          "move_path": true,
+          "read_file": true,
+          "rename_symbol": true,
+          "search_web": true,
+          "skill": true,
+          "spawn_agent": true,
+          "terminal": true,
+          "write_file": true,
+        },
+      },
+      "debug": {
+        "name": "Debug",
+        "enable_all_context_servers": true,
+        "tools": {
+          "apply_code_action": true,
+          "ask_user": true,
           "copy_path": true,
           "create_directory": true,
           "create_thread": true,
@@ -1332,7 +1362,7 @@
         // We don't know which of the context server tools are safe for the "Ask" profile, so we don't enable them by default.
         // "enable_all_context_servers": true,
         "tools": {
-          "ask_user": false,
+          "ask_user": true,
           "create_thread": true,
           "diagnostics": true,
           "fetch": true,
@@ -1402,6 +1432,7 @@
     //
     // Default: false
     "use_modifier_to_send": false,
+    "show_composer_predictions": true,
     // Minimum number of lines to display in the agent message editor.
     //
     // Default: 1

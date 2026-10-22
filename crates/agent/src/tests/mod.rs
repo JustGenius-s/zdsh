@@ -4985,6 +4985,7 @@ async fn test_send_retry_finishes_tool_calls_on_error(cx: &mut TestAppContext) {
                 content: vec![AgentMessageContent::Text("Done".into())],
                 tool_results: IndexMap::default(),
                 reasoning_details: None,
+                ..Default::default()
             }))
         );
     })
@@ -6028,6 +6029,7 @@ async fn test_ask_user_elicitation_references_scoped_tool_call_id(cx: &mut TestA
     });
     cx.run_until_parked();
     let ask_user_input = AskUserToolInput {
+        questions: Vec::new(),
         question: "Which directory should we explore?".to_string(),
         options: Vec::new(),
         allow_free_text: true,

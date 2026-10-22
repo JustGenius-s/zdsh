@@ -29,6 +29,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window, actions, anchored, deferred, div, hsla,
     linear_color_stop, linear_gradient, point, px, size, uniform_list,
 };
+use gpui_kit::component::menu::PopupMenu;
 use itertools::Itertools;
 use language::DiagnosticSeverity;
 use markdown_preview::markdown_preview_view::MarkdownPreviewView;
@@ -62,9 +63,9 @@ use std::{
 use svg_preview::svg_preview_view::SvgPreviewView;
 use theme_settings::ThemeSettings;
 use ui::{
-    ContextMenu, DecoratedIcon, IconDecoration, IconDecorationKind, IndentGuideColors,
-    IndentGuideLayout, Indicator, KeyBinding, ListItem, ListItemSpacing, ProjectEmptyState,
-    ScrollAxes, ScrollableHandle, Scrollbars, StickyCandidate, Tooltip, WithScrollbar, prelude::*,
+    DecoratedIcon, IconDecoration, IconDecorationKind, IndentGuideColors, IndentGuideLayout,
+    Indicator, KeyBinding, ListItem, ListItemSpacing, ProjectEmptyState, ScrollAxes,
+    ScrollableHandle, Scrollbars, StickyCandidate, Tooltip, WithScrollbar, prelude::*,
 };
 use util::{
     ResultExt, TryFutureExt,
@@ -204,7 +205,7 @@ enum ContextMenuPlacement {
 const CONTEXT_MENU_KEYBOARD_OFFSET: Point<Pixels> = point(px(2.), px(2.));
 
 struct DeployedContextMenu {
-    menu: Entity<ContextMenu>,
+    menu: Entity<PopupMenu>,
     position: Point<Pixels>,
     /// Which corner of the menu is placed at `position`, determining the direction the menu opens
     /// in. When `None`, the menu is placed like any other anchored element.
@@ -1174,133 +1175,160 @@ impl ProjectPanel {
             };
 
             let has_pasteable_content = self.has_pasteable_content(cx);
-            let context_menu = ContextMenu::build(window, cx, |menu, _, _| {
-                menu.context(self.focus_handle.clone()).map(|menu| {
-                    if is_read_only {
-                        menu.when(is_markdown, |menu| {
-                            menu.action("Open Markdown Preview", Box::new(OpenMarkdownPreview))
-                        })
-                        .when(is_svg, |menu| {
-                            menu.action("Open SVG Preview", Box::new(OpenSvgPreview))
-                        })
-                        .when(is_dir, |menu| {
-                            menu.action("Search Inside", Box::new(NewSearchInDirectory))
-                        })
-                    } else {
-                        menu.action("New File", Box::new(NewFile))
-                            .action("New Folder", Box::new(NewDirectory))
-                            .separator()
-                            .when(is_local, |menu| {
-                                menu.action(
-                                    ui::utils::reveal_in_file_manager_label(is_remote),
-                                    Box::new(RevealInFileManager),
-                                )
-                            })
-                            .when(is_local, |menu| {
-                                menu.action("Open in Default App", Box::new(OpenWithSystem))
-                            })
-                            .action("Open in Terminal", Box::new(OpenInTerminal))
-                            .when(is_markdown, |menu| {
-                                menu.action("Open Markdown Preview", Box::new(OpenMarkdownPreview))
+            let selected_path = worktree.absolutize(&entry.path);
+            let context_menu = PopupMenu::build(window, cx, |menu, _, _| {
+                menu.action_context(self.focus_handle.clone())
+                    .menu(
+                        "Add to Chat",
+                        Box::new(zed_actions::agent::AddPathsToThread {
+                            paths: vec![selected_path.clone()],
+                        }),
+                    )
+                    .when(!is_dir && self.has_git_changes(entry_id), |menu| {
+                        menu.menu(
+                            "Open Diff",
+                            Box::new(git::OpenFileDiff {
+                                path: Some(selected_path.clone()),
+                            }),
+                        )
+                    })
+                    .separator()
+                    .map(|menu| {
+                        if is_read_only {
+                            menu.when(is_markdown, |menu| {
+                                menu.menu("Open Markdown Preview", Box::new(OpenMarkdownPreview))
                             })
                             .when(is_svg, |menu| {
-                                menu.action("Open SVG Preview", Box::new(OpenSvgPreview))
+                                menu.menu("Open SVG Preview", Box::new(OpenSvgPreview))
                             })
                             .when(is_dir, |menu| {
-                                menu.separator()
-                                    .action("Find in Folder…", Box::new(NewSearchInDirectory))
+                                menu.menu("Search Inside", Box::new(NewSearchInDirectory))
                             })
-                            .when(is_unfoldable, |menu| {
-                                menu.action("Unfold Directory", Box::new(UnfoldDirectory))
-                            })
-                            .when(is_foldable, |menu| {
-                                menu.action("Fold Directory", Box::new(FoldDirectory))
-                            })
-                            .when(should_show_compare, |menu| {
-                                menu.separator()
-                                    .action("Compare Marked Files", Box::new(CompareMarkedFiles))
-                            })
-                            .separator()
-                            .action("Cut", Box::new(Cut))
-                            .action("Copy", Box::new(Copy))
-                            .action("Duplicate", Box::new(Duplicate))
-                            .action_disabled_when(!has_pasteable_content, "Paste", Box::new(Paste))
-                            .when(!is_collab, |menu| {
-                                let can_undo = self.undo_manager.can_undo();
-                                let can_redo = self.undo_manager.can_redo();
+                        } else {
+                            menu.menu("New File", Box::new(NewFile))
+                                .menu("New Folder", Box::new(NewDirectory))
+                                .separator()
+                                .when(is_local, |menu| {
+                                    menu.menu(
+                                        ui::utils::reveal_in_file_manager_label(is_remote),
+                                        Box::new(RevealInFileManager),
+                                    )
+                                })
+                                .when(is_local, |menu| {
+                                    menu.menu("Open in Default App", Box::new(OpenWithSystem))
+                                })
+                                .menu("Open in Terminal", Box::new(OpenInTerminal))
+                                .when(is_markdown, |menu| {
+                                    menu.menu(
+                                        "Open Markdown Preview",
+                                        Box::new(OpenMarkdownPreview),
+                                    )
+                                })
+                                .when(is_svg, |menu| {
+                                    menu.menu("Open SVG Preview", Box::new(OpenSvgPreview))
+                                })
+                                .when(is_dir, |menu| {
+                                    menu.separator()
+                                        .menu("Find in Folder…", Box::new(NewSearchInDirectory))
+                                })
+                                .when(is_unfoldable, |menu| {
+                                    menu.menu("Unfold Directory", Box::new(UnfoldDirectory))
+                                })
+                                .when(is_foldable, |menu| {
+                                    menu.menu("Fold Directory", Box::new(FoldDirectory))
+                                })
+                                .when(should_show_compare, |menu| {
+                                    menu.separator()
+                                        .menu("Compare Marked Files", Box::new(CompareMarkedFiles))
+                                })
+                                .separator()
+                                .menu("Cut", Box::new(Cut))
+                                .menu("Copy", Box::new(Copy))
+                                .menu("Duplicate", Box::new(Duplicate))
+                                .menu_with_disabled(
+                                    "Paste",
+                                    Box::new(Paste),
+                                    !has_pasteable_content,
+                                )
+                                .when(!is_collab, |menu| {
+                                    let can_undo = self.undo_manager.can_undo();
+                                    let can_redo = self.undo_manager.can_redo();
 
-                                menu.action_disabled_when(!can_undo, "Undo", Box::new(Undo))
-                                    .action_disabled_when(!can_redo, "Redo", Box::new(Redo))
-                            })
-                            .when(is_remote, |menu| {
-                                menu.separator()
-                                    .action("Download...", Box::new(DownloadFromRemote))
-                            })
-                            .separator()
-                            .action("Copy Path", Box::new(zed_actions::workspace::CopyPath))
-                            .action(
-                                "Copy Relative Path",
-                                Box::new(zed_actions::workspace::CopyRelativePath),
-                            )
-                            .when(has_git_repo, |menu| {
-                                menu.separator()
-                                    .when(!is_dir && self.has_git_changes(entry_id), |menu| {
-                                        menu.action(
-                                            "Restore File",
-                                            Box::new(git::RestoreFile { skip_prompt: false }),
+                                    menu.menu_with_disabled("Undo", Box::new(Undo), !can_undo)
+                                        .menu_with_disabled("Redo", Box::new(Redo), !can_redo)
+                                })
+                                .when(is_remote, |menu| {
+                                    menu.separator()
+                                        .menu("Download...", Box::new(DownloadFromRemote))
+                                })
+                                .separator()
+                                .menu("Copy Path", Box::new(zed_actions::workspace::CopyPath))
+                                .menu(
+                                    "Copy Relative Path",
+                                    Box::new(zed_actions::workspace::CopyRelativePath),
+                                )
+                                .when(has_git_repo, |menu| {
+                                    menu.separator()
+                                        .when(!is_dir && self.has_git_changes(entry_id), |menu| {
+                                            menu.menu(
+                                                "Restore File",
+                                                Box::new(git::RestoreFile { skip_prompt: false }),
+                                            )
+                                        })
+                                        .menu("Add to .gitignore", Box::new(git::AddToGitignore))
+                                        .menu(
+                                            "Add to .git/info/exclude",
+                                            Box::new(git::AddToGitInfoExclude),
                                         )
-                                    })
-                                    .action("Add to .gitignore", Box::new(git::AddToGitignore))
-                                    .action(
-                                        "Add to .git/info/exclude",
-                                        Box::new(git::AddToGitInfoExclude),
-                                    )
-                                    .when(has_history, |menu| {
-                                        menu.action("View History", Box::new(git::FileHistory))
-                                    })
-                                    .when(!is_dir, |menu| {
-                                        menu.action(
-                                            "Open File Permalink",
-                                            git::OpenFilePermalink.boxed_clone(),
+                                        .when(has_history, |menu| {
+                                            menu.menu("View History", Box::new(git::FileHistory))
+                                        })
+                                        .when(!is_dir, |menu| {
+                                            menu.menu(
+                                                "Open File Permalink",
+                                                git::OpenFilePermalink.boxed_clone(),
+                                            )
+                                            .menu(
+                                                "Copy File Permalink",
+                                                git::CopyFilePermalink.boxed_clone(),
+                                            )
+                                        })
+                                })
+                                .when(!should_hide_rename, |menu| {
+                                    menu.separator().menu("Rename", Box::new(Rename))
+                                })
+                                .when(!is_root && !is_collab, |menu| {
+                                    menu.menu("Trash", Box::new(Trash { skip_prompt: false }))
+                                })
+                                .when(!is_root, |menu| {
+                                    menu.menu("Delete", Box::new(Delete { skip_prompt: false }))
+                                })
+                                .when(!is_collab && is_root, |menu| {
+                                    menu.separator()
+                                        .menu(
+                                            "Add Folders to Project…",
+                                            Box::new(workspace::AddFolderToProject),
                                         )
-                                        .action(
-                                            "Copy File Permalink",
-                                            git::CopyFilePermalink.boxed_clone(),
+                                        .menu("Remove from Project", Box::new(RemoveFromProject))
+                                })
+                                .when(is_dir && !is_root, |menu| {
+                                    menu.separator()
+                                        .menu(
+                                            "Expand All",
+                                            Box::new(ExpandSelectedEntryAndChildren),
                                         )
-                                    })
-                            })
-                            .when(!should_hide_rename, |menu| {
-                                menu.separator().action("Rename", Box::new(Rename))
-                            })
-                            .when(!is_root && !is_collab, |menu| {
-                                menu.action("Trash", Box::new(Trash { skip_prompt: false }))
-                            })
-                            .when(!is_root, |menu| {
-                                menu.action("Delete", Box::new(Delete { skip_prompt: false }))
-                            })
-                            .when(!is_collab && is_root, |menu| {
-                                menu.separator()
-                                    .action(
-                                        "Add Folders to Project…",
-                                        Box::new(workspace::AddFolderToProject),
-                                    )
-                                    .action("Remove from Project", Box::new(RemoveFromProject))
-                            })
-                            .when(is_dir && !is_root, |menu| {
-                                menu.separator()
-                                    .action("Expand All", Box::new(ExpandSelectedEntryAndChildren))
-                                    .action(
-                                        "Collapse All",
-                                        Box::new(CollapseSelectedEntryAndChildren),
-                                    )
-                            })
-                            .when(is_dir && is_root, |menu| {
-                                menu.separator()
-                                    .action("Expand All", Box::new(ExpandAllEntries))
-                                    .action("Collapse All", Box::new(CollapseAllEntries))
-                            })
-                    }
-                })
+                                        .menu(
+                                            "Collapse All",
+                                            Box::new(CollapseSelectedEntryAndChildren),
+                                        )
+                                })
+                                .when(is_dir && is_root, |menu| {
+                                    menu.separator()
+                                        .menu("Expand All", Box::new(ExpandAllEntries))
+                                        .menu("Collapse All", Box::new(CollapseAllEntries))
+                                })
+                        }
+                    })
             });
 
             let (position, anchor) = match placement {
@@ -7481,7 +7509,8 @@ impl ProjectPanel {
         let project = self.project.read(cx);
         let panel_settings = ProjectPanelSettings::get_global(cx);
         let indent_size = panel_settings.indent_size;
-        let show_indent_guides = panel_settings.indent_guides.show == ShowIndentGuides::Always;
+        let show_indent_guides = self.selection.is_some()
+            && panel_settings.indent_guides.show == ShowIndentGuides::Always;
         let horizontal_scroll = panel_settings.scrollbar.horizontal_scroll;
         let show_sticky_entries = {
             if panel_settings.sticky_scroll {

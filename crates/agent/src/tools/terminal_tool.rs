@@ -28,7 +28,7 @@ const COMMAND_OUTPUT_LIMIT: u64 = 16 * 1024;
 ///
 /// This tool spawns a process using the user's shell, reads from stdout and stderr (preserving the order of writes), and returns a string with the combined output result.
 ///
-/// The output results will be shown to the user already, only list it again if necessary, avoid being redundant.
+/// Tool output may be collapsed in the transcript. Include important outcomes and failures in your final answer, without reproducing the entire log.
 ///
 /// Always set the working directory with the `cd` parameter, never with `cd` inside `command`; otherwise it will error.
 ///
@@ -73,7 +73,7 @@ pub struct TerminalToolInput {
 ///
 /// This tool spawns a process using the user's shell, reads from stdout and stderr (preserving the order of writes), and returns a string with the combined output result.
 ///
-/// The output results will be shown to the user already, only list it again if necessary, avoid being redundant.
+/// Tool output may be collapsed in the transcript. Include important outcomes and failures in your final answer, without reproducing the entire log.
 ///
 /// Always set the working directory with the `cd` parameter, never with `cd` inside `command`; otherwise it will error.
 ///

@@ -312,6 +312,7 @@ pub fn profile_description(profile_id: &AgentProfileId) -> Option<&'static str> 
     match profile_id.as_str() {
         builtin_profiles::WRITE => Some("Get help to write anything."),
         builtin_profiles::ASK => Some("Chat about your codebase."),
+        builtin_profiles::DEBUG => Some("Investigate with runtime logs and guided reproduction."),
         builtin_profiles::MINIMAL => Some("Chat about anything with no tools."),
         _ => None,
     }
@@ -321,6 +322,7 @@ pub fn profile_icon(profile_id: &AgentProfileId) -> (IconName, Color) {
     match profile_id.as_str() {
         builtin_profiles::WRITE => (IconName::Pencil, Color::Default),
         builtin_profiles::ASK => (IconName::Chat, Color::Success),
+        builtin_profiles::DEBUG => (IconName::Debug, Color::Warning),
         builtin_profiles::MINIMAL => (IconName::Dash, Color::Warning),
         _ => (IconName::UserRoundPen, Color::Muted),
     }

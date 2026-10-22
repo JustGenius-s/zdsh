@@ -339,22 +339,12 @@ pub fn init(cx: &mut App) {
         workspace.register_action(|workspace, _: &git::OpenModifiedFiles, window, cx| {
             open_modified_files(workspace, window, cx);
         });
-        workspace.register_action_renderer(|div, workspace, _window, cx| {
-            div.when_some(
-                file_diff_entry(workspace, cx),
-                |div, (entry, repository)| {
-                    let workspace = workspace.weak_handle();
-                    div.on_action(move |_: &git::OpenFileDiff, window, cx| {
-                        open_file_diff(
-                            entry.clone(),
-                            repository.clone(),
-                            workspace.clone(),
-                            window,
-                            cx,
-                        );
-                    })
-                },
-            )
+        workspace.register_action(|workspace, action: &git::OpenFileDiff, window, cx| {
+            if let Some((entry, repository)) =
+                file_diff_entry(workspace, action.path.as_deref(), cx)
+            {
+                open_file_diff(entry, repository, workspace.weak_handle(), window, cx);
+            }
         });
         workspace.register_action(|workspace, _: &git::RenameBranch, window, cx| {
             rename_current_branch(workspace, window, cx);
@@ -392,9 +382,13 @@ fn open_file_diff(
 
 fn file_diff_entry(
     workspace: &Workspace,
+    path: Option<&std::path::Path>,
     cx: &App,
 ) -> Option<(GitStatusEntry, Entity<Repository>)> {
-    let project_path = workspace.active_item(cx)?.project_path(cx)?;
+    let project_path = match path {
+        Some(path) => workspace.project().read(cx).find_project_path(path, cx)?,
+        None => workspace.active_item(cx)?.project_path(cx)?,
+    };
 
     workspace
         .project()
