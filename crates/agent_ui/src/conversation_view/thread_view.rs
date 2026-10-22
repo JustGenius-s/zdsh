@@ -72,6 +72,7 @@ use transcript::AlertCard;
 
 mod activity_bar;
 mod composer;
+mod navigation;
 mod tool_calls;
 mod transcript;
 
@@ -573,6 +574,7 @@ pub struct ThreadView {
     pub last_token_limit_telemetry: Option<acp_thread::TokenUsageRatio>,
     thread_feedback: ThreadFeedbackState,
     pub list_state: ListState,
+    conversation_navigation: navigation::NavigationState,
     /// Whether the last render showed the transcript as scrolled away from the latest entry, so
     /// the scroll handler only re-renders when the jump-to-latest overlay has to change.
     transcript_scrolled_up: bool,
@@ -1054,6 +1056,7 @@ impl ThreadView {
             model_selector,
             profile_selector,
             list_state,
+            conversation_navigation: navigation::NavigationState::new(cx),
             transcript_scrolled_up: false,
             session_capabilities,
             resumed_without_history,
@@ -1122,6 +1125,7 @@ impl ThreadView {
         this.sync_editor_mode(cx);
         this.sync_placeholder(window, cx);
         this.sync_existing_elicitation_states(window, cx);
+        this.subscribe_to_navigation_focus(window, cx);
         let list_state_for_scroll = this.list_state.clone();
         let thread_view = cx.entity().downgrade();
 
@@ -1134,17 +1138,23 @@ impl ThreadView {
                 // directly would panic from a double borrow.
                 cx.defer(move |cx| {
                     let scroll_top = list_state.logical_scroll_top();
-                    let _ = thread_view.update(cx, |this, cx| {
-                        if transcript::is_scrolled_up(&list_state) != this.transcript_scrolled_up {
-                            cx.notify();
-                        }
-                        if let Some(thread) = this.as_native_thread(cx) {
-                            thread.update(cx, |thread, _cx| {
-                                thread.set_ui_scroll_position(Some(scroll_top));
-                            });
-                        }
-                        this.schedule_save(cx);
-                    });
+                    thread_view
+                        .update(cx, |this, cx| {
+                            if transcript::is_scrolled_up(&list_state)
+                                != this.transcript_scrolled_up
+                                || this.conversation_navigation.top_entry != scroll_top.item_ix
+                            {
+                                this.conversation_navigation.top_entry = scroll_top.item_ix;
+                                cx.notify();
+                            }
+                            if let Some(thread) = this.as_native_thread(cx) {
+                                thread.update(cx, |thread, _cx| {
+                                    thread.set_ui_scroll_position(Some(scroll_top));
+                                });
+                            }
+                            this.schedule_save(cx);
+                        })
+                        .log_err();
                 });
             });
 
@@ -8391,6 +8401,7 @@ impl Render for ThreadView {
                             window,
                             cx,
                         )
+                        .child(self.render_conversation_navigation(window, cx))
                         .into_any()
                 } else {
                     this.child(
@@ -8407,6 +8418,18 @@ impl Render for ThreadView {
         v_flex()
             .key_context("AcpThread")
             .track_focus(&self.focus_handle)
+            .capture_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
+                if this.dismiss_conversation_navigation(window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(
+                cx.listener(|this, _: &editor::actions::Cancel, window, cx| {
+                    if this.dismiss_conversation_navigation(window, cx) {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .on_action(cx.listener(|this, _: &menu::Cancel, _, cx| {
                 if this.parent_session_id.is_none() {
                     this.cancel_generation(cx);
