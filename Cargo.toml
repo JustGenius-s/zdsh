@@ -760,6 +760,10 @@ pulldown-cmark = { version = "0.13.0", default-features = false }
 quick-xml = "0.41"
 quote = "1.0.9"
 rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "os_rng"] }
+ratex-layout = "0.1.15"
+ratex-parser = "0.1.15"
+ratex-svg = { version = "0.1.15", features = ["embed-fonts"] }
+ratex-types = "0.1.15"
 raw-window-handle = "0.6"
 rayon = "1.8"
 regex = { version = "1.5", default-features = false, features = ["std", "perf"] }

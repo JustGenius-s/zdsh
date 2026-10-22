@@ -95,6 +95,20 @@ fn collect_inline_spans(source: &str, events: &[(Range<usize>, MarkdownEvent)]) 
                     is_code: true,
                 });
             }
+            MarkdownEvent::InlineMath(_) => {
+                note_child(&mut stack, event_range);
+                if let Some(formula) = source.get(event_range.clone())
+                    && formula.starts_with('$')
+                    && formula.ends_with('$')
+                    && formula.len() >= 2
+                {
+                    spans.push(InlineSpan {
+                        range: event_range.clone(),
+                        content: event_range.start + 1..event_range.end - 1,
+                        is_code: false,
+                    });
+                }
+            }
             _ => note_child(&mut stack, event_range),
         }
     }

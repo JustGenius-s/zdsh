@@ -19,6 +19,7 @@ pub const PARSE_OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS)
     .union(Options::ENABLE_OLD_FOOTNOTES)
     .union(Options::ENABLE_GFM)
+    .union(Options::ENABLE_MATH)
     .union(Options::ENABLE_SUPERSCRIPT)
     .union(Options::ENABLE_SUBSCRIPT);
 
@@ -80,7 +81,7 @@ impl ParseState {
                     }
                 }
             }
-            MarkdownEvent::Rule => {
+            MarkdownEvent::Rule | MarkdownEvent::DisplayMath(_) => {
                 if self.depth == 0 && !range.is_empty() {
                     self.root_block_starts.push(range.start);
                     let root_block_index = self.root_block_starts.len() - 1;
@@ -154,6 +155,12 @@ fn build_heading_slugs(
                 heading_text.push_str(&source[range.clone()]);
             }
             MarkdownEvent::SubstitutedCode(substituted) if inside_heading => {
+                if heading_source_start.is_none() {
+                    heading_source_start = Some(range.start);
+                }
+                heading_text.push_str(substituted);
+            }
+            MarkdownEvent::InlineMath(substituted) if inside_heading => {
                 if heading_source_start.is_none() {
                     heading_source_start = Some(range.start);
                 }
@@ -731,7 +738,12 @@ pub(crate) fn parse_markdown_with_options(
             pulldown_cmark::Event::TaskListMarker(checked) => {
                 state.push_event(range, MarkdownEvent::TaskListMarker(checked))
             }
-            pulldown_cmark::Event::InlineMath(_) | pulldown_cmark::Event::DisplayMath(_) => {}
+            pulldown_cmark::Event::InlineMath(source) => {
+                state.push_event(range, MarkdownEvent::InlineMath(source.to_string().into()))
+            }
+            pulldown_cmark::Event::DisplayMath(source) => {
+                state.push_event(range, MarkdownEvent::DisplayMath(source.to_string().into()))
+            }
         }
     }
 
@@ -838,6 +850,8 @@ pub enum MarkdownEvent {
     Code,
     /// An inline code node that differs from the markdown source due to escape decoding.
     SubstitutedCode(String),
+    InlineMath(SharedString),
+    DisplayMath(SharedString),
     /// An HTML node.
     Html,
     /// An inline HTML node.
@@ -1045,9 +1059,8 @@ mod tests {
     use super::*;
 
     const CONDITIONAL_OPTIONS: Options = Options::ENABLE_YAML_STYLE_METADATA_BLOCKS;
-    const UNWANTED_OPTIONS: Options = Options::ENABLE_MATH
-        .union(Options::ENABLE_DEFINITION_LIST)
-        .union(Options::ENABLE_WIKILINKS);
+    const UNWANTED_OPTIONS: Options =
+        Options::ENABLE_DEFINITION_LIST.union(Options::ENABLE_WIKILINKS);
 
     #[test]
     fn all_options_considered() {

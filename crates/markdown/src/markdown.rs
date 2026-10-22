@@ -1,4 +1,5 @@
 pub mod html;
+mod math;
 mod mermaid;
 pub mod parser;
 mod path_range;
@@ -10,6 +11,7 @@ use gpui::HitboxBehavior;
 use gpui::UnderlineStyle;
 use gpui_kit::base::v_flex as kit_v_flex;
 use language::LanguageName;
+use math::{MathCache, MathElement, prepare_math};
 
 use log::Level;
 use mermaid::{
@@ -1270,6 +1272,7 @@ impl Markdown {
         let should_render_mermaid_diagrams = self.options.render_mermaid_diagrams;
         let should_parse_heading_slugs = self.options.parse_heading_slugs;
         let should_parse_metadata_blocks = self.options.render_metadata_blocks;
+        let previous_math = self.parsed_markdown.math.clone();
         let language_registry = self.language_registry.clone();
         let fallback = self.fallback_code_block_language.clone();
 
@@ -1285,6 +1288,7 @@ impl Markdown {
                         html_blocks: BTreeMap::default(),
                         metadata_blocks: BTreeMap::default(),
                         mermaid_diagrams: BTreeMap::default(),
+                        math: MathCache::default(),
                         heading_slugs: HashMap::default(),
                         footnote_definitions: HashMap::default(),
                         link_definition_spans: Arc::default(),
@@ -1302,6 +1306,7 @@ impl Markdown {
                 should_parse_metadata_blocks,
             );
             let events = parsed.events;
+            let math = prepare_math(&events, &previous_math);
             let language_names = parsed.language_names;
             let paths = parsed.language_paths;
             let root_block_starts = parsed.root_block_starts;
@@ -1382,6 +1387,7 @@ impl Markdown {
                 html_blocks,
                 metadata_blocks,
                 mermaid_diagrams,
+                math,
                 heading_slugs,
                 footnote_definitions,
                 link_definition_spans: Arc::from(link_definition_spans),
@@ -1531,6 +1537,7 @@ pub struct ParsedMarkdown {
     pub(crate) html_blocks: BTreeMap<usize, html::html_parser::ParsedHtmlBlock>,
     pub(crate) metadata_blocks: BTreeMap<usize, ParsedMetadataBlock>,
     pub(crate) mermaid_diagrams: BTreeMap<usize, ParsedMarkdownMermaidDiagram>,
+    pub(crate) math: MathCache,
     pub heading_slugs: HashMap<SharedString, usize>,
     pub footnote_definitions: HashMap<SharedString, usize>,
     pub(crate) link_definition_spans: Arc<[Range<usize>]>,
@@ -3449,6 +3456,61 @@ impl Element for MarkdownElement {
                         range.clone(),
                         parsed_markdown.code_block_highlights.get(&event_index),
                     );
+                }
+                MarkdownEvent::InlineMath(source) | MarkdownEvent::DisplayMath(source) => {
+                    let display = matches!(event, MarkdownEvent::DisplayMath(_));
+                    let formula = parsed_markdown.math.get(&(source.clone(), display));
+                    match formula {
+                        Some(Ok(formula)) => {
+                            builder.flush_text();
+                            let mut text_style = builder.text_style();
+                            text_style.line_height = self.style.paragraph_line_height;
+                            let (element, rendered_line) = MathElement::new(
+                                formula.clone(),
+                                &parsed_markdown.source[range.clone()],
+                                range.clone(),
+                                text_style,
+                                display,
+                                builder.highlights.highlights_for_line(range.clone()),
+                                window,
+                            );
+                            builder.rendered_lines.push(rendered_line);
+                            if display {
+                                builder.append_child(
+                                    kit_v_flex()
+                                        .id(("math-block", range.start))
+                                        .w_full()
+                                        .py_2()
+                                        .mb(self.style.paragraph_spacing)
+                                        .overflow_x_scroll()
+                                        .child(element)
+                                        .into_any_element(),
+                                );
+                            } else {
+                                builder.push_image_child(element);
+                                builder.modify_current_div(|container| container.items_center());
+                            }
+                        }
+                        Some(Err(error)) => {
+                            let error = error.clone();
+                            let fallback = kit_v_flex().id(("math-error", range.start)).tooltip(
+                                move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(format!(
+                                        "Could not render formula: {error}"
+                                    ))
+                                    .build(window, cx)
+                                },
+                            );
+                            builder.push_div(fallback, range, markdown_end);
+                            builder
+                                .push_text(&parsed_markdown.source[range.clone()], range.clone());
+                            builder.pop_div();
+                        }
+                        None => {
+                            builder
+                                .push_text(&parsed_markdown.source[range.clone()], range.clone());
+                        }
+                    }
                 }
                 MarkdownEvent::Code => {
                     self.push_markdown_code_span(
