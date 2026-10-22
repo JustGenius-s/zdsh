@@ -5,12 +5,15 @@ use cloud_api_types::ExtensionMetadata;
 use extension_host::ExtensionStore;
 use fs::Fs;
 use fuzzy::{StringMatch, StringMatchCandidate, match_strings};
-use gpui::{App, DismissEvent, Entity, EventEmitter, Focusable, Task, WeakEntity, prelude::*};
+use gpui_kit::component::{Sizable as _, h_flex, list::ListItem, tag::Tag, v_flex};
+use gpui_kit::{
+    App, DismissEvent, Entity, EventEmitter, Focusable, Task, WeakEntity, Window, prelude::*,
+};
 use picker::{Picker, PickerDelegate};
 use release_channel::ReleaseChannel;
 use semver::Version;
 use settings::update_settings_file;
-use ui::{HighlightedLabel, ListItem, ListItemSpacing, prelude::*};
+use ui::ActiveTheme as _;
 use util::ResultExt;
 use workspace::ModalView;
 
@@ -23,7 +26,7 @@ impl ModalView for ExtensionVersionSelector {}
 impl EventEmitter<DismissEvent> for ExtensionVersionSelector {}
 
 impl Focusable for ExtensionVersionSelector {
-    fn focus_handle(&self, cx: &App) -> gpui::FocusHandle {
+    fn focus_handle(&self, cx: &App) -> gpui_kit::FocusHandle {
         self.picker.focus_handle(cx)
     }
 }
@@ -90,7 +93,7 @@ impl ExtensionVersionSelectorDelegate {
 }
 
 impl PickerDelegate for ExtensionVersionSelectorDelegate {
-    type ListItem = ui::ListItem;
+    type ListItem = ListItem;
 
     fn name() -> &'static str {
         "extension version selector"
@@ -219,33 +222,48 @@ impl PickerDelegate for ExtensionVersionSelectorDelegate {
             extension_host::is_version_compatible(ReleaseChannel::global(cx), extension_version);
         let disabled = !is_version_compatible;
 
+        let text = version_match.string.clone();
+        let highlights = version_match
+            .positions
+            .iter()
+            .filter_map(|position| {
+                let character = text.get(*position..)?.chars().next()?;
+                Some((
+                    *position..*position + character.len_utf8(),
+                    gpui_kit::HighlightStyle {
+                        font_weight: Some(gpui_kit::FontWeight::BOLD),
+                        ..Default::default()
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
         Some(
             ListItem::new(ix)
-                .inset(true)
-                .spacing(ListItemSpacing::Sparse)
-                .toggle_state(selected)
+                .py_2()
+                .selected(selected)
                 .disabled(disabled)
+                .accessibility_label(text.clone())
                 .child(
-                    HighlightedLabel::new(
-                        version_match.string.clone(),
-                        version_match.positions.clone(),
-                    )
-                    .when(disabled, |label| label.color(Color::Muted)),
-                )
-                .end_slot(
                     h_flex()
-                        .gap_2()
-                        .when(!is_version_compatible, |this| {
-                            this.child(Label::new("Incompatible").color(Color::Muted))
+                        .w_full()
+                        .gap_3()
+                        .justify_between()
+                        .when(disabled, |this| {
+                            this.text_color(cx.theme().colors().text_muted)
                         })
+                        .child(gpui_kit::StyledText::new(text).with_highlights(highlights))
                         .child(
-                            Label::new(
-                                extension_version
-                                    .published_at
-                                    .format("%Y-%m-%d")
-                                    .to_string(),
-                            )
-                            .when(disabled, |label| label.color(Color::Muted)),
+                            h_flex()
+                                .gap_2()
+                                .when(disabled, |this| {
+                                    this.child(Tag::secondary().small().child("Incompatible"))
+                                })
+                                .child(
+                                    extension_version
+                                        .published_at
+                                        .format("%Y-%m-%d")
+                                        .to_string(),
+                                ),
                         ),
                 ),
         )

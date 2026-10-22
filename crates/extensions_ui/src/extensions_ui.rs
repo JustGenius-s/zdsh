@@ -10,29 +10,41 @@ use anyhow::Context as _;
 use cloud_api_types::{ExtensionMetadata, ExtensionProvides};
 use collections::{BTreeMap, BTreeSet};
 use command_palette_hooks::CommandPaletteFilter;
-use editor::{Editor, EditorElement, EditorStyle};
 use extension_host::{ExtensionIndexEntry, ExtensionManifest, ExtensionStore};
 use fuzzy::{StringMatch, StringMatchCandidate, match_strings};
 use git::{GitHostingProviderRegistry, parse_git_remote_url};
-use gpui::{
+use gpui_kit::{
     Action, App, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, Focusable,
-    InteractiveElement, KeyContext, ParentElement, Render, Styled, Task, TaskExt, TextStyle,
-    UniformListScrollHandle, WeakEntity, Window, actions, point, uniform_list,
+    ParentElement, Render, SharedString, Styled, Task, TaskExt, UniformListScrollHandle,
+    WeakEntity, Window, actions, div, point, prelude::*, px, rems, uniform_list,
 };
 
 use picker::{Picker, PickerDelegate};
 use project::DirectoryLister;
 
+use gpui_kit::{
+    base::{Scrollbar, ScrollbarAxis, ScrollbarHandle as _, ScrollbarMode},
+    component::{
+        Icon as KitIcon, IconName as KitIconName, Selectable as _, Sizable as _,
+        alert::Alert,
+        button::{Button as KitButton, ButtonGroup, ButtonVariants as _},
+        empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia},
+        h_flex,
+        input::{Input, InputEvent, InputState},
+        label::Label as KitLabel,
+        list::ListItem,
+        menu::PopupMenuItem,
+        spinner::Spinner,
+        switch::Switch,
+        tab::{Tab, TabBar},
+        v_flex,
+    },
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use settings::{Settings, SettingsContent};
 use strum::IntoEnumIterator as _;
-use theme_settings::ThemeSettings;
-use ui::{
-    Banner, CommonAnimationExt, ContextMenu, Divider, ListItem, ListItemSpacing, ScrollableHandle,
-    Switch, ToggleButtonGroup, ToggleButtonGroupSize, ToggleButtonGroupStyle, ToggleButtonSimple,
-    WithScrollbar, prelude::*,
-};
+use ui::{ActiveTheme as _, IconName};
 use util::ResultExt;
 use vim_mode_setting::VimModeSetting;
 use workspace::{
@@ -56,7 +68,7 @@ actions!(
 );
 
 /// Rebuilds an installed dev extension.
-#[derive(Clone, Debug, Default, PartialEq, Deserialize, JsonSchema, gpui::Action)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, JsonSchema, gpui_kit::Action)]
 #[action(namespace = zed)]
 #[serde(deny_unknown_fields)]
 pub struct RebuildDevExtension {
@@ -171,7 +183,7 @@ pub fn init(cx: &mut App) {
             .register_action(move |workspace, _: &InstallDevExtension, window, cx| {
                 let store = ExtensionStore::global(cx);
                 let prompt = workspace.prompt_for_open_path(
-                    gpui::PathPromptOptions {
+                    gpui_kit::PathPromptOptions {
                         files: false,
                         directories: true,
                         multiple: false,
@@ -400,10 +412,9 @@ pub struct ExtensionsPage {
     /// Results of the latest fetch, empty if it failed.
     remote_extensions: Vec<ExtensionMetadata>,
     displayed_extensions: Vec<DisplayedExtension>,
-    query_editor: Entity<Editor>,
-    query_contains_error: bool,
+    query_input: Entity<InputState>,
     provides_filter: Option<ExtensionProvides>,
-    _subscriptions: [gpui::Subscription; 2],
+    _subscriptions: [gpui_kit::Subscription; 2],
     extension_fetch_task: Option<Task<()>>,
     local_search_task: Option<Task<()>>,
     upsells: BTreeSet<Feature>,
@@ -441,15 +452,16 @@ impl ExtensionsPage {
                 ),
             ];
 
-            let query_editor = cx.new(|cx| {
-                let mut input = Editor::single_line(window, cx);
-                input.set_placeholder_text("Search extensions...", window, cx);
-                if let Some(id) = focus_extension_id {
-                    input.set_text(format!("id:{id}"), window, cx);
-                }
-                input
+            let query_input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Search extensions…")
+                    .default_value(
+                        focus_extension_id
+                            .map(|id| format!("id:{id}"))
+                            .unwrap_or_default(),
+                    )
             });
-            cx.subscribe(&query_editor, Self::on_query_change).detach();
+            cx.subscribe(&query_input, Self::on_query_change).detach();
 
             let scroll_handle = UniformListScrollHandle::new();
             let provider_registry = GitHostingProviderRegistry::default_global(cx);
@@ -464,12 +476,11 @@ impl ExtensionsPage {
                 installed_search_results: Vec::new(),
                 remote_extensions: Vec::new(),
                 displayed_extensions: Vec::new(),
-                query_contains_error: false,
                 provides_filter,
                 extension_fetch_task: None,
                 local_search_task: None,
                 _subscriptions: subscriptions,
-                query_editor,
+                query_input,
                 upsells: BTreeSet::default(),
             };
             this.update_local_search_results(cx);
@@ -778,48 +789,37 @@ impl ExtensionsPage {
         Some(
             ExtensionCard::for_remote(extension, extension_store, cx)
                 .repository_icon(self.get_repository_icon(&extension.manifest.repository))
-                .context_menu(move |extension_id, authors, window, cx| {
-                    let this = weak_self.upgrade()?;
-                    Some(Self::render_remote_extension_context_menu(
-                        &this,
-                        extension_id,
-                        authors,
-                        window,
-                        cx,
-                    ))
+                .context_menu(move |menu, extension_id, authors, _, _| {
+                    let weak_self = weak_self.clone();
+                    menu.item(PopupMenuItem::new("Install Another Version…").on_click({
+                        let extension_id = extension_id.clone();
+                        move |_, window, cx| {
+                            weak_self
+                                .update(cx, |this, cx| {
+                                    this.show_extension_version_list(
+                                        extension_id.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                })
+                                .log_err();
+                        }
+                    }))
+                    .separator()
+                    .item(
+                        PopupMenuItem::new("Copy Extension ID").on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                extension_id.to_string(),
+                            ));
+                        }),
+                    )
+                    .item(
+                        PopupMenuItem::new("Copy Author Info").on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(authors.to_string()));
+                        }),
+                    )
                 }),
         )
-    }
-
-    fn render_remote_extension_context_menu(
-        this: &Entity<Self>,
-        extension_id: Arc<str>,
-        authors: SharedString,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<ContextMenu> {
-        ContextMenu::build(window, cx, |context_menu, window, _| {
-            context_menu
-                .entry(
-                    "Install Another Version...",
-                    None,
-                    window.handler_for(this, {
-                        let extension_id = extension_id.clone();
-                        move |this, window, cx| {
-                            this.show_extension_version_list(extension_id.clone(), window, cx)
-                        }
-                    }),
-                )
-                .entry("Copy Extension ID", None, {
-                    let extension_id = extension_id.clone();
-                    move |_, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(extension_id.to_string()));
-                    }
-                })
-                .entry("Copy Author Info", None, move |_, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(authors.to_string()));
-                })
-        })
     }
 
     fn show_extension_version_list(
@@ -859,91 +859,33 @@ impl ExtensionsPage {
         .detach_and_log_err(cx);
     }
 
-    fn render_search(&self, cx: &mut Context<Self>) -> Div {
-        let mut key_context = KeyContext::new_with_defaults();
-        key_context.add("BufferSearchBar");
-
-        let editor_border = if self.query_contains_error {
-            Color::Error.color(cx)
-        } else {
-            cx.theme().colors().border
-        };
-
-        h_flex()
-            .key_context(key_context)
-            .h_8()
-            .min_w(rems_from_px(384_f32))
-            .flex_1()
-            .pl_1p5()
-            .pr_2()
-            .gap_2()
-            .border_1()
-            .border_color(editor_border)
-            .rounded_md()
-            .child(Icon::new(IconName::MagnifyingGlass).color(Color::Muted))
-            .child(
-                div()
-                    .flex_1()
-                    .child(self.render_text_input(&self.query_editor, cx)),
-            )
-            .when(self.fetch_state == ExtensionFetchState::Fetching, |this| {
-                this.child(
-                    Icon::new(IconName::LoadCircle)
-                        .size(IconSize::Small)
-                        .color(Color::Muted)
-                        .with_rotate_animation(2),
-                )
+    fn render_search(&self) -> impl IntoElement {
+        Input::new(&self.query_input)
+            .aria_label("Search extensions")
+            .prefix(KitIcon::new(KitIconName::Search).size(rems(1.125)))
+            .cleanable(true)
+            .w_full()
+            .when(self.fetch_state == ExtensionFetchState::Fetching, |input| {
+                input.suffix(Spinner::new().small())
             })
     }
 
-    fn retry_button(&self, cx: &mut Context<Self>) -> Button {
-        Button::new("retry-fetch-extensions", "Retry")
-            .style(ButtonStyle::Outlined)
+    fn retry_button(&self, cx: &mut Context<Self>) -> KitButton {
+        KitButton::new("retry-fetch-extensions")
+            .label("Retry")
+            .outline()
             .on_click(cx.listener(|this, _, _, cx| {
                 this.fetch_extensions(FetchDebounce::Immediate, None, cx);
             }))
     }
 
-    fn render_text_input(
-        &self,
-        editor: &Entity<Editor>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let settings = ThemeSettings::get_global(cx);
-        let text_style = TextStyle {
-            color: if editor.read(cx).read_only(cx) {
-                cx.theme().colors().text_disabled
-            } else {
-                cx.theme().colors().text
-            },
-            font_family: settings.ui_font.family.clone(),
-            font_features: settings.ui_font.features.clone(),
-            font_fallbacks: settings.ui_font.fallbacks.clone(),
-            font_size: rems(0.875).into(),
-            font_weight: settings.ui_font.weight,
-            line_height: relative(1.3),
-            ..Default::default()
-        };
-
-        EditorElement::new(
-            editor,
-            EditorStyle {
-                background: cx.theme().colors().editor_background,
-                local_player: cx.theme().players().local(),
-                text: text_style,
-                ..Default::default()
-            },
-        )
-    }
-
     fn on_query_change(
         &mut self,
-        _: Entity<Editor>,
-        event: &editor::EditorEvent,
+        _: Entity<InputState>,
+        event: &InputEvent,
         cx: &mut Context<Self>,
     ) {
-        if let editor::EditorEvent::Edited { .. } = event {
-            self.query_contains_error = false;
+        if matches!(event, InputEvent::Change) {
             self.refresh_search(cx);
         }
     }
@@ -961,8 +903,8 @@ impl ExtensionsPage {
     }
 
     pub fn focus_extension(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.query_editor.update(cx, |editor, cx| {
-            editor.set_text(format!("id:{id}"), window, cx)
+        self.query_input.update(cx, |input, cx| {
+            input.set_value(format!("id:{id}"), window, cx)
         });
         self.refresh_search(cx);
     }
@@ -977,7 +919,7 @@ impl ExtensionsPage {
     }
 
     pub fn search_query(&self, cx: &mut App) -> Option<String> {
-        let search = self.query_editor.read(cx).text(cx);
+        let search = self.query_input.read(cx).value().to_string();
         if search.trim().is_empty() {
             None
         } else {
@@ -1024,30 +966,22 @@ impl ExtensionsPage {
             }
         };
 
-        v_flex()
+        Empty::new()
             .size_full()
-            .items_center()
-            .justify_center()
-            .gap_3()
-            .child(
-                h_flex()
-                    .gap_1p5()
-                    .when(is_loading, |this| {
-                        this.child(
-                            Icon::new(IconName::LoadCircle)
-                                .size(IconSize::Small)
-                                .color(Color::Accent)
-                                .with_rotate_animation(3),
-                        )
-                    })
-                    .when(fetch_failure_is_relevant, |this| {
-                        this.child(
-                            Icon::new(IconName::Warning)
-                                .size(IconSize::Small)
-                                .color(Color::Warning),
-                        )
-                    })
-                    .child(Label::new(message)),
+            .header(
+                EmptyHeader::new()
+                    .media(EmptyMedia::new().child(if is_loading {
+                        Spinner::new().into_any_element()
+                    } else {
+                        KitIcon::new(if fetch_failure_is_relevant {
+                            KitIconName::TriangleAlert
+                        } else {
+                            KitIconName::Search
+                        })
+                        .size(rems(1.5))
+                        .into_any_element()
+                    }))
+                    .description(EmptyDescription::new().child(message)),
             )
             .when(fetch_failure_is_relevant, |this| {
                 this.child(self.retry_button(cx))
@@ -1056,21 +990,14 @@ impl ExtensionsPage {
 
     fn update_settings(
         &mut self,
-        selection: &ToggleState,
+        selection: bool,
         cx: &mut Context<Self>,
         callback: impl 'static + Send + Fn(&mut SettingsContent, bool),
     ) {
         if let Some(workspace) = self.workspace.upgrade() {
             let fs = workspace.read(cx).app_state().fs.clone();
-            let selection = *selection;
             settings::update_settings_file(fs, cx, move |settings, _| {
-                let value = match selection {
-                    ToggleState::Unselected => false,
-                    ToggleState::Selected => true,
-                    _ => return,
-                };
-
-                callback(settings, value)
+                callback(settings, selection)
             });
         }
     }
@@ -1123,71 +1050,53 @@ impl ExtensionsPage {
         vim: bool,
         cx: &Context<Self>,
     ) -> impl IntoElement {
-        let docs_url_button = Button::new("open_docs", "View Documentation")
-            .end_icon(Icon::new(IconName::ArrowUpRight).size(IconSize::Small))
-            .on_click({
-                move |_event, _window, cx| {
-                    telemetry::event!(
-                        "Documentation Viewed",
-                        source = "Feature Upsell",
-                        url = docs_url,
-                    );
-                    cx.open_url(docs_url)
-                }
-            });
-
-        div()
-            .pt_4()
-            .px_4()
+        h_flex()
+            .w_full()
+            .min_w_0()
+            .flex_wrap()
+            .gap_2()
+            .pt_3()
             .child(
-                Banner::new()
-                    .severity(Severity::Success)
-                    .child(Label::new(SharedString::new_static(label)).mt_0p5())
-                    .map(|this| {
-                        if vim {
-                            this.action_slot(
-                                h_flex()
-                                    .gap_1()
-                                    .child(docs_url_button)
-                                    .child(Divider::vertical().color(ui::DividerColor::Border))
-                                    .child(
-                                        h_flex()
-                                            .pl_1()
-                                            .gap_1()
-                                            .child(Label::new("Enable Vim mode"))
-                                            .child(
-                                                Switch::new(
-                                                    "enable-vim",
-                                                    if VimModeSetting::get_global(cx).0 {
-                                                        ui::ToggleState::Selected
-                                                    } else {
-                                                        ui::ToggleState::Unselected
-                                                    },
-                                                )
-                                                .on_click(cx.listener(
-                                                    move |this, selection, _, cx| {
-                                                        telemetry::event!(
-                                                            "Vim Mode Toggled",
-                                                            source = "Feature Upsell"
-                                                        );
-                                                        this.update_settings(
-                                                            selection,
-                                                            cx,
-                                                            |setting, value| {
-                                                                setting.vim_mode = Some(value)
-                                                            },
-                                                        );
-                                                    },
-                                                )),
-                                            ),
-                                    ),
-                            )
-                        } else {
-                            this.action_slot(docs_url_button)
-                        }
+                Alert::info(SharedString::from(format!("feature-{docs_url}")), label)
+                    .min_w(rems(16.))
+                    .flex_1(),
+            )
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(
+                        KitButton::new(SharedString::from(format!("docs-{docs_url}")))
+                            .ghost()
+                            .small()
+                            .label("View Documentation")
+                            .icon(KitIconName::ExternalLink)
+                            .on_click(move |_, _, cx| {
+                                telemetry::event!(
+                                    "Documentation Viewed",
+                                    source = "Feature Upsell",
+                                    url = docs_url
+                                );
+                                cx.open_url(docs_url);
+                            }),
+                    )
+                    .when(vim, |this| {
+                        this.child(
+                            Switch::new("enable-vim")
+                                .label("Enable Vim mode")
+                                .checked(VimModeSetting::get_global(cx).0)
+                                .on_click(cx.listener(|this, selection: &bool, _, cx| {
+                                    telemetry::event!(
+                                        "Vim Mode Toggled",
+                                        source = "Feature Upsell"
+                                    );
+                                    this.update_settings(*selection, cx, |settings, value| {
+                                        settings.vim_mode = Some(value)
+                                    });
+                                })),
+                        )
                     }),
             )
-            .into_any_element()
     }
 
     fn render_feature_upsells(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -1438,26 +1347,26 @@ impl PickerDelegate for DevExtensionRebuildPickerDelegate {
         ix: usize,
         selected: bool,
         _window: &mut Window,
-        _cx: &mut Context<Picker<Self>>,
+        cx: &mut Context<Picker<Self>>,
     ) -> Option<Self::ListItem> {
         let mat = self.matches.get(ix)?;
         let entry = self.entries.get(mat.candidate_id)?;
 
         let item = ListItem::new(("dev-extension-list-item", mat.candidate_id))
-            .inset(true)
-            .spacing(ListItemSpacing::Sparse)
-            .toggle_state(selected)
+            .py_2()
+            .selected(selected)
+            .accessibility_label(entry.name.clone())
             .child(
                 h_flex()
                     .w_full()
                     .py_px()
                     .justify_between()
                     .gap_2()
-                    .child(Label::new(entry.name.clone()))
+                    .child(KitLabel::new(entry.name.clone()))
                     .child(
-                        Label::new(format!("{} • v{}", entry.id, entry.version))
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
+                        KitLabel::new(format!("{} • v{}", entry.id, entry.version))
+                            .text_sm()
+                            .text_color(cx.theme().colors().text_muted),
                     ),
             );
 
@@ -1470,27 +1379,55 @@ impl PickerDelegate for DevExtensionRebuildPickerDelegate {
 }
 
 impl Render for ExtensionsPage {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let count = self.displayed_extensions.len();
+        let categories = std::iter::once(None)
+            .chain(
+                ExtensionProvides::iter()
+                    .filter(|provides| {
+                        !matches!(
+                            provides,
+                            ExtensionProvides::AgentServers
+                                | ExtensionProvides::Grammars
+                                | ExtensionProvides::IndexedDocsProviders
+                                | ExtensionProvides::SlashCommands
+                        )
+                    })
+                    .map(Some),
+            )
+            .collect::<Vec<_>>();
+        let selected_category = categories
+            .iter()
+            .position(|category| *category == self.provides_filter);
+
         v_flex()
             .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .text_base()
             .bg(cx.theme().colors().editor_background)
             .child(
                 v_flex()
+                    .w_full()
+                    .min_w_0()
+                    .flex_none()
                     .gap_4()
                     .pt_4()
                     .px_4()
-                    .bg(cx.theme().colors().editor_background)
                     .child(
                         h_flex()
                             .w_full()
-                            .gap_1p5()
+                            .min_w_0()
+                            .gap_3()
                             .justify_between()
-                            .child(Headline::new("Extensions").size(HeadlineSize::Large))
+                            .child(KitLabel::new("Extensions").text_xl())
                             .child(
-                                Button::new("install-dev-extension", "Install Dev Extension")
-                                    .style(ButtonStyle::Outlined)
-                                    .size(ButtonSize::Medium)
-                                    .on_click(|_event, window, cx| {
+                                KitButton::new("install-dev-extension")
+                                    .outline()
+                                    .label("Install Dev Extension")
+                                    .flex_none()
+                                    .on_click(|_, window, cx| {
                                         window.dispatch_action(Box::new(InstallDevExtension), cx)
                                     }),
                             ),
@@ -1498,150 +1435,140 @@ impl Render for ExtensionsPage {
                     .child(
                         h_flex()
                             .w_full()
+                            .min_w_0()
                             .flex_wrap()
                             .gap_2()
-                            .child(self.render_search(cx))
+                            .child(div().flex_1().min_w(rems(16.)).child(self.render_search()))
                             .child(
-                                div().child(
-                                    ToggleButtonGroup::single_row(
-                                        "filter-buttons",
+                                ButtonGroup::new("extension-status")
+                                    .outline()
+                                    .flex_none()
+                                    .children(
                                         [
-                                            ToggleButtonSimple::new(
-                                                "All",
-                                                cx.listener(|this, _event, _, cx| {
-                                                    this.filter = ExtensionFilter::All;
-                                                    this.rebuild_displayed_extensions(cx);
-                                                    this.scroll_to_top(cx);
-                                                }),
-                                            ),
-                                            ToggleButtonSimple::new(
-                                                "Installed",
-                                                cx.listener(|this, _event, _, cx| {
-                                                    this.filter = ExtensionFilter::Installed;
-                                                    this.rebuild_displayed_extensions(cx);
-                                                    this.scroll_to_top(cx);
-                                                }),
-                                            ),
-                                            ToggleButtonSimple::new(
+                                            ("all", "All", ExtensionFilter::All),
+                                            ("installed", "Installed", ExtensionFilter::Installed),
+                                            (
+                                                "not-installed",
                                                 "Not Installed",
-                                                cx.listener(|this, _event, _, cx| {
-                                                    this.filter = ExtensionFilter::NotInstalled;
-                                                    this.rebuild_displayed_extensions(cx);
-                                                    this.scroll_to_top(cx);
-                                                }),
+                                                ExtensionFilter::NotInstalled,
                                             ),
-                                        ],
-                                    )
-                                    .style(ToggleButtonGroupStyle::Outlined)
-                                    .size(ToggleButtonGroupSize::Custom(rems_from_px(30_f32))) // Perfectly matches the input
-                                    .label_size(LabelSize::Default)
-                                    .auto_width()
-                                    .selected_index(match self.filter {
-                                        ExtensionFilter::All => 0,
-                                        ExtensionFilter::Installed => 1,
-                                        ExtensionFilter::NotInstalled => 2,
-                                    })
-                                    .into_any_element(),
-                                ),
+                                        ]
+                                        .into_iter()
+                                        .map(
+                                            |(id, label, filter)| {
+                                                KitButton::new(id)
+                                                    .label(label)
+                                                    .selected(self.filter == filter)
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.filter = filter;
+                                                        this.rebuild_displayed_extensions(cx);
+                                                        this.scroll_to_top(cx);
+                                                    }))
+                                            },
+                                        ),
+                                    ),
                             ),
                     ),
             )
             .child(
-                h_flex()
-                    .id("filter-row")
-                    .gap_2()
-                    .py_2p5()
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex_none()
+                    .py_2()
                     .px_4()
                     .border_b_1()
                     .border_color(cx.theme().colors().border_variant)
-                    .overflow_x_scroll()
+                    .overflow_hidden()
                     .child(
-                        Button::new("filter-all-categories", "All")
-                            .when(self.provides_filter.is_none(), |button| {
-                                button.style(ButtonStyle::Filled)
-                            })
-                            .when(self.provides_filter.is_some(), |button| {
-                                button.style(ButtonStyle::Subtle)
-                            })
-                            .toggle_state(self.provides_filter.is_none())
-                            .on_click(cx.listener(|this, _event, _, cx| {
-                                this.change_provides_filter(None, cx);
+                        TabBar::new("extension-categories")
+                            .pill()
+                            .w_full()
+                            .min_w_0()
+                            .when_some(selected_category, |tabs, index| tabs.selected_index(index))
+                            .children(categories.into_iter().map(|provides| {
+                                let label = provides.map(extension_provides_label).unwrap_or("All");
+                                Tab::new().label(label).on_click(cx.listener(
+                                    move |this, _, _, cx| this.change_provides_filter(provides, cx),
+                                ))
                             })),
-                    )
-                    .children(
-                        ExtensionProvides::iter()
-                            .filter(|provides| match provides {
-                                ExtensionProvides::AgentServers
-                                | ExtensionProvides::Grammars // grammars do not add anything of value to users currently
-                                | ExtensionProvides::IndexedDocsProviders
-                                | ExtensionProvides::SlashCommands => false,
-                                _ => true,
-                            })
-                            .map(|provides| {
-                                let label = extension_provides_label(provides);
-                                let button_id =
-                                    SharedString::from(format!("filter-category-{}", label));
-
-                                Button::new(button_id, label)
-                                    .style(if self.provides_filter == Some(provides) {
-                                        ButtonStyle::Filled
-                                    } else {
-                                        ButtonStyle::Subtle
-                                    })
-                                    .toggle_state(self.provides_filter == Some(provides))
-                                    .on_click({
-                                        cx.listener(move |this, _event, _, cx| {
-                                            this.change_provides_filter(Some(provides), cx);
-                                        })
-                                    })
-                            }),
                     ),
             )
-            .child(self.render_feature_upsells(cx))
-            .child(v_flex().px_4().size_full().overflow_y_hidden().map(|this| {
-                let count = self.displayed_extensions.len();
-
-                if count == 0 {
-                    this.child(self.render_empty_state(cx)).into_any_element()
-                } else {
-                    let scroll_handle = &self.list;
-                    this.when(
-                        self.fetch_state == ExtensionFetchState::Failed
-                            && self.filter == ExtensionFilter::All,
-                        |this| {
+            .child(
+                v_flex()
+                    .id("extension-feature-hints")
+                    .w_full()
+                    .px_4()
+                    .max_h(rems(12.))
+                    .flex_none()
+                    .overflow_y_scroll()
+                    .child(self.render_feature_upsells(cx)),
+            )
+            .when(
+                self.fetch_state == ExtensionFetchState::Failed
+                    && self.filter == ExtensionFilter::All
+                    && count > 0,
+                |this| {
+                    this.child(
+                        h_flex()
+                            .w_full()
+                            .flex_none()
+                            .gap_3()
+                            .px_4()
+                            .pt_3()
+                            .child(
+                                Alert::warning(
+                                    "extensions-offline",
+                                    "Unable to load the catalog. Showing installed extensions.",
+                                )
+                                .flex_1(),
+                            )
+                            .child(self.retry_button(cx)),
+                    )
+                },
+            )
+            .child(
+                v_flex()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .min_w_0()
+                    .px_4()
+                    .overflow_hidden()
+                    .map(|this| {
+                        if count == 0 {
+                            this.child(self.render_empty_state(cx))
+                        } else {
                             this.child(
-                                div().pt_4().child(
-                                    Banner::new()
-                                        .severity(Severity::Warning)
-                                        .child(
-                                            Label::new(
-                                                "Failed to load extensions. Showing installed extensions only.",
-                                            )
-                                            .mt_0p5(),
-                                        )
-                                        .action_slot(self.retry_button(cx)),
+                                uniform_list(
+                                    "entries",
+                                    count,
+                                    cx.processor(Self::render_extensions),
+                                )
+                                .size_full()
+                                .pb_4()
+                                .track_scroll(&self.list),
+                            )
+                            .child(
+                                div().absolute().inset_0().child(
+                                    Scrollbar::new(&self.list)
+                                        .axis(ScrollbarAxis::Vertical)
+                                        .mode(ScrollbarMode::Scrolling)
+                                        .viewport_from_layout(),
                                 ),
                             )
-                        },
-                    )
-                    .child(
-                        uniform_list("entries", count, cx.processor(Self::render_extensions))
-                            .flex_grow_1()
-                            .pb_4()
-                            .track_scroll(scroll_handle),
-                    )
-                    .vertical_scrollbar_for(scroll_handle, window, cx)
-                    .into_any_element()
-                }
-            }))
+                        }
+                    }),
+            )
     }
 }
 
 impl EventEmitter<ItemEvent> for ExtensionsPage {}
 
 impl Focusable for ExtensionsPage {
-    fn focus_handle(&self, cx: &App) -> gpui::FocusHandle {
-        self.query_editor.read(cx).focus_handle(cx)
+    fn focus_handle(&self, cx: &App) -> gpui_kit::FocusHandle {
+        self.query_input.focus_handle(cx)
     }
 }
 
