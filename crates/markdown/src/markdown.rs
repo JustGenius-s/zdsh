@@ -8,6 +8,7 @@ use base64::Engine as _;
 use gpui::EdgesRefinement;
 use gpui::HitboxBehavior;
 use gpui::UnderlineStyle;
+use gpui_kit::base::v_flex as kit_v_flex;
 use language::LanguageName;
 
 use log::Level;
@@ -105,6 +106,13 @@ pub struct HeadingLevelStyles {
     pub h6: Option<TextStyleRefinement>,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum ListMarkerStyle {
+    #[default]
+    Text,
+    Geometric,
+}
+
 #[derive(Clone)]
 pub struct MarkdownStyle {
     pub base_text_style: TextStyle,
@@ -112,7 +120,9 @@ pub struct MarkdownStyle {
     pub code_block: StyleRefinement,
     pub code_block_overflow_x_scroll: bool,
     pub inline_code: TextStyleRefinement,
+    pub strong: TextStyleRefinement,
     pub block_quote: TextStyleRefinement,
+    pub block_quote_container: StyleRefinement,
     pub link: TextStyleRefinement,
     pub link_callback: Option<LinkStyleCallback>,
     pub rule_color: Hsla,
@@ -129,6 +139,9 @@ pub struct MarkdownStyle {
     pub list_spacing: Pixels,
     /// Bottom margin of each list item
     pub list_item_spacing: DefiniteLength,
+    /// When set, space only between sibling list items instead of adding an item bottom margin.
+    pub list_item_gap: Option<Pixels>,
+    pub list_marker_style: ListMarkerStyle,
     /// Indentation of each level of list
     pub list_indent: DefiniteLength,
     /// Bottom margin of paragraphs inside list items, which would otherwise split an item's
@@ -137,6 +150,7 @@ pub struct MarkdownStyle {
     pub list_paragraph_spacing: Option<Pixels>,
     /// Bottom margin of tables
     pub table_spacing: DefiniteLength,
+    pub table: StyleRefinement,
     /// Top margin of horizontal rules, which comes on top of the bottom margin of the block
     /// before them. `None` uses `paragraph_spacing`.
     pub rule_spacing_above: Option<Pixels>,
@@ -156,7 +170,9 @@ impl Default for MarkdownStyle {
             code_block: Default::default(),
             code_block_overflow_x_scroll: false,
             inline_code: Default::default(),
+            strong: Default::default(),
             block_quote: Default::default(),
+            block_quote_container: Default::default(),
             link: Default::default(),
             link_callback: None,
             rule_color: Default::default(),
@@ -171,9 +187,12 @@ impl Default for MarkdownStyle {
             paragraph_line_height: rems(1.3).into(),
             list_spacing: px(0.),
             list_item_spacing: rems(0.25).into(),
+            list_item_gap: None,
+            list_marker_style: ListMarkerStyle::default(),
             list_indent: rems(0.625).into(),
             list_paragraph_spacing: None,
             table_spacing: rems(0.5).into(),
+            table: Default::default(),
             rule_spacing_above: None,
             table_cell_padding: point(px(4.), px(2.)),
             height_is_multiple_of_line_height: false,
@@ -2145,11 +2164,12 @@ impl MarkdownElement {
                 .into_any_element()
         });
 
-        let block_div = div()
+        let mut block_div = div()
             .pl_4()
             .mb(self.style.paragraph_spacing)
             .border_l_4()
             .border_color(border_color);
+        block_div.style().refine(&self.style.block_quote_container);
         let block_div = match header {
             Some(header) => block_div.child(header),
             None => block_div,
@@ -2282,12 +2302,18 @@ impl MarkdownElement {
         builder.push_div(
             div()
                 .when(!self.style.height_is_multiple_of_line_height, |el| {
-                    el.mb(self.style.list_item_spacing)
-                        .gap_1()
-                        .line_height(self.style.paragraph_line_height)
+                    el.when(self.style.list_item_gap.is_none(), |el| {
+                        el.mb(self.style.list_item_spacing)
+                    })
+                    .gap_1()
+                    .line_height(self.style.paragraph_line_height)
                 })
                 .h_flex()
                 .items_start()
+                .when(
+                    self.style.list_marker_style == ListMarkerStyle::Geometric,
+                    |item| item.relative().gap_0(),
+                )
                 .child(bullet),
             range,
             markdown_end,
@@ -2299,6 +2325,46 @@ impl MarkdownElement {
     fn pop_markdown_list_item(&self, builder: &mut MarkdownElementBuilder) {
         builder.pop_div();
         builder.pop_div();
+    }
+
+    fn geometric_list_marker(
+        &self,
+        builder: &MarkdownElementBuilder,
+        window: &Window,
+    ) -> AnyElement {
+        let text_style = builder.text_style();
+        let font_size = text_style.font_size.to_pixels(window.rem_size());
+        let font_id = window.text_system().resolve_font(&text_style.font());
+        let line_height = window.pixel_snap(
+            self.style
+                .paragraph_line_height
+                .to_pixels(text_style.font_size, window.rem_size()),
+        );
+        let ascent = window.text_system().ascent(font_id, font_size);
+        // Platform font metrics can have a negative descent; shaped text uses its magnitude.
+        let descent = window.text_system().descent(font_id, font_size).abs();
+        let baseline = (line_height - ascent - descent) / 2. + ascent;
+        // Blink paints disc/circle/square markers from font ascent, not a font's bullet glyph.
+        let rounded_ascent = f32::from(ascent).round();
+        let marker_offset = (rounded_ascent * 2. / 3.).floor();
+        let diameter = px(((marker_offset + 1.) / 2.).floor());
+        let top = baseline - ascent + px((3. * (rounded_ascent - marker_offset) / 2.).floor());
+        let depth = builder.list_stack.len();
+        let marker = kit_v_flex()
+            .size(diameter)
+            .when(depth <= 2, |marker| marker.rounded_full())
+            .when(depth == 2, |marker| {
+                marker.border_1().border_color(text_style.color)
+            })
+            .when(depth != 2, |marker| marker.bg(text_style.color));
+
+        kit_v_flex()
+            .absolute()
+            .right(relative(1.))
+            .top(top)
+            .mr(px(marker_offset + 7.) - diameter)
+            .child(marker)
+            .into_any_element()
     }
 
     fn paint_mouse_listeners(
@@ -2929,6 +2995,29 @@ impl Element for MarkdownElement {
                             builder.push_div(
                                 div()
                                     .pl(self.style.list_indent)
+                                    .when_some(self.style.list_item_gap, |this, gap| {
+                                        this.flex().flex_col().gap(gap)
+                                    })
+                                    .when(
+                                        !is_top_level
+                                            && self.style.list_marker_style
+                                                == ListMarkerStyle::Geometric
+                                            && !matches!(
+                                                index.checked_sub(1).and_then(|previous| {
+                                                    parsed_markdown.events.get(previous)
+                                                }),
+                                                Some((
+                                                    _,
+                                                    MarkdownEvent::End(MarkdownTagEnd::Paragraph)
+                                                ))
+                                            ),
+                                        |list| {
+                                            list.mt(self
+                                                .style
+                                                .list_paragraph_spacing
+                                                .unwrap_or(px(0.)))
+                                        },
+                                    )
                                     .when(is_top_level, |this| this.mb(self.style.list_spacing)),
                                 range,
                                 markdown_end,
@@ -2968,10 +3057,46 @@ impl Element for MarkdownElement {
                                     .h(line_height)
                                     .flex()
                                     .items_center()
+                                    .when(
+                                        self.style.list_marker_style == ListMarkerStyle::Geometric,
+                                        |marker| {
+                                            marker.absolute().right(relative(1.)).top_0().mr(
+                                                builder
+                                                    .text_style()
+                                                    .font_size
+                                                    .to_pixels(window.rem_size())
+                                                    * 0.5,
+                                            )
+                                        },
+                                    )
                                     .child(checkbox)
                                     .into_any_element()
                             } else if let Some(bullet_index) = builder.next_bullet_index() {
-                                div().child(format!("{}.", bullet_index)).into_any_element()
+                                if self.style.list_marker_style == ListMarkerStyle::Geometric {
+                                    let text_style = builder.text_style();
+                                    let font_size =
+                                        text_style.font_size.to_pixels(window.rem_size());
+                                    let font_id =
+                                        window.text_system().resolve_font(&text_style.font());
+                                    let gap = window
+                                        .text_system()
+                                        .advance(font_id, font_size, ' ')
+                                        .log_err()
+                                        .map(|advance| advance.width)
+                                        .unwrap_or(font_size * 0.25);
+                                    kit_v_flex()
+                                        .absolute()
+                                        .right(relative(1.))
+                                        .top_0()
+                                        .whitespace_nowrap()
+                                        .pr(gap)
+                                        .child(format!("{}.", bullet_index))
+                                        .into_any_element()
+                                } else {
+                                    div().child(format!("{}.", bullet_index)).into_any_element()
+                                }
+                            } else if self.style.list_marker_style == ListMarkerStyle::Geometric {
+                                self.geometric_list_marker(&builder, window)
                             } else {
                                 div().child("•").into_any_element()
                             };
@@ -2981,11 +3106,15 @@ impl Element for MarkdownElement {
                             font_style: Some(FontStyle::Italic),
                             ..Default::default()
                         }),
-                        MarkdownTag::Strong => builder.push_text_style(TextStyleRefinement {
-                            font_weight: Some(FontWeight::BOLD),
-                            color: Some(cx.theme().colors().text),
-                            ..Default::default()
-                        }),
+                        MarkdownTag::Strong => {
+                            let mut style = TextStyleRefinement {
+                                font_weight: Some(FontWeight::BOLD),
+                                color: Some(cx.theme().colors().text),
+                                ..Default::default()
+                            };
+                            style.refine(&self.style.strong);
+                            builder.push_text_style(style);
+                        }
                         MarkdownTag::Strikethrough => {
                             builder.push_text_style(TextStyleRefinement {
                                 strikethrough: Some(StrikethroughStyle {
@@ -3073,6 +3202,10 @@ impl Element for MarkdownElement {
                                     .border(px(1.5))
                                     .border_color(cx.theme().colors().border)
                                     .rounded_sm()
+                                    .map(|mut table| {
+                                        table.style().refine(&self.style.table);
+                                        table
+                                    })
                                     .restrict_scroll_to_axis()
                                     .custom_scrollbars(
                                         Scrollbars::new(ScrollAxes::Horizontal)
@@ -3159,6 +3292,15 @@ impl Element for MarkdownElement {
                         current_img_block_range.take();
                     }
                     MarkdownTagEnd::Paragraph => {
+                        if self.style.list_item_gap.is_some()
+                            && matches!(
+                                parsed_markdown.events.get(index + 1),
+                                Some((_, MarkdownEvent::End(MarkdownTagEnd::Item)))
+                            )
+                            && let Some(paragraph) = builder.div_stack.last_mut()
+                        {
+                            paragraph.div.style().margin.bottom = Some(px(0.).into());
+                        }
                         self.pop_markdown_paragraph(&mut builder);
                     }
                     MarkdownTagEnd::Heading(_) => {

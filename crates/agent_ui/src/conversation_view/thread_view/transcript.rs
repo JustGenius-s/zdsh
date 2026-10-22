@@ -2,13 +2,13 @@ use super::composer::{PillButton, composer_surface};
 use super::tool_calls::markdown_line;
 use super::*;
 use crate::entry_view_state::{ActivityGroup, TurnFold, is_hidden_canceled_tool_call};
-use gpui::{AnyView, FontWeight, TextStyleRefinement, transparent_white};
+use gpui::{AnyView, FontWeight, TextStyleRefinement, point, transparent_white};
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::{
     Colorize as _, Icon as KitIcon, Size as KitSize, Theme as KitTheme, alert::AlertVariant,
     shimmer::ShimmerText,
 };
-use markdown::HeadingLevelStyles;
+use markdown::{HeadingLevelStyles, ListMarkerStyle};
 use std::time::Duration;
 use theme_settings::ThemeSettings;
 
@@ -1261,50 +1261,76 @@ pub(super) fn text_shades(cx: &App) -> TextShades {
     }
 }
 
-/// How the agent's responses read: text one and a half lines apart, lists as tight as the lines
-/// in them, and quiet code and links.
 pub(super) fn transcript_markdown_style(window: &Window, cx: &App) -> MarkdownStyle {
     let mut style = MarkdownStyle::themed(MarkdownFont::Agent, window, cx);
     let font_size = ThemeSettings::get_global(cx).agent_ui_font_size(cx);
     let shades = text_shades(cx);
+    let theme = KitTheme::global(cx);
+    let block_spacing = px(10.);
 
-    style.base_text_style.color = shades.primary;
-    style.base_text_style.line_height = relative(LINE_HEIGHT);
+    style.base_text_style.color = theme.foreground;
+    style.base_text_style.line_height = relative(22. / 14.);
     // Rendered text takes its size from the elements around it rather than from the base
     // style, and the transcript's rows are sized in rems, which the panel scales.
     style.container_style.text.font_size = Some(font_size.into());
-    style.paragraph_line_height = relative(LINE_HEIGHT);
-    // Margins add up rather than collapse, so every kind of block gets the same space below it
-    // and none above, to keep blocks evenly apart.
-    let block_spacing = px(16.);
+    style.paragraph_line_height = relative(22. / 14.);
+    // GPUI adds adjacent margins, so use a single trailing gap instead of CSS margin collapse.
     style.paragraph_spacing = block_spacing;
-    style.table_spacing = block_spacing.into();
-    style.rule_spacing_above = Some(px(0.));
+    style.table_spacing = px(12.).into();
+    style.table_cell_padding = point(px(10.), px(6.));
+    style.table = div()
+        .border_1()
+        .border_color(theme.border)
+        .rounded(px(12.))
+        .style()
+        .clone();
+    style.rule_spacing_above = Some(px(6.));
+    style.rule_color = theme.border;
+    style.code_block.padding = gpui::EdgesRefinement {
+        top: Some(px(10.).into()),
+        bottom: Some(px(10.).into()),
+        left: Some(px(12.).into()),
+        right: Some(px(12.).into()),
+    };
     style.code_block.margin.top = Some(px(0.).into());
-    style.code_block.margin.bottom = Some(block_spacing.into());
-    // The last item's own spacing comes on top, for 18px below a list.
-    style.list_spacing = px(10.);
-    style.list_item_spacing = px(8.).into();
-    style.list_indent = px(16.).into();
+    style.code_block.margin.bottom = Some(px(12.).into());
+    style.code_block.corner_radii = style.table.corner_radii.clone();
+    style.code_block.text.line_height = Some(relative(1.5));
+    style.list_spacing = block_spacing;
+    style.list_item_gap = Some(px(6.));
+    style.list_marker_style = ListMarkerStyle::Geometric;
+    style.list_indent = (font_size * 2.).into();
     style.list_paragraph_spacing = Some(px(4.));
     style.inline_code.font_size = Some((font_size * 0.9).into());
-    style.inline_code.color = Some(shades.primary);
+    style.inline_code.color = Some(theme.foreground);
+    style.strong.font_weight = Some(FontWeight::SEMIBOLD);
+    style.strong.color = Some(theme.foreground);
+    style.block_quote.color = Some(theme.muted_foreground);
+    style.block_quote_border_color = theme.border;
+    style.block_quote_container.border_widths.left = Some(px(3.).into());
+    style.block_quote_container.padding.left = Some(px(16.).into());
+    style.block_quote_container.padding.top = Some(px(2.).into());
+    style.block_quote_container.padding.bottom = Some(px(2.).into());
     style.link.underline = None;
     style.link.background_color = None;
-    style.link.font_weight = Some(FontWeight::MEDIUM);
+    style.link.font_weight = None;
+    style.heading.margin.top = Some((font_size * (22. / 15.) - block_spacing).into());
+    style.heading.margin.bottom = Some(block_spacing.into());
+    style.heading.text.line_height = Some(relative(1.42));
 
     let heading = |scale: f32, color: Option<Hsla>| {
         Some(TextStyleRefinement {
             font_size: Some((font_size * scale).into()),
             font_weight: Some(FontWeight::SEMIBOLD),
+            line_height: Some(relative(1.42)),
             color,
             ..Default::default()
         })
     };
     style.heading_level_styles = Some(HeadingLevelStyles {
-        h1: heading(1.466, None),
-        h2: heading(1.333, None),
-        h3: heading(1.133, None),
+        h1: heading(1.428, None),
+        h2: heading(1.318, None),
+        h3: heading(1.214, None),
         h4: heading(1., None),
         h5: heading(0.866, Some(shades.secondary)),
         h6: heading(0.8, Some(shades.secondary)),
@@ -1957,7 +1983,8 @@ impl RenderOnce for StickyPrompt {
             .hover(|style| style.border_color(focus_border.opacity(0.8)))
             // The transcript under it keeps scrolling, but mustn't also take the click.
             .block_mouse_except_scroll()
-            .text_xs()
+            .text_size(ThemeSettings::get_global(cx).agent_ui_font_size(cx))
+            .line_height(relative(1.5))
             .text_color(theme.foreground)
             .child(div().flex_1().min_w_0().truncate().child(self.text))
             .child(
