@@ -68,6 +68,10 @@ impl AgentTool for CopyPathTool {
         acp::ToolKind::Move
     }
 
+    fn modifies_files() -> bool {
+        true
+    }
+
     fn initial_title(
         &self,
         input: Result<Self::Input, serde_json::Value>,
@@ -282,11 +286,6 @@ mod tests {
         cx.update(|cx| {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
-        });
-        cx.update(|cx| {
-            let mut settings = AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
-            AgentSettings::override_global(settings, cx);
         });
     }
 
@@ -543,7 +542,13 @@ mod tests {
         init_test(cx);
         cx.update(|cx| {
             let mut settings = AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Confirm;
+            settings.tool_permissions.tools.insert(
+                CopyPathTool::NAME.into(),
+                agent_settings::ToolRules {
+                    default: Some(settings::ToolPermissionMode::Confirm),
+                    ..Default::default()
+                },
+            );
             AgentSettings::override_global(settings, cx);
         });
 

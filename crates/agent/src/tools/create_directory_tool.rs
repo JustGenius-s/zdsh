@@ -90,6 +90,10 @@ impl AgentTool for CreateDirectoryTool {
         acp::ToolKind::Edit
     }
 
+    fn modifies_files() -> bool {
+        true
+    }
+
     fn initial_title(
         &self,
         input: Result<Self::Input, serde_json::Value>,
@@ -250,8 +254,8 @@ async fn create_out_of_project_directory(
     // project's terminal commands are sandboxed, and only on platforms that can
     // grant a not-yet-existing directory. Otherwise keep the historical
     // "outside the project" rejection.
-    let sandboxing = project.read_with(cx, |project, cx| {
-        crate::sandboxing::sandboxing_enabled_for_project(project, cx)
+    let sandboxing = project.read_with(cx, |project, _| {
+        crate::sandboxing::sandboxing_enabled_for_project(project, event_stream.sandbox_mode())
     });
     let platform_supported = cfg!(any(target_os = "linux", target_os = "macos"));
     if !sandboxing || !platform_supported {
@@ -349,11 +353,6 @@ mod tests {
         cx.update(|cx| {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
-        });
-        cx.update(|cx| {
-            let mut settings = AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
-            AgentSettings::override_global(settings, cx);
         });
     }
 
@@ -589,7 +588,13 @@ mod tests {
         init_test(cx);
         cx.update(|cx| {
             let mut settings = AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Confirm;
+            settings.tool_permissions.tools.insert(
+                CreateDirectoryTool::NAME.into(),
+                agent_settings::ToolRules {
+                    default: Some(settings::ToolPermissionMode::Confirm),
+                    ..Default::default()
+                },
+            );
             AgentSettings::override_global(settings, cx);
         });
 

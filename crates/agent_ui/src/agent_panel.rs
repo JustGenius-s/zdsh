@@ -10258,6 +10258,7 @@ mod tests {
             speed: None,
             thinking_enabled: false,
             thinking_effort: None,
+            permissions: None,
             draft_prompt: None,
             ui_scroll_position: None,
             sandboxed_terminal_temp_dir: None,

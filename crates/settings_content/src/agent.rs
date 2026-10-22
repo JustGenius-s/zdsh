@@ -398,11 +398,16 @@ pub struct AgentSettingsContent {
     ///
     /// Default: true
     pub show_merge_conflict_indicator: Option<bool>,
+    /// The permissions new agent threads start with.
+    ///
+    /// Default: workspace
+    pub default_permissions: Option<AgentPermissions>,
+
     /// Per-tool permission rules for granular control over which tool actions
     /// require confirmation.
     ///
-    /// The global `default` applies when no tool-specific rules match.
-    /// For external agent servers (e.g. Claude Agent) that define their own
+    /// Tool calls that no rule matches are decided by the thread's
+    /// permissions. For external agent servers (e.g. Claude Agent) that define their own
     /// permission modes, "deny" and "confirm" still take precedence — the
     /// external agent's permission system is only used when Zed would allow
     /// the action. Per-tool regex patterns (`always_allow`, `always_deny`,
@@ -554,12 +559,6 @@ impl AgentSettingsContent {
         self.sandbox_permissions
             .get_or_insert_default()
             .allow_fs_write_all = Some(true);
-    }
-
-    pub fn allow_sandbox_unsandboxed(&mut self) {
-        self.sandbox_permissions
-            .get_or_insert_default()
-            .allow_unsandboxed = Some(true);
     }
 
     pub fn add_sandbox_write_path(&mut self, granted: GrantedWritePathContent) {
@@ -1024,15 +1023,6 @@ pub struct SandboxPermissionsContent {
     /// Default: false
     pub allow_fs_write_all: Option<bool>,
 
-    /// Whether to persistently run agent terminal commands outside the OS
-    /// sandbox. This is the model-facing "off switch": when true, the sandboxed
-    /// terminal tool is not exposed and the system prompt omits the sandbox
-    /// section, so the model uses the plain `terminal` tool. On Windows, WSL
-    /// sandbox setup is skipped. Distinct from the model-requested
-    /// `unsandboxed: true` escape approved "once" or "for this thread".
-    /// Default: false
-    pub allow_unsandboxed: Option<bool>,
-
     /// Directory subtrees that sandboxed terminal commands may always write
     /// to without prompting. Each entry is either a bare path string or an
     /// object `{requested, resolved}`; Zed writes objects (the canonical,
@@ -1062,12 +1052,6 @@ pub struct SandboxPermissionsContent {
 #[with_fallible_options]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
 pub struct ToolPermissionsContent {
-    /// Global default permission when no tool-specific rules match.
-    /// Individual tools can override this with their own default.
-    /// Default: confirm
-    #[serde(alias = "default_mode")]
-    pub default: Option<ToolPermissionMode>,
-
     /// Per-tool permission rules.
     /// Keys are tool names (e.g. terminal, edit_file, fetch) including MCP
     /// tools (e.g. mcp:server_name:tool_name). Any tool name is accepted;
@@ -1080,7 +1064,7 @@ pub struct ToolPermissionsContent {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
 pub struct ToolRulesContent {
     /// Default mode when no regex rules match.
-    /// When unset, inherits from the global `tool_permissions.default`.
+    /// When unset, the thread's permissions decide.
     #[serde(alias = "default_mode")]
     pub default: Option<ToolPermissionMode>,
 
@@ -1122,6 +1106,28 @@ pub struct ToolRegexRule {
     /// Whether the regex is case-sensitive.
     /// Default: false (case-insensitive)
     pub case_sensitive: Option<bool>,
+}
+
+/// What the agent may do in a thread without asking: how its terminal
+/// commands are sandboxed, and whether it may request more access.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, MergeFrom,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentPermissions {
+    /// Terminal commands run in a sandbox that can't write to the project,
+    /// file tools can't modify files, and requests for more access are denied.
+    /// Where the project can't be sandboxed (e.g. a remote project), terminal
+    /// commands don't run at all.
+    ReadOnly,
+    /// Terminal commands run in a sandbox that can write to the project, and
+    /// requests for more access ask for approval. Where the project can't be
+    /// sandboxed, each terminal command asks for approval unless a rule
+    /// allows it.
+    #[default]
+    Workspace,
+    /// Terminal commands run without a sandbox, and nothing asks for approval.
+    FullAccess,
 }
 
 #[derive(
@@ -1190,6 +1196,25 @@ mod tests {
         value.merge_from(&AgentConfigOptionValue::Boolean(true));
 
         assert_eq!(value, AgentConfigOptionValue::Boolean(true));
+    }
+
+    #[test]
+    fn agent_permissions_use_snake_case_names() {
+        for (name, permissions) in [
+            ("read_only", AgentPermissions::ReadOnly),
+            ("workspace", AgentPermissions::Workspace),
+            ("full_access", AgentPermissions::FullAccess),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<AgentPermissions>(serde_json::json!(name))
+                    .expect("deserialize permissions"),
+                permissions
+            );
+            assert_eq!(
+                serde_json::to_value(permissions).expect("serialize permissions"),
+                serde_json::json!(name)
+            );
+        }
     }
 
     #[test]
@@ -1371,7 +1396,6 @@ mod tests {
         assert!(settings.sandbox_permissions.is_none());
 
         settings.allow_sandbox_fs_write_all();
-        settings.allow_sandbox_unsandboxed();
         settings.add_sandbox_write_path(GrantedWritePathContent {
             requested: PathBuf::from("/tmp/build"),
             resolved: None,
@@ -1380,7 +1404,6 @@ mod tests {
 
         let sandbox_permissions = settings.sandbox_permissions.as_ref().unwrap();
         assert_eq!(sandbox_permissions.allow_fs_write_all, Some(true));
-        assert_eq!(sandbox_permissions.allow_unsandboxed, Some(true));
         assert_eq!(
             sandbox_permissions
                 .write_paths

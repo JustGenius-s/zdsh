@@ -17,7 +17,8 @@ use std::{
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::SandboxFallbackDecision;
 use crate::sandboxing::{
-    sandbox_git_dirs, sandbox_worktree_writable_paths, sandboxing_enabled_for_project,
+    ApprovalPolicy, REQUEST_NOT_ALLOWED_MESSAGE, sandbox_git_dirs, sandbox_worktree_writable_paths,
+    sandboxing_enabled_for_project,
 };
 use crate::{AgentTool, ThreadEnvironment, ToolCallEventStream, ToolInput};
 
@@ -397,10 +398,14 @@ async fn run_terminal_tool(
         let working_dir = working_dir(&input.cd, &project, cx).map_err(|err| err.to_string())?;
         let context =
             crate::ToolPermissionContext::new(TerminalTool::NAME, vec![input.command.clone()]);
-        let authorize =
-            event_stream.authorize(SharedString::new(input.command.clone()), context, cx);
-        let sandboxing =
-            input.sandbox.is_some() && sandboxing_enabled_for_project(project.read(cx), cx);
+        let sandboxing = input.sandbox.is_some()
+            && sandboxing_enabled_for_project(project.read(cx), event_stream.sandbox_mode());
+        let title = SharedString::new(input.command.clone());
+        let authorize = if sandboxing {
+            event_stream.authorize(title, context, cx)
+        } else {
+            event_stream.authorize_unsandboxed_command(title, context, cx)
+        };
         let wsl_zed_release = wsl_zed_release(cx);
         Result::<_, String>::Ok((working_dir, authorize, sandboxing, wsl_zed_release))
     })?;
@@ -577,7 +582,7 @@ async fn run_terminal_tool(
                 working_dir
                     .as_deref()
                     .is_some_and(|path| sandbox::path_is_on_windows_drive(path))
-                    || sandbox_worktree_writable_paths(project, cx)
+                    || sandbox_worktree_writable_paths(project, event_stream.sandbox_mode(), cx)
                         .iter()
                         .any(|path| sandbox::path_is_on_windows_drive(path))
             });
@@ -595,6 +600,9 @@ async fn run_terminal_tool(
     }
 
     if request.needs_escalation() {
+        if event_stream.approval_policy() == ApprovalPolicy::Never {
+            return Err(REQUEST_NOT_ALLOWED_MESSAGE.to_string());
+        }
         let reason = sandbox_input
             .reason
             .as_deref()
@@ -650,7 +658,11 @@ async fn run_terminal_tool(
             let effective = event_stream.effective_sandbox_request(&request, &persistent);
             let (writable_paths, protected_paths) = cx.update(|cx| {
                 (
-                    sandbox_worktree_writable_paths(project.read(cx), cx),
+                    sandbox_worktree_writable_paths(
+                        project.read(cx),
+                        event_stream.sandbox_mode(),
+                        cx,
+                    ),
                     sandbox_git_dirs(project.read(cx), cx),
                 )
             });
@@ -712,10 +724,16 @@ async fn run_terminal_tool(
                                 Some(acp_thread::SandboxNotAppliedReason::ErrorLinuxWsl(error));
                             break None;
                         }
-                        Ok(SandboxFallbackDecision::Deny) | Err(_) => {
+                        Ok(SandboxFallbackDecision::Deny) => {
                             return Ok(format!(
                                 "Command cancelled: the sandbox could not be created ({}) and \
                                  the user declined to run it without one.",
+                                error.user_facing_message()
+                            ));
+                        }
+                        Err(decision_error) => {
+                            return Err(format!(
+                                "The sandbox could not be created ({}): {decision_error}",
                                 error.user_facing_message()
                             ));
                         }
@@ -764,7 +782,7 @@ async fn run_terminal_tool(
     // async), so — unlike Linux's up-front `can_create_sandbox` loop above —
     // the sandbox-creation fallback happens here, around `create_terminal`. The
     // user gets the same choices via `authorize_sandbox_fallback` (retry / run
-    // unsandboxed once / for this thread / always / deny), and a chosen
+    // unsandboxed once / for this thread / deny), and a chosen
     // "run unsandboxed" is recorded in `sandbox_not_applied` exactly as on
     // Linux so the model and UI are told the command ran without a sandbox.
     #[cfg(target_os = "windows")]
@@ -827,10 +845,16 @@ async fn run_terminal_tool(
                     ));
                     effective_wrap = None;
                 }
-                Ok(SandboxFallbackDecision::Deny) | Err(_) => {
+                Ok(SandboxFallbackDecision::Deny) => {
                     return Ok(format!(
                         "Command cancelled: the sandbox could not be created ({}) and the \
                          user declined to run it without one.",
+                        sandbox_error.user_facing_message()
+                    ));
+                }
+                Err(decision_error) => {
+                    return Err(format!(
+                        "The sandbox could not be created ({}): {decision_error}",
                         sandbox_error.user_facing_message()
                     ));
                 }
@@ -1994,8 +2018,13 @@ mod tests {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Confirm;
-            settings.tool_permissions.tools.remove(TerminalTool::NAME);
+            settings.tool_permissions.tools.insert(
+                TerminalTool::NAME.into(),
+                agent_settings::ToolRules {
+                    default: Some(settings::ToolPermissionMode::Confirm),
+                    ..Default::default()
+                },
+            );
             agent_settings::AgentSettings::override_global(settings, cx);
         });
 
@@ -2068,14 +2097,17 @@ mod tests {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
             settings.tool_permissions.tools.remove(TerminalTool::NAME);
             agent_settings::AgentSettings::override_global(settings, cx);
         });
 
         #[allow(clippy::arc_with_non_send_sync)]
         let tool = std::sync::Arc::new(TerminalTool::new(project, environment.clone()));
-        let (event_stream, mut rx) = crate::ToolCallEventStream::test();
+        // The plain terminal runs commands unsandboxed, which only full access
+        // allows without asking.
+        let (event_stream, mut rx) = crate::ToolCallEventStream::test_with_permissions(
+            agent_settings::AgentPermissions::FullAccess,
+        );
 
         let task = cx.update(|cx| {
             tool.run(
@@ -2136,7 +2168,6 @@ mod tests {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
             settings.tool_permissions.tools.remove(TerminalTool::NAME);
             agent_settings::AgentSettings::override_global(settings, cx);
         });
@@ -2194,7 +2225,6 @@ mod tests {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Deny;
             settings.tool_permissions.tools.insert(
                 TerminalTool::NAME.into(),
                 agent_settings::ToolRules {
@@ -2272,14 +2302,17 @@ mod tests {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
             settings.tool_permissions.tools.remove(TerminalTool::NAME);
             agent_settings::AgentSettings::override_global(settings, cx);
         });
 
         #[allow(clippy::arc_with_non_send_sync)]
         let tool = std::sync::Arc::new(TerminalTool::new(project, environment.clone()));
-        let (event_stream, mut rx) = crate::ToolCallEventStream::test();
+        // The plain terminal runs commands unsandboxed, which only full access
+        // allows without asking.
+        let (event_stream, mut rx) = crate::ToolCallEventStream::test_with_permissions(
+            agent_settings::AgentPermissions::FullAccess,
+        );
 
         let task = cx.update(|cx| {
             tool.run(
@@ -2332,14 +2365,17 @@ mod tests {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
             settings.tool_permissions.tools.remove(TerminalTool::NAME);
             agent_settings::AgentSettings::override_global(settings, cx);
         });
 
         #[allow(clippy::arc_with_non_send_sync)]
         let tool = std::sync::Arc::new(TerminalTool::new(project, environment.clone()));
-        let (event_stream, mut rx) = crate::ToolCallEventStream::test();
+        // The plain terminal runs commands unsandboxed, which only full access
+        // allows without asking.
+        let (event_stream, mut rx) = crate::ToolCallEventStream::test_with_permissions(
+            agent_settings::AgentPermissions::FullAccess,
+        );
 
         let task = cx.update(|cx| {
             tool.run(
@@ -2381,7 +2417,6 @@ mod tests {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Deny;
             settings.tool_permissions.tools.insert(
                 TerminalTool::NAME.into(),
                 agent_settings::ToolRules {
@@ -2520,8 +2555,13 @@ mod tests {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Confirm;
-            settings.tool_permissions.tools.remove(TerminalTool::NAME);
+            settings.tool_permissions.tools.insert(
+                TerminalTool::NAME.into(),
+                agent_settings::ToolRules {
+                    default: Some(settings::ToolPermissionMode::Confirm),
+                    ..Default::default()
+                },
+            );
             agent_settings::AgentSettings::override_global(settings, cx);
         });
 
@@ -2679,7 +2719,6 @@ mod tests {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Deny;
             settings.tool_permissions.tools.insert(
                 TerminalTool::NAME.into(),
                 agent_settings::ToolRules {
@@ -2749,7 +2788,6 @@ mod tests {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Deny;
             settings.tool_permissions.tools.insert(
                 TerminalTool::NAME.into(),
                 agent_settings::ToolRules {
@@ -2816,7 +2854,6 @@ mod tests {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Deny;
             settings.tool_permissions.tools.insert(
                 TerminalTool::NAME.into(),
                 agent_settings::ToolRules {
@@ -2891,7 +2928,6 @@ mod tests {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Deny;
             settings.tool_permissions.tools.insert(
                 TerminalTool::NAME.into(),
                 agent_settings::ToolRules {
@@ -3118,13 +3154,9 @@ mod tests {
     async fn test_legacy_allow_fs_write_uses_sandbox_permission_options(
         cx: &mut gpui::TestAppContext,
     ) {
-        use feature_flags::FeatureFlagAppExt as _;
-
         crate::tests::init_test(cx);
         cx.update(|cx| {
-            cx.update_flags(true, vec!["sandboxing".to_string()]);
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
             settings.tool_permissions.tools.remove(TerminalTool::NAME);
             agent_settings::AgentSettings::override_global(settings, cx);
         });
@@ -3213,13 +3245,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[gpui::test]
     async fn test_unsandboxed_uses_sandbox_permission_options(cx: &mut gpui::TestAppContext) {
-        use feature_flags::FeatureFlagAppExt as _;
-
         crate::tests::init_test(cx);
         cx.update(|cx| {
-            cx.update_flags(true, vec!["sandboxing".to_string()]);
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
             settings.tool_permissions.tools.remove(TerminalTool::NAME);
             agent_settings::AgentSettings::override_global(settings, cx);
         });
@@ -3272,6 +3300,8 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
+        // Running unsandboxed can't be allowed always: full access permissions
+        // drop the sandbox for good instead.
         assert_eq!(
             options,
             vec![
@@ -3283,11 +3313,6 @@ mod tests {
                 (
                     "allow_thread",
                     "Allow for this thread",
-                    acp_v2::PermissionOptionKind::AllowAlways,
-                ),
-                (
-                    "allow_always",
-                    "Allow always",
                     acp_v2::PermissionOptionKind::AllowAlways,
                 ),
                 ("deny", "Deny", acp_v2::PermissionOptionKind::RejectOnce),
@@ -3317,17 +3342,13 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[gpui::test]
     async fn test_allow_always_grant_is_revocable_via_settings(cx: &mut gpui::TestAppContext) {
-        use feature_flags::FeatureFlagAppExt as _;
-
         crate::tests::init_test(cx);
         // Auto-allow the terminal tool itself so only the *sandbox* escalation
         // prompts, and start with no persisted sandbox grants (mirroring a
         // settings.json that doesn't grant the path — e.g. after the user
         // removed it).
         cx.update(|cx| {
-            cx.update_flags(true, vec!["sandboxing".to_string()]);
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
             settings.tool_permissions.tools.remove(TerminalTool::NAME);
             settings.sandbox_permissions = agent_settings::SandboxPermissions::default();
             agent_settings::AgentSettings::override_global(settings, cx);
@@ -3447,13 +3468,9 @@ mod tests {
         crate::ToolCallEventStreamReceiver,
         std::rc::Rc<crate::tests::FakeThreadEnvironment>,
     ) {
-        use feature_flags::FeatureFlagAppExt as _;
-
         crate::tests::init_test(cx);
         cx.update(|cx| {
-            cx.update_flags(true, vec!["sandboxing".to_string()]);
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
             settings.tool_permissions.tools.remove(TerminalTool::NAME);
             settings.sandbox_permissions = persistent;
             agent_settings::AgentSettings::override_global(settings, cx);
@@ -3574,5 +3591,110 @@ mod tests {
             "unexpected error: {error}"
         );
         assert_eq!(environment.terminal_creation_count(), 0);
+    }
+
+    /// Runs `ls` with the plain, unsandboxed terminal tool and no terminal
+    /// rules, under `permissions`.
+    async fn run_unsandboxed_ls(
+        permissions: agent_settings::AgentPermissions,
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        Task<Result<String, String>>,
+        crate::ToolCallEventStreamReceiver,
+        std::rc::Rc<crate::tests::FakeThreadEnvironment>,
+    ) {
+        crate::tests::init_test(cx);
+        cx.update(|cx| {
+            let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
+            settings.tool_permissions.tools.remove(TerminalTool::NAME);
+            agent_settings::AgentSettings::override_global(settings, cx);
+        });
+
+        let fs = fs::FakeFs::new(cx.executor());
+        fs.insert_tree("/root", serde_json::json!({})).await;
+        let project = project::Project::test(fs, ["/root".as_ref()], cx).await;
+        let environment = std::rc::Rc::new(cx.update(|cx| {
+            crate::tests::FakeThreadEnvironment::default().with_terminal(
+                crate::tests::FakeTerminalHandle::new_with_immediate_exit(cx, 0),
+            )
+        }));
+        #[allow(clippy::arc_with_non_send_sync)]
+        let tool = std::sync::Arc::new(TerminalTool::new(project, environment.clone()));
+        let (event_stream, receiver) =
+            crate::ToolCallEventStream::test_with_permissions(permissions);
+
+        let task = cx.update(|cx| {
+            tool.run(
+                crate::ToolInput::resolved(TerminalToolInput {
+                    command: "ls".to_string(),
+                    cd: "root".to_string(),
+                    timeout_ms: None,
+                    ..Default::default()
+                }),
+                event_stream,
+                cx,
+            )
+        });
+        (task, receiver, environment)
+    }
+
+    #[gpui::test]
+    async fn test_unsandboxed_command_asks_with_workspace_permissions(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (task, mut receiver, environment) =
+            run_unsandboxed_ls(agent_settings::AgentPermissions::Workspace, cx).await;
+
+        let authorization = receiver.expect_authorization().await;
+        assert_eq!(
+            environment.terminal_creation_count(),
+            0,
+            "nothing should run before the user answers"
+        );
+        authorization
+            .response
+            .send(acp_thread::SelectedPermissionOutcome::new(
+                acp_v2::PermissionOptionId::new("allow"),
+                acp_v2::PermissionOptionKind::AllowOnce,
+            ))
+            .expect("authorization response should send");
+
+        task.await.expect("the approved command should run");
+        assert_eq!(environment.terminal_creation_count(), 1);
+    }
+
+    #[gpui::test]
+    async fn test_unsandboxed_command_is_refused_with_read_only_permissions(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (task, mut receiver, environment) =
+            run_unsandboxed_ls(agent_settings::AgentPermissions::ReadOnly, cx).await;
+
+        let error = task
+            .await
+            .expect_err("read-only permissions should refuse an unsandboxed command");
+        assert_eq!(error, crate::sandboxing::UNSANDBOXED_READ_ONLY_MESSAGE);
+        while let Ok(event) = receiver.try_recv() {
+            assert!(
+                !matches!(event, Ok(crate::ThreadEvent::ToolCallAuthorization(_))),
+                "read-only permissions should not ask"
+            );
+        }
+        assert_eq!(environment.terminal_creation_count(), 0);
+    }
+
+    #[gpui::test]
+    async fn test_unsandboxed_command_runs_with_full_access(cx: &mut gpui::TestAppContext) {
+        let (task, mut receiver, environment) =
+            run_unsandboxed_ls(agent_settings::AgentPermissions::FullAccess, cx).await;
+
+        task.await.expect("full access should run the command");
+        while let Ok(event) = receiver.try_recv() {
+            assert!(
+                !matches!(event, Ok(crate::ThreadEvent::ToolCallAuthorization(_))),
+                "full access should not ask"
+            );
+        }
+        assert_eq!(environment.terminal_creation_count(), 1);
     }
 }

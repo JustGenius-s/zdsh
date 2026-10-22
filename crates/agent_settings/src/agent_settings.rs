@@ -18,6 +18,8 @@ use settings::{
     NotifyWhenAgentWaiting, PlaySoundWhenAgentDone, RegisterSetting, Settings, SidebarDockPosition,
     SidebarSide, ThinkingBlockDisplay, ToolPermissionMode,
 };
+
+pub use settings::AgentPermissions;
 use util::ResultExt as _;
 
 pub use crate::agent_profile::*;
@@ -138,6 +140,7 @@ pub struct AgentSettings {
     pub message_editor_min_lines: usize,
     pub show_turn_stats: bool,
     pub show_merge_conflict_indicator: bool,
+    pub default_permissions: AgentPermissions,
     pub tool_permissions: ToolPermissions,
     pub sandbox_permissions: SandboxPermissions,
 }
@@ -275,14 +278,6 @@ impl Default for AgentProfileId {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxPermissions {
     pub allow_fs_write_all: bool,
-    /// Persistently run agent terminal commands outside the OS sandbox. This is
-    /// the model-facing "off switch": when set, the sandboxed terminal tool is
-    /// not exposed and the system prompt omits the sandbox section, so the
-    /// model uses the plain `terminal` tool (on Windows, WSL sandbox setup is
-    /// skipped). Distinct from the model-requested `unsandboxed: true` escape
-    /// approved "once" or "for this thread", which keeps the sandboxed
-    /// tool/prompt in place — see `agent::sandboxing`.
-    pub allow_unsandboxed: bool,
     /// Directory subtree grants, each paired with the canonical
     /// (symlink-resolved) target established when the grant was approved.
     pub write_paths: Vec<settings::GrantedWritePath>,
@@ -300,7 +295,6 @@ impl Default for SandboxPermissions {
     fn default() -> Self {
         Self {
             allow_fs_write_all: false,
-            allow_unsandboxed: false,
             write_paths: Vec::new(),
             // The confusable-Unicode warning is a safety net, so it defaults on.
             warn_confusable_unicode: true,
@@ -312,8 +306,6 @@ impl Default for SandboxPermissions {
 
 #[derive(Clone, Debug, Default)]
 pub struct ToolPermissions {
-    /// Global default permission when no tool-specific rules or patterns match.
-    pub default: ToolPermissionMode,
     pub tools: collections::HashMap<Arc<str>, ToolRules>,
 }
 
@@ -679,6 +671,7 @@ impl Settings for AgentSettings {
             message_editor_min_lines: agent.message_editor_min_lines.unwrap(),
             show_turn_stats: agent.show_turn_stats.unwrap(),
             show_merge_conflict_indicator: agent.show_merge_conflict_indicator.unwrap(),
+            default_permissions: agent.default_permissions.unwrap_or_default(),
             tool_permissions: compile_tool_permissions(agent.tool_permissions),
             sandbox_permissions: compile_sandbox_permissions(agent.sandbox_permissions),
         }
@@ -714,7 +707,6 @@ fn compile_sandbox_permissions(
 
     SandboxPermissions {
         allow_fs_write_all: content.allow_fs_write_all.unwrap_or(false),
-        allow_unsandboxed: content.allow_unsandboxed.unwrap_or(false),
         write_paths,
         warn_confusable_unicode: content.warn_confusable_unicode.unwrap_or(true),
         warn_ntfs_grants: content.warn_ntfs_grants.unwrap_or(true),
@@ -793,7 +785,7 @@ fn compile_tool_permissions(content: Option<settings::ToolPermissionsContent>) -
             }
 
             let rules = ToolRules {
-                // Preserve tool-specific default; None means fall back to global default at decision time
+                // None means the thread's permissions decide at decision time.
                 default: rules_content.default,
                 always_allow,
                 always_deny,
@@ -804,10 +796,7 @@ fn compile_tool_permissions(content: Option<settings::ToolPermissionsContent>) -
         })
         .collect();
 
-    ToolPermissions {
-        default: content.default.unwrap_or_default(),
-        tools,
-    }
+    ToolPermissions { tools }
 }
 
 fn compile_regex_rules(
@@ -1277,7 +1266,6 @@ mod tests {
     fn test_tool_permissions_empty() {
         let permissions = compile_tool_permissions(None);
         assert!(permissions.tools.is_empty());
-        assert_eq!(permissions.default, ToolPermissionMode::Confirm);
     }
 
     #[test]
@@ -1305,7 +1293,6 @@ mod tests {
     #[test]
     fn test_sandbox_permissions_parsing_and_pruning() {
         let json = json!({
-            "allow_unsandboxed": true,
             "write_paths": [
                 "/tmp/build/cache",
                 "/tmp/build",
@@ -1317,7 +1304,6 @@ mod tests {
         let permissions = compile_sandbox_permissions(Some(content));
 
         assert!(!permissions.allow_fs_write_all);
-        assert!(permissions.allow_unsandboxed);
         assert_eq!(
             permissions.write_paths,
             vec![
@@ -1789,29 +1775,10 @@ mod tests {
             serde_json_lenient::from_value(tool_permissions_value.clone()).unwrap();
         let permissions = compile_tool_permissions(Some(content));
 
-        assert_eq!(permissions.default, ToolPermissionMode::Confirm);
-
         assert!(
             permissions.tools.is_empty(),
             "default.json should not have any active tool-specific rules, found: {:?}",
             permissions.tools.keys().collect::<Vec<_>>()
         );
-    }
-
-    #[test]
-    fn test_tool_permissions_explicit_global_default() {
-        let json_allow = json!({
-            "default": "allow"
-        });
-        let content: ToolPermissionsContent = serde_json::from_value(json_allow).unwrap();
-        let permissions = compile_tool_permissions(Some(content));
-        assert_eq!(permissions.default, ToolPermissionMode::Allow);
-
-        let json_deny = json!({
-            "default": "deny"
-        });
-        let content: ToolPermissionsContent = serde_json::from_value(json_deny).unwrap();
-        let permissions = compile_tool_permissions(Some(content));
-        assert_eq!(permissions.default, ToolPermissionMode::Deny);
     }
 }

@@ -163,9 +163,6 @@ pub(crate) fn render_tool_permissions_setup_page(
         .map(|(i, tool)| render_tool_list_item(settings_window, tool, i, window, cx))
         .collect();
 
-    let settings = AgentSettings::get_global(cx);
-    let global_default = settings.tool_permissions.default;
-
     let scroll_step = px(40.);
 
     v_flex()
@@ -202,16 +199,13 @@ pub(crate) fn render_tool_permissions_setup_page(
             ),
         )
         .child(
-            v_flex()
-                .child(render_global_default_mode_section(global_default))
-                .child(Divider::horizontal())
-                .children(tool_items.into_iter().enumerate().flat_map(|(i, item)| {
-                    let mut elements: Vec<AnyElement> = vec![item];
-                    if i + 1 < TOOLS.len() {
-                        elements.push(Divider::horizontal().into_any_element());
-                    }
-                    elements
-                })),
+            v_flex().children(tool_items.into_iter().enumerate().flat_map(|(i, item)| {
+                let mut elements: Vec<AnyElement> = vec![item];
+                if i + 1 < TOOLS.len() {
+                    elements.push(Divider::horizontal().into_any_element());
+                }
+                elements
+            })),
         )
         .into_any_element()
 }
@@ -1069,53 +1063,6 @@ fn render_add_pattern_input(
         .into_any_element()
 }
 
-fn render_global_default_mode_section(current_mode: ToolPermissionMode) -> AnyElement {
-    let mode_label = current_mode.to_string();
-
-    h_flex()
-        .my_4()
-        .min_w_0()
-        .justify_between()
-        .child(
-            v_flex()
-                .w_full()
-                .min_w_0()
-                .child(Label::new("Default Permission"))
-                .child(
-                    Label::new(
-                        "Controls the default behavior for all tool actions. Per-tool rules and patterns can override this.",
-                    )
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
-                ),
-        )
-        .child(
-            PopoverMenu::new("global-default-mode")
-                .trigger(
-                    Button::new("global-mode-trigger", mode_label)
-                        .tab_index(0_isize)
-                        .style(ButtonStyle::Outlined)
-                        .size(ButtonSize::Medium)
-                        .end_icon(Icon::new(IconName::ChevronDown).size(IconSize::Small)),
-                )
-                .menu(move |window, cx| {
-                    Some(ContextMenu::build(window, cx, move |menu, _, _| {
-                        menu.entry("Confirm", None, move |_, cx| {
-                            set_global_default_permission(ToolPermissionMode::Confirm, cx);
-                        })
-                        .entry("Allow", None, move |_, cx| {
-                            set_global_default_permission(ToolPermissionMode::Allow, cx);
-                        })
-                        .entry("Deny", None, move |_, cx| {
-                            set_global_default_permission(ToolPermissionMode::Deny, cx);
-                        })
-                    }))
-                })
-                .anchor(gpui::Anchor::TopRight),
-        )
-        .into_any_element()
-}
-
 fn render_default_mode_section(
     tool_id: &'static str,
     current_mode: ToolPermissionMode,
@@ -1196,7 +1143,7 @@ fn get_tool_rules(tool_name: &str, cx: &App) -> ToolRulesView {
 
     match tool_rules {
         Some(rules) => ToolRulesView {
-            default: rules.default.unwrap_or(settings.tool_permissions.default),
+            default: rules.default.unwrap_or(ToolPermissionMode::Allow),
             always_allow: rules
                 .always_allow
                 .iter()
@@ -1223,7 +1170,7 @@ fn get_tool_rules(tool_name: &str, cx: &App) -> ToolRulesView {
                 .collect(),
         },
         None => ToolRulesView {
-            default: settings.tool_permissions.default,
+            default: ToolPermissionMode::Allow,
             always_allow: Vec::new(),
             always_deny: Vec::new(),
             always_confirm: Vec::new(),
@@ -1335,17 +1282,6 @@ fn delete_pattern(tool_name: &str, rule_type: ToolPermissionMode, pattern: &str,
                 list.0.retain(|r| r.pattern != pattern);
             }
         }
-    });
-}
-
-fn set_global_default_permission(mode: ToolPermissionMode, cx: &mut App) {
-    SettingsStore::global(cx).update_settings_file(<dyn fs::Fs>::global(cx), move |settings, _| {
-        settings
-            .agent
-            .get_or_insert_default()
-            .tool_permissions
-            .get_or_insert_default()
-            .default = Some(mode);
     });
 }
 

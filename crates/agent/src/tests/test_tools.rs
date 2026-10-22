@@ -504,3 +504,44 @@ impl AgentTool for WordListTool {
         })
     }
 }
+
+/// A tool that reports it modifies files, so read-only permissions block it.
+#[derive(JsonSchema, Serialize, Deserialize)]
+pub struct FileModifyingToolInput {}
+
+pub struct FileModifyingTool;
+
+impl AgentTool for FileModifyingTool {
+    type Input = FileModifyingToolInput;
+    type Output = String;
+
+    const NAME: &'static str = "file_modifying";
+
+    fn kind() -> acp::ToolKind {
+        acp::ToolKind::Edit
+    }
+
+    fn modifies_files() -> bool {
+        true
+    }
+
+    fn initial_title(
+        &self,
+        _input: Result<Self::Input, serde_json::Value>,
+        _cx: &mut App,
+    ) -> SharedString {
+        "Modify files".into()
+    }
+
+    fn run(
+        self: Arc<Self>,
+        input: ToolInput<Self::Input>,
+        _event_stream: ToolCallEventStream,
+        cx: &mut App,
+    ) -> Task<Result<String, String>> {
+        cx.spawn(async move |_cx| {
+            let _input = input.recv().await.map_err(|e| e.to_string())?;
+            Ok("Modified".to_string())
+        })
+    }
+}

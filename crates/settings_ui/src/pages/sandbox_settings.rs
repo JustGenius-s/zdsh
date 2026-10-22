@@ -36,7 +36,6 @@ pub(crate) fn render_sandbox_settings_page(
     let add_path_input = render_add_path_input(cx);
 
     let empty_border = cx.theme().colors().border_variant;
-    let sandbox_enabled = !permissions.allow_unsandboxed;
 
     v_flex()
         .id("sandbox-settings-page")
@@ -47,21 +46,6 @@ pub(crate) fn render_sandbox_settings_page(
         .gap_6()
         .overflow_y_scroll()
         .track_scroll(scroll_handle)
-        .child(
-            SwitchField::new(
-                "sandbox-enabled",
-                Some("Enable Sandbox"),
-                Some(
-                    "Wrap agent-run terminal commands in an OS-level sandbox. When off, commands run with Zed's own permissions."
-                        .into(),
-                ),
-                sandbox_enabled,
-                move |state, _window, cx| {
-                    set_sandbox_enabled(*state == ToggleState::Selected, cx);
-                },
-            )
-            .tab_index(0),
-        )
         .child({
             let docs_url =
                 client::zed_urls::sandboxing_docs(Some("persistent-sandbox-permissions"), cx);
@@ -81,7 +65,6 @@ pub(crate) fn render_sandbox_settings_page(
                     .on_click(move |_, _, cx| cx.open_url(&docs_url)),
             )
         })
-        .when(sandbox_enabled, |this| this
         .child(
             v_flex()
                 .gap_4()
@@ -144,7 +127,6 @@ pub(crate) fn render_sandbox_settings_page(
                     )
                     .tab_index(0),
                 ),
-        )
         )
         .into_any_element()
 }
@@ -293,14 +275,6 @@ fn update_sandbox_permissions(
                 .sandbox_permissions
                 .get_or_insert_default(),
         );
-    });
-}
-
-fn set_sandbox_enabled(value: bool, cx: &mut App) {
-    // The UI presents an "enabled" switch, but the stored setting is the
-    // inverse (`allow_unsandboxed`).
-    update_sandbox_permissions(cx, move |permissions| {
-        permissions.allow_unsandboxed = Some(!value);
     });
 }
 

@@ -48,6 +48,10 @@ impl AgentTool for ApplyCodeActionTool {
         acp::ToolKind::Other
     }
 
+    fn modifies_files() -> bool {
+        true
+    }
+
     fn initial_title(
         &self,
         input: Result<Self::Input, serde_json::Value>,

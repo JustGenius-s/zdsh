@@ -1232,9 +1232,21 @@
       //   "temperature": 1.0
       // }
     ],
+    // The permissions new agent threads start with.
+    // "read_only" - Terminal commands run in a sandbox that can't write to the
+    //   project, file tools can't modify files, and requests for more access
+    //   are denied. Where the project can't be sandboxed (e.g. a remote
+    //   project), terminal commands don't run at all.
+    // "workspace" - Terminal commands run in a sandbox that can write to the
+    //   project, and requests for more access ask for approval (default).
+    //   Where the project can't be sandboxed, each terminal command asks for
+    //   approval unless a rule allows it.
+    // "full_access" - Terminal commands run without a sandbox, and nothing asks
+    //   for approval.
+    "default_permissions": "workspace",
     // Permission rules for tool actions.
     //
-    // The "default" setting applies when no tool-specific rules match.
+    // Tool calls that no rule matches are decided by the thread's permissions.
     // For external agents that define their own permission modes,
     // "deny" and "confirm" still take precedence — the external agent's
     // permission system is only used when Zed would allow the action.
@@ -1244,11 +1256,6 @@
     // patterns are matched independently against each path (source and
     // destination).
     "tool_permissions": {
-      // Global default permission when no tool-specific rules match.
-      // "allow" - Auto-approve without prompting
-      // "deny" - Auto-reject
-      // "confirm" - Always prompt (default)
-      "default": "confirm",
       // Per-tool permission rules. Regex patterns match against tool input text.
       // The per-tool "default" also applies to MCP tools.
       // Each tool can have its own default and regex patterns.

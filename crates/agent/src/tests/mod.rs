@@ -5,7 +5,9 @@ use acp_thread::{
 };
 use agent_client_protocol::schema::MaybeUndefined;
 use agent_client_protocol::schema::v2 as acp_v2;
-use agent_settings::{AgentProfileId, AgentSettings, AutoCompactThreshold, COMPACTION_PROMPT};
+use agent_settings::{
+    AgentPermissions, AgentProfileId, AgentSettings, AutoCompactThreshold, COMPACTION_PROMPT,
+};
 use anyhow::Result;
 use client::{Client, RefreshLlmTokenListener, UserStore};
 use collections::IndexMap;
@@ -303,24 +305,13 @@ impl crate::ThreadEnvironment for MultiTerminalEnvironment {
     }
 }
 
-fn always_allow_tools(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-        settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
-        agent_settings::AgentSettings::override_global(settings, cx);
-    });
-}
-
-/// Turns terminal sandboxing off so the non-sandboxed `TerminalTool` is the
+/// Gives `thread` full access so the non-sandboxed `TerminalTool` is the
 /// variant exposed to the model as `terminal`. Tests that register
-/// `TerminalTool` directly need this because the sandboxing feature flag is
-/// enabled for all, in which case `Thread::enabled_tools` would otherwise
-/// expose `SandboxedTerminalTool` under that name instead.
-fn disable_sandboxing(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-        settings.sandbox_permissions.allow_unsandboxed = true;
-        agent_settings::AgentSettings::override_global(settings, cx);
+/// `TerminalTool` directly need this because `Thread::enabled_tools` would
+/// otherwise expose `SandboxedTerminalTool` under that name instead.
+fn disable_sandboxing(thread: &Entity<Thread>, cx: &mut TestAppContext) {
+    thread.update(cx, |thread, cx| {
+        thread.set_permissions(AgentPermissions::FullAccess, cx)
     });
 }
 
@@ -370,7 +361,6 @@ async fn test_echo(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn test_terminal_tool_timeout_kills_handle(cx: &mut TestAppContext) {
     init_test(cx);
-    always_allow_tools(cx);
 
     let fs = FakeFs::new(cx.executor());
     let project = Project::test(fs, [], cx).await;
@@ -382,7 +372,8 @@ async fn test_terminal_tool_timeout_kills_handle(cx: &mut TestAppContext) {
 
     #[allow(clippy::arc_with_non_send_sync)]
     let tool = Arc::new(crate::TerminalTool::new(project, environment));
-    let (event_stream, mut rx) = crate::ToolCallEventStream::test();
+    let (event_stream, mut rx) =
+        crate::ToolCallEventStream::test_with_permissions(AgentPermissions::FullAccess);
 
     let task = cx.update(|cx| {
         tool.run(
@@ -438,7 +429,6 @@ async fn test_terminal_tool_timeout_kills_handle(cx: &mut TestAppContext) {
 #[ignore]
 async fn test_terminal_tool_without_timeout_does_not_kill_handle(cx: &mut TestAppContext) {
     init_test(cx);
-    always_allow_tools(cx);
 
     let fs = FakeFs::new(cx.executor());
     let project = Project::test(fs, [], cx).await;
@@ -450,7 +440,8 @@ async fn test_terminal_tool_without_timeout_does_not_kill_handle(cx: &mut TestAp
 
     #[allow(clippy::arc_with_non_send_sync)]
     let tool = Arc::new(crate::TerminalTool::new(project, environment));
-    let (event_stream, mut rx) = crate::ToolCallEventStream::test();
+    let (event_stream, mut rx) =
+        crate::ToolCallEventStream::test_with_permissions(AgentPermissions::FullAccess);
 
     let _task = cx.update(|cx| {
         tool.run(
@@ -2834,8 +2825,7 @@ async fn test_terminal_tool_cancellation_captures_output(cx: &mut TestAppContext
         thread,
         ..
     } = setup(cx, TestModel::Fake).await;
-    always_allow_tools(cx);
-    disable_sandboxing(cx);
+    disable_sandboxing(&thread, cx);
 
     let environment = Rc::new(cx.update(|cx| {
         FakeThreadEnvironment::default().with_terminal(FakeTerminalHandle::new_never_exits(cx))
@@ -2939,7 +2929,6 @@ async fn test_cancellation_aware_tool_responds_to_cancellation(cx: &mut TestAppC
         thread,
         ..
     } = setup(cx, TestModel::Fake).await;
-    always_allow_tools(cx);
 
     let (tool, was_cancelled) = CancellationAwareTool::new();
 
@@ -3129,8 +3118,7 @@ async fn test_truncate_while_terminal_tool_running(cx: &mut TestAppContext) {
         thread,
         ..
     } = setup(cx, TestModel::Fake).await;
-    always_allow_tools(cx);
-    disable_sandboxing(cx);
+    disable_sandboxing(&thread, cx);
 
     let environment = Rc::new(cx.update(|cx| {
         FakeThreadEnvironment::default().with_terminal(FakeTerminalHandle::new_never_exits(cx))
@@ -3205,8 +3193,7 @@ async fn test_cancel_multiple_concurrent_terminal_tools(cx: &mut TestAppContext)
         thread,
         ..
     } = setup(cx, TestModel::Fake).await;
-    always_allow_tools(cx);
-    disable_sandboxing(cx);
+    disable_sandboxing(&thread, cx);
 
     let environment = Rc::new(MultiTerminalEnvironment::new());
 
@@ -3324,8 +3311,7 @@ async fn test_terminal_tool_stopped_via_terminal_card_button(cx: &mut TestAppCon
         thread,
         ..
     } = setup(cx, TestModel::Fake).await;
-    always_allow_tools(cx);
-    disable_sandboxing(cx);
+    disable_sandboxing(&thread, cx);
 
     let environment = Rc::new(cx.update(|cx| {
         FakeThreadEnvironment::default().with_terminal(FakeTerminalHandle::new_never_exits(cx))
@@ -3425,8 +3411,7 @@ async fn test_terminal_tool_timeout_expires(cx: &mut TestAppContext) {
         thread,
         ..
     } = setup(cx, TestModel::Fake).await;
-    always_allow_tools(cx);
-    disable_sandboxing(cx);
+    disable_sandboxing(&thread, cx);
 
     let environment = Rc::new(cx.update(|cx| {
         FakeThreadEnvironment::default().with_terminal(FakeTerminalHandle::new_never_exits(cx))
@@ -5077,7 +5062,6 @@ async fn test_streaming_tool_completes_when_llm_stream_ends_without_final_input(
     cx: &mut TestAppContext,
 ) {
     init_test(cx);
-    always_allow_tools(cx);
 
     let ThreadTest {
         model,
@@ -5192,7 +5176,6 @@ async fn test_streaming_tool_json_parse_error_is_forwarded_to_running_tool(
     cx: &mut TestAppContext,
 ) {
     init_test(cx);
-    always_allow_tools(cx);
 
     let ThreadTest {
         model,
@@ -5360,8 +5343,15 @@ async fn setup(cx: &mut TestAppContext, model: TestModel) -> ThreadTest {
                             StreamingEchoTool::NAME: true,
                             StreamingJsonErrorContextTool::NAME: true,
                             StreamingFailingEchoTool::NAME: true,
+                            FileModifyingTool::NAME: true,
                             TerminalTool::NAME: true,
                         }
+                    }
+                },
+                "tool_permissions": {
+                    "tools": {
+                        ToolRequiringPermission::NAME: { "default": "confirm" },
+                        ToolRequiringPermission2::NAME: { "default": "confirm" },
                     }
                 }
             }
@@ -5887,7 +5877,6 @@ async fn test_terminal_tool_permission_rules(cx: &mut TestAppContext) {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
             settings.tool_permissions.tools.insert(
                 TerminalTool::NAME.into(),
                 agent_settings::ToolRules {
@@ -5937,7 +5926,6 @@ async fn test_terminal_tool_permission_rules(cx: &mut TestAppContext) {
 
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
             settings.tool_permissions.tools.insert(
                 TerminalTool::NAME.into(),
                 agent_settings::ToolRules {
@@ -8220,12 +8208,6 @@ async fn test_edit_file_tool_allow_still_prompts_for_local_settings(cx: &mut Tes
     .await;
     let project = Project::test(fs.clone(), ["/root".as_ref()], cx).await;
 
-    cx.update(|cx| {
-        let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-        settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
-        agent_settings::AgentSettings::override_global(settings, cx);
-    });
-
     let context_server_registry =
         cx.new(|cx| crate::ContextServerRegistry::new(project.read(cx).context_server_store(), cx));
     let language_registry = project.read_with(cx, |project, _cx| project.languages().clone());
@@ -8437,15 +8419,14 @@ async fn test_fetch_tool_refuses_loopback_without_unsandboxed(cx: &mut TestAppCo
     );
 }
 
-/// Granting unsandboxed access lifts the private-address guard, matching the
-/// terminal: even loopback hosts become reachable.
+/// Full access lifts the private-address guard, matching the terminal: even
+/// loopback hosts become reachable.
 #[gpui::test]
 async fn test_fetch_tool_unsandboxed_lifts_restrictions(cx: &mut TestAppContext) {
     init_test(cx);
 
     cx.update(|cx| {
         let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-        settings.sandbox_permissions.allow_unsandboxed = true;
         // Allow the tool itself so only the private-address guard is under test.
         settings.tool_permissions.tools.insert(
             FetchTool::NAME.into(),
@@ -8464,7 +8445,8 @@ async fn test_fetch_tool_unsandboxed_lifts_restrictions(cx: &mut TestAppContext)
 
     #[allow(clippy::arc_with_non_send_sync)]
     let tool = Arc::new(crate::FetchTool::new(http_client));
-    let (event_stream, mut rx) = crate::ToolCallEventStream::test();
+    let (event_stream, mut rx) =
+        crate::ToolCallEventStream::test_with_permissions(AgentPermissions::FullAccess);
 
     // A loopback host is reachable, and no authorization is requested.
     let input: crate::FetchToolInput =
@@ -9072,10 +9054,197 @@ async fn test_always_allow_does_not_resolve_unrelated_tool_authorization(cx: &mu
     );
 }
 
+/// User-written rules apply whatever the thread's permissions, even full
+/// access, which otherwise never asks.
+#[gpui::test]
+async fn test_user_rules_apply_with_full_access(cx: &mut TestAppContext) {
+    let ThreadTest {
+        model,
+        fake,
+        thread,
+        ..
+    } = setup(cx, TestModel::Fake).await;
+    cx.update(|cx| {
+        let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
+        for (tool_name, mode) in [
+            (
+                ToolRequiringPermission::NAME,
+                settings::ToolPermissionMode::Confirm,
+            ),
+            (
+                ToolRequiringPermission2::NAME,
+                settings::ToolPermissionMode::Deny,
+            ),
+        ] {
+            settings.tool_permissions.tools.insert(
+                tool_name.into(),
+                agent_settings::ToolRules {
+                    default: Some(mode),
+                    ..Default::default()
+                },
+            );
+        }
+        agent_settings::AgentSettings::override_global(settings, cx);
+    });
+
+    let mut events = thread
+        .update(cx, |thread, cx| {
+            thread.set_permissions(AgentPermissions::FullAccess, cx);
+            thread.add_tool(ToolRequiringPermission);
+            thread.add_tool(ToolRequiringPermission2);
+            thread.send(ClientUserMessageId::new(), ["abc"], cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    for (id, name) in [
+        ("tool_id_1", ToolRequiringPermission::NAME),
+        ("tool_id_2", ToolRequiringPermission2::NAME),
+    ] {
+        fake.send_last_event(
+            &model,
+            LanguageModelCompletionEvent::ToolUse(LanguageModelToolUse {
+                id: id.into(),
+                name: name.into(),
+                raw_input: "{}".into(),
+                input: language_model::LanguageModelToolUseInput::Json(json!({})),
+                is_input_complete: true,
+                thought_signature: None,
+            }),
+        );
+    }
+    fake.end_last(&model);
+
+    let authorization = next_tool_call_authorization(&mut events).await;
+    assert_eq!(
+        authorization
+            .context
+            .as_ref()
+            .map(|context| context.tool_name.as_str()),
+        Some(ToolRequiringPermission::NAME),
+        "only the tool with a confirm rule should ask"
+    );
+    authorization
+        .response
+        .send(acp_thread::SelectedPermissionOutcome::new(
+            acp_v2::PermissionOptionId::new("allow"),
+            acp_v2::PermissionOptionKind::AllowOnce,
+        ))
+        .unwrap();
+    cx.run_until_parked();
+
+    let completion = fake.pending_completions().pop().unwrap();
+    let mut results = completion
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            language_model::MessageContent::ToolResult(result) => {
+                Some((result.tool_name.to_string(), result.is_error))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    results.sort();
+    assert_eq!(
+        results,
+        vec![
+            (ToolRequiringPermission::NAME.to_string(), false),
+            (ToolRequiringPermission2::NAME.to_string(), true),
+        ]
+    );
+}
+
+/// Runs `FileModifyingTool` once in a thread with `permissions`, returning its
+/// result and whether the user was asked about it.
+async fn run_file_modifying_tool(
+    permissions: AgentPermissions,
+    cx: &mut TestAppContext,
+) -> (language_model::LanguageModelToolResult, bool) {
+    let ThreadTest {
+        model,
+        fake,
+        thread,
+        ..
+    } = setup(cx, TestModel::Fake).await;
+
+    let mut events = thread
+        .update(cx, |thread, cx| {
+            thread.set_permissions(permissions, cx);
+            thread.add_tool(FileModifyingTool);
+            thread.send(ClientUserMessageId::new(), ["modify the files"], cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    fake.send_last_event(
+        &model,
+        LanguageModelCompletionEvent::ToolUse(LanguageModelToolUse {
+            id: "tool_id_1".into(),
+            name: FileModifyingTool::NAME.into(),
+            raw_input: "{}".into(),
+            input: language_model::LanguageModelToolUseInput::Json(json!({})),
+            is_input_complete: true,
+            thought_signature: None,
+        }),
+    );
+    fake.end_last(&model);
+    cx.run_until_parked();
+
+    let mut asked = false;
+    while let Ok(event) = events.try_recv() {
+        asked |= matches!(event, Ok(ThreadEvent::ToolCallAuthorization(_)));
+    }
+    let completion = fake.pending_completions().pop().unwrap();
+    let result = completion
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .iter()
+        .find_map(|content| match content {
+            language_model::MessageContent::ToolResult(result) => Some(result.clone()),
+            _ => None,
+        })
+        .expect("the tool call should have produced a result");
+    (result, asked)
+}
+
+#[gpui::test]
+async fn test_read_only_permissions_reject_file_modifying_tools(cx: &mut TestAppContext) {
+    let (result, asked) = run_file_modifying_tool(AgentPermissions::ReadOnly, cx).await;
+
+    assert!(
+        !asked,
+        "read-only permissions should not ask about file changes"
+    );
+    assert!(result.is_error, "the tool should fail in read-only");
+    assert!(
+        result.content.iter().any(|content| matches!(
+            content,
+            language_model::LanguageModelToolResultContent::Text(text)
+                if text.contains("read-only permissions")
+        )),
+        "the error should explain the read-only permissions, got: {result:?}"
+    );
+}
+
+#[gpui::test]
+async fn test_workspace_permissions_run_file_modifying_tools_without_asking(
+    cx: &mut TestAppContext,
+) {
+    let (result, asked) = run_file_modifying_tool(AgentPermissions::Workspace, cx).await;
+
+    assert!(
+        !asked,
+        "workspace permissions should not ask about file changes"
+    );
+    assert!(!result.is_error, "the tool should run, got: {result:?}");
+}
+
 #[gpui::test]
 async fn test_queued_message_ends_turn_at_boundary(cx: &mut TestAppContext) {
     init_test(cx);
-    always_allow_tools(cx);
 
     let ThreadTest {
         model,
@@ -9173,7 +9342,6 @@ async fn test_queued_message_ends_turn_at_boundary(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn test_queued_message_does_not_end_turn_without_boundary_flag(cx: &mut TestAppContext) {
     init_test(cx);
-    always_allow_tools(cx);
 
     let ThreadTest {
         model,
@@ -9244,7 +9412,6 @@ async fn test_queued_message_does_not_end_turn_without_boundary_flag(cx: &mut Te
 #[gpui::test]
 async fn test_streaming_tool_error_breaks_stream_loop_immediately(cx: &mut TestAppContext) {
     init_test(cx);
-    always_allow_tools(cx);
 
     let ThreadTest {
         model,
@@ -9325,7 +9492,6 @@ async fn test_streaming_tool_error_breaks_stream_loop_immediately(cx: &mut TestA
 #[gpui::test]
 async fn test_streaming_tool_error_waits_for_prior_tools_to_complete(cx: &mut TestAppContext) {
     init_test(cx);
-    always_allow_tools(cx);
 
     let ThreadTest {
         model,

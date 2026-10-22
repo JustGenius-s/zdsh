@@ -235,6 +235,10 @@ impl AgentTool for EditFileTool {
         acp::ToolKind::Edit
     }
 
+    fn modifies_files() -> bool {
+        true
+    }
+
     fn initial_title(
         &self,
         input: Result<Self::Input, serde_json::Value>,
@@ -1499,16 +1503,12 @@ mod tests {
             MaybeUndefined::Value("Edit `.zed/settings.json` (local settings)".into())
         );
 
-        // Test 2: Path outside project should require confirmation
+        // Test 2: Without rules, a path outside the project is allowed
         let (stream_tx, mut stream_rx) = ToolCallEventStream::test();
-        let _auth =
-            cx.update(|cx| edit_tool.authorize(&PathBuf::from("/etc/hosts"), &stream_tx, cx));
-
-        let event = stream_rx.expect_authorization().await;
-        assert_eq!(
-            event.tool_call.title,
-            MaybeUndefined::Value("Edit `/etc/hosts`".into())
-        );
+        cx.update(|cx| edit_tool.authorize(&PathBuf::from("/etc/hosts"), &stream_tx, cx))
+            .await
+            .unwrap();
+        assert!(stream_rx.try_recv().is_err());
 
         // Test 3: Relative path without .zed should not require confirmation
         let (stream_tx, mut stream_rx) = ToolCallEventStream::test();
@@ -1528,42 +1528,16 @@ mod tests {
             MaybeUndefined::Value("Edit `root/.zed/tasks.json` (local settings)".into())
         );
 
-        // Test 5: When global default is allow, sensitive and outside-project
-        // paths still require confirmation
+        // Test 5: With a Confirm default, non-project paths prompt
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
-            agent_settings::AgentSettings::override_global(settings, cx);
-        });
-
-        // 5.1: .zed/settings.json is a sensitive path — still prompts
-        let (stream_tx, mut stream_rx) = ToolCallEventStream::test();
-        let _auth = cx
-            .update(|cx| edit_tool.authorize(&PathBuf::from(".zed/settings.json"), &stream_tx, cx));
-        let event = stream_rx.expect_authorization().await;
-        assert_eq!(
-            event.tool_call.title,
-            MaybeUndefined::Value("Edit `.zed/settings.json` (local settings)".into())
-        );
-
-        // 5.2: /etc/hosts is outside the project, but Allow auto-approves
-        let (stream_tx, mut stream_rx) = ToolCallEventStream::test();
-        cx.update(|cx| edit_tool.authorize(&PathBuf::from("/etc/hosts"), &stream_tx, cx))
-            .await
-            .unwrap();
-        assert!(stream_rx.try_recv().is_err());
-
-        // 5.3: Normal in-project path with allow — no confirmation needed
-        let (stream_tx, mut stream_rx) = ToolCallEventStream::test();
-        cx.update(|cx| edit_tool.authorize(&PathBuf::from("root/src/main.rs"), &stream_tx, cx))
-            .await
-            .unwrap();
-        assert!(stream_rx.try_recv().is_err());
-
-        // 5.4: With Confirm default, non-project paths still prompt
-        cx.update(|cx| {
-            let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Confirm;
+            settings.tool_permissions.tools.insert(
+                EditFileTool::NAME.into(),
+                agent_settings::ToolRules {
+                    default: Some(settings::ToolPermissionMode::Confirm),
+                    ..Default::default()
+                },
+            );
             agent_settings::AgentSettings::override_global(settings, cx);
         });
 
@@ -1577,7 +1551,7 @@ mod tests {
             MaybeUndefined::Value("Edit `/etc/hosts`".into())
         );
 
-        // 5.5: .agents/skills is a sensitive path — still prompts. The
+        // Test 6: .agents/skills is a sensitive path — still prompts. The
         // sensitive-path classifier runs regardless of the default mode, so
         // it doesn't matter that we're now in Confirm mode — we're checking
         // that the path is recognized and gets the "(agent skills)" tag.
@@ -1611,7 +1585,7 @@ mod tests {
             event.options,
         );
 
-        // 5.6: The global .agents/skills directory is sensitive — still prompts
+        // Test 7: The global .agents/skills directory is sensitive — still prompts
         let global_skill_path = agent_skills::global_skills_dir()
             .join("my-skill")
             .join("SKILL.md");
@@ -1803,12 +1777,6 @@ mod tests {
         let (edit_tool, _project, _action_log, _fs, _thread) =
             setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
 
-        cx.update(|cx| {
-            let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
-            agent_settings::AgentSettings::override_global(settings, cx);
-        });
-
         let (stream_tx, mut stream_rx) = ToolCallEventStream::test();
         let authorize_task =
             cx.update(|cx| edit_tool.authorize(&PathBuf::from("link/new.txt"), &stream_tx, cx));
@@ -1989,12 +1957,13 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_streaming_authorize_global_config(cx: &mut TestAppContext) {
+    async fn test_streaming_authorize_with_confirm_default(cx: &mut TestAppContext) {
         init_test(cx);
         let fs = project::FakeFs::new(cx.executor());
         fs.insert_tree("/project", json!({})).await;
         let (edit_tool, _project, _action_log, _fs, _thread) =
             setup_test_with_fs(cx, fs, &[path!("/project").as_ref()]).await;
+        confirm_edit_file_by_default(cx);
 
         let test_cases = vec![
             (
@@ -2073,6 +2042,7 @@ mod tests {
             ],
         )
         .await;
+        confirm_edit_file_by_default(cx);
 
         let test_cases = vec![
             ("frontend/src/main.js", false, "File in first worktree"),
@@ -2128,6 +2098,7 @@ mod tests {
         .await;
         let (edit_tool, _project, _action_log, _fs, _thread) =
             setup_test_with_fs(cx, fs, &[path!("/project").as_ref()]).await;
+        confirm_edit_file_by_default(cx);
 
         let test_cases = vec![
             ("", false, "Empty path is treated as project root"),
@@ -2184,6 +2155,7 @@ mod tests {
         .await;
         let (edit_tool, _project, _action_log, _fs, _thread) =
             setup_test_with_fs(cx, fs, &[path!("/project").as_ref()]).await;
+        confirm_edit_file_by_default(cx);
 
         let modes = vec![EditSessionMode::Edit, EditSessionMode::Write];
 
@@ -2874,11 +2846,6 @@ mod tests {
     async fn test_streaming_edit_file_tool_registers_changed_buffers(cx: &mut TestAppContext) {
         let (edit_tool, _project, action_log, _fs, _thread) =
             setup_test(cx, json!({"file.txt": "line 1\nline 2\nline 3\n"})).await;
-        cx.update(|cx| {
-            let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
-            agent_settings::AgentSettings::override_global(settings, cx);
-        });
 
         let (event_stream, _rx) = ToolCallEventStream::test();
         let task = cx.update(|cx| {
@@ -3231,6 +3198,22 @@ mod tests {
         let fs = project::FakeFs::new(cx.executor());
         fs.insert_tree("/root", initial_tree).await;
         setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await
+    }
+
+    /// Gives `edit_file` a Confirm default. Paths inside the project still
+    /// don't prompt, so tests can check which paths count as outside it.
+    fn confirm_edit_file_by_default(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
+            settings.tool_permissions.tools.insert(
+                EditFileTool::NAME.into(),
+                agent_settings::ToolRules {
+                    default: Some(settings::ToolPermissionMode::Confirm),
+                    ..Default::default()
+                },
+            );
+            agent_settings::AgentSettings::override_global(settings, cx);
+        });
     }
 
     fn init_test(cx: &mut TestAppContext) {

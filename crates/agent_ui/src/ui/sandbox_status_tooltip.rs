@@ -139,7 +139,7 @@ pub enum SandboxStatusTooltip {
     DisabledForThread {
         settings: SandboxSection,
     },
-    DisabledInSettings,
+    FullAccess,
 }
 
 impl SandboxStatusTooltip {
@@ -151,17 +151,17 @@ impl SandboxStatusTooltip {
         Self::DisabledForThread { settings }
     }
 
-    pub fn disabled_in_settings() -> Self {
-        Self::DisabledInSettings
+    pub fn full_access() -> Self {
+        Self::FullAccess
     }
 }
 
 impl RenderOnce for SandboxStatusTooltip {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let content = match self {
-            SandboxStatusTooltip::DisabledInSettings => v_flex()
+            SandboxStatusTooltip::FullAccess => v_flex()
                 .child(
-                    Label::new("You have sandboxing disabled in settings.")
+                    Label::new("This thread has full access, so commands run without a sandbox.")
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
@@ -252,9 +252,9 @@ impl Component for SandboxStatusTooltip {
                         .into_any_element(),
                 ),
                 single_example(
-                    "Disabled in settings",
+                    "Full access",
                     container()
-                        .child(SandboxStatusTooltip::disabled_in_settings())
+                        .child(SandboxStatusTooltip::full_access())
                         .into_any_element(),
                 ),
             ]))

@@ -259,6 +259,7 @@ pub fn migrate_settings(text: &str) -> Result<Option<String>> {
         MigrationType::Json(migrations::m_2026_09_16::nest_agent_threads_sidebar_settings),
         MigrationType::Json(migrations::m_2026_09_29::move_copilot_enterprise_uri),
         MigrationType::Json(migrations::m_2026_10_22::remove_sandbox_network_permissions),
+        MigrationType::Json(migrations::m_2026_10_22::migrate_agent_permission_defaults),
     ];
     run_migrations(text, migrations)
 }

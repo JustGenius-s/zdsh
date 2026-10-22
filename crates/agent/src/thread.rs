@@ -5,21 +5,23 @@ use crate::{
     GoToDefinitionTool, GrepTool, ListAgentsAndModelsTool, ListDirectoryTool, MovePathTool,
     ProjectSnapshot, ReadFileTool, RenameTool, SandboxedTerminalTool, SpawnAgentTool,
     SystemPromptTemplate, Template, Templates, TerminalTool, ToolPermissionDecision, WebSearchTool,
-    WriteFileTool, decide_permission_from_settings, tool_result_policy,
+    WriteFileTool, decide_permission_from_settings, decide_permission_from_settings_with_fallback,
+    tool_result_policy,
 };
 use acp_thread::{AgentModelId, ClientUserMessageId, MentionUri, ProcessOutput};
 use action_log::ActionLog;
 use agent_settings::UserAgentsMd;
 
 use crate::sandboxing::{
-    SandboxRequest, ThreadSandbox, ThreadSandboxGrants, sandbox_git_dirs,
-    sandbox_worktree_writable_paths, sandboxing_available_for_project,
+    ApprovalPolicy, REQUEST_NOT_ALLOWED_MESSAGE, SandboxMode, SandboxRequest, ThreadSandbox,
+    ThreadSandboxGrants, UNSANDBOXED_READ_ONLY_MESSAGE, permissions_thread_sandbox,
+    sandbox_git_dirs, sandbox_worktree_writable_paths, sandboxing_available_for_project,
     sandboxing_enabled_for_project,
 };
 use agent_client_protocol::schema::v2 as acp_v2;
 use agent_settings::{
-    AgentProfileId, AgentProfileSettings, AgentSettings, AutoCompactThreshold, COMPACTION_PROMPT,
-    SUMMARIZE_THREAD_DETAILED_PROMPT, SUMMARIZE_THREAD_PROMPT, builtin_profiles,
+    AgentPermissions, AgentProfileId, AgentProfileSettings, AgentSettings, AutoCompactThreshold,
+    COMPACTION_PROMPT, SUMMARIZE_THREAD_DETAILED_PROMPT, SUMMARIZE_THREAD_PROMPT, builtin_profiles,
 };
 use anyhow::{Context as _, Result, anyhow};
 use chrono::{DateTime, Local, Utc};
@@ -1333,6 +1335,7 @@ pub(crate) struct StreamingSaveKey {
     speed: Option<Speed>,
     thinking_enabled: bool,
     thinking_effort: Option<String>,
+    permissions: AgentPermissions,
     sandboxed_terminal_temp_dir: Option<PathBuf>,
     sandbox_grants: crate::db::DbSandboxGrants,
 }
@@ -1397,8 +1400,11 @@ pub struct Thread {
     /// Sandbox permissions the user approved "for the rest of the thread".
     /// Shared with each tool call's event stream so repeated requests for
     /// already-granted permissions skip the approval prompt.
-    /// Never persisted — lives and dies with this thread.
     sandbox_grants: Rc<RefCell<ThreadSandboxGrants>>,
+    permissions: AgentPermissions,
+    /// Broadcasts `permissions` to each tool call's event stream, so a pending
+    /// approval prompt can react when they change.
+    permissions_tx: watch::Sender<AgentPermissions>,
 }
 
 impl Thread {
@@ -1489,6 +1495,7 @@ impl Thread {
             .default_model
             .as_ref()
             .and_then(|model| model.speed);
+        let permissions = settings.default_permissions;
         let (prompt_capabilities_tx, prompt_capabilities_rx) =
             watch::channel(Self::prompt_capabilities(model.as_ref()));
         let model = match model {
@@ -1543,6 +1550,8 @@ impl Thread {
             inherits_parent_model_settings: true,
             sandboxed_terminal_temp_dir: None,
             sandbox_grants: Rc::new(RefCell::new(ThreadSandboxGrants::default())),
+            permissions,
+            permissions_tx: watch::channel(permissions).0,
         }
     }
 
@@ -1559,6 +1568,7 @@ impl Thread {
         self.profile_id = parent.profile_id.clone();
         self.profile_downgraded_for_restricted_workspace =
             parent.profile_downgraded_for_restricted_workspace;
+        self.set_permissions(parent.permissions, cx);
     }
 
     fn apply_model_selection(
@@ -1765,6 +1775,7 @@ impl Thread {
                 cancellation_rx,
                 self.sandbox_grants.clone(),
                 Some(cx.weak_entity()),
+                self.permissions_tx.receiver(),
             );
             tool.replay(input, output, tool_event_stream, cx).log_err();
         }
@@ -1841,6 +1852,9 @@ impl Thread {
         let profile_id = db_thread
             .profile
             .unwrap_or_else(|| settings.default_profile.clone());
+        let permissions = db_thread
+            .permissions
+            .unwrap_or(settings.default_permissions);
 
         let saved_selection = db_thread.model.map(|model| SelectedModel {
             provider: model.provider.into(),
@@ -1920,6 +1934,8 @@ impl Thread {
             sandbox_grants: Rc::new(RefCell::new(ThreadSandboxGrants::from_db(
                 &db_thread.sandbox_grants,
             ))),
+            permissions,
+            permissions_tx: watch::channel(permissions).0,
         }
     }
 
@@ -1929,11 +1945,20 @@ impl Thread {
         }
         let persistent = AgentSettings::get_global(cx).sandbox_permissions.clone();
         let git_dirs = sandbox_git_dirs(self.project.read(cx), cx);
-        let grants = self.sandbox_grants.borrow();
-        let settings = crate::sandboxing::settings_thread_sandbox(&persistent)
+        let settings = permissions_thread_sandbox(self.permissions, &persistent)
             .with_protected_paths(git_dirs.clone());
-        let thread = grants.thread_sandbox().with_protected_paths(git_dirs);
+        let thread = self.thread_grants_sandbox().with_protected_paths(git_dirs);
         Some((settings, thread))
+    }
+
+    /// The sandbox this thread's own grants establish. Read-only ignores them,
+    /// so they take effect again if the thread leaves read-only.
+    fn thread_grants_sandbox(&self) -> ThreadSandbox {
+        if SandboxMode::from(self.permissions) == SandboxMode::ReadOnly {
+            ThreadSandboxGrants::default().thread_sandbox()
+        } else {
+            self.sandbox_grants.borrow().thread_sandbox()
+        }
     }
 
     pub fn refresh_verified_sandbox_status(
@@ -1945,13 +1970,12 @@ impl Thread {
         }
 
         let persistent = AgentSettings::get_global(cx).sandbox_permissions.clone();
-        let settings_sandbox = crate::sandboxing::settings_thread_sandbox(&persistent);
-        let grants = self.sandbox_grants.borrow();
-        let thread_sandbox = grants.thread_sandbox();
-        drop(grants);
+        let settings_sandbox = permissions_thread_sandbox(self.permissions, &persistent);
+        let thread_sandbox = self.thread_grants_sandbox();
 
         let project = self.project.read(cx);
-        let baseline_writable_paths = sandbox_worktree_writable_paths(project, cx);
+        let baseline_writable_paths =
+            sandbox_worktree_writable_paths(project, SandboxMode::from(self.permissions), cx);
         let git_paths = sandbox_git_dirs(project, cx);
 
         let key = SandboxStatusKey {
@@ -1971,25 +1995,29 @@ impl Thread {
         ))
     }
 
-    /// Whether agent terminal commands are sandboxed for this thread's project,
-    /// so the UI can decide whether to surface the sandbox status at all.
+    /// Whether agent terminal commands are sandboxed for this thread, so the UI
+    /// can decide whether to surface the sandbox status at all.
     pub fn sandboxing_enabled(&self, cx: &App) -> bool {
-        sandboxing_enabled_for_project(self.project.read(cx), cx)
+        sandboxing_enabled_for_project(self.project.read(cx), SandboxMode::from(self.permissions))
     }
 
-    /// Whether sandboxing is *applicable* for this thread's project (feature on,
-    /// local project, supported platform), regardless of whether it's been
-    /// turned off in settings. The UI shows the sandbox indicator whenever this
-    /// is true, drawing it struck-out when sandboxing is disabled.
+    /// Whether sandboxing is *applicable* for this thread's project (local
+    /// project, supported platform), regardless of the thread's permissions.
+    /// The UI shows the sandbox indicator whenever this is true, drawing it
+    /// struck-out when the thread has full access.
     pub fn sandboxing_available(&self, cx: &App) -> bool {
-        sandboxing_available_for_project(self.project.read(cx), cx)
+        sandboxing_available_for_project(self.project.read(cx))
     }
 
     /// The directory subtrees the sandbox always grants write access to for this
-    /// thread's project (its worktree roots), derived from the same source the
-    /// terminal tool uses when it actually builds the sandbox.
+    /// thread (its project's worktree roots, unless read-only), derived from the
+    /// same source the terminal tool uses when it actually builds the sandbox.
     pub fn sandbox_baseline_writable_paths(&self, cx: &App) -> Vec<PathBuf> {
-        crate::sandboxing::sandbox_worktree_writable_paths(self.project.read(cx), cx)
+        sandbox_worktree_writable_paths(
+            self.project.read(cx),
+            SandboxMode::from(self.permissions),
+            cx,
+        )
     }
 
     /// A field added here must also go in `StreamingSaveKey`, unless saving it
@@ -2010,6 +2038,7 @@ impl Thread {
             speed: self.speed,
             thinking_enabled: self.thinking_enabled,
             thinking_effort: self.thinking_effort.clone(),
+            permissions: Some(self.permissions),
             draft_prompt: self.draft_prompt.clone(),
             ui_scroll_position: self.ui_scroll_position.map(|lo| {
                 crate::db::SerializedScrollPosition {
@@ -2043,6 +2072,7 @@ impl Thread {
             speed: self.speed,
             thinking_enabled: self.thinking_enabled,
             thinking_effort: self.thinking_effort.clone(),
+            permissions: self.permissions,
             sandboxed_terminal_temp_dir: self.sandboxed_terminal_temp_dir.clone(),
             sandbox_grants: self.sandbox_grants.borrow().to_db(),
         }
@@ -2385,6 +2415,25 @@ impl Thread {
         } else {
             (profile_id, false)
         }
+    }
+
+    pub fn permissions(&self) -> AgentPermissions {
+        self.permissions
+    }
+
+    pub fn set_permissions(&mut self, permissions: AgentPermissions, cx: &mut Context<Self>) {
+        if self.permissions == permissions {
+            return;
+        }
+        self.permissions = permissions;
+        self.permissions_tx.send(permissions).ok();
+
+        for subagent in &self.running_subagents {
+            subagent
+                .update(cx, |thread, cx| thread.set_permissions(permissions, cx))
+                .ok();
+        }
+        cx.notify();
     }
 
     pub fn set_profile(&mut self, profile_id: AgentProfileId, cx: &mut Context<Self>) {
@@ -4099,6 +4148,23 @@ impl Thread {
             ));
         }
 
+        if tool.modifies_files() && SandboxMode::from(self.permissions) == SandboxMode::ReadOnly {
+            return Task::ready((
+                owning_message_ix,
+                LanguageModelToolResult {
+                    tool_use_id,
+                    tool_name: tool_name.clone(),
+                    is_error: true,
+                    content: vec![LanguageModelToolResultContent::Text(Arc::from(format!(
+                        "This thread has read-only permissions, so `{tool_name}` can't modify \
+                         files. If the task needs file changes, ask the user to change the \
+                         thread's permissions."
+                    )))],
+                    output: None,
+                },
+            ));
+        }
+
         let fs = self.project.read(cx).fs().clone();
         let tool_call_id = scoped_tool_call_id(owning_message_ix, &tool_use_id);
         let tool_event_stream = ToolCallEventStream::new(
@@ -4109,6 +4175,7 @@ impl Thread {
             cancellation_rx,
             self.sandbox_grants.clone(),
             Some(cx.weak_entity()),
+            self.permissions_tx.receiver(),
         );
         tool_event_stream.update_fields(|update| update.status(acp_v2::ToolCallStatus::InProgress));
         let supports_images = self.model().is_some_and(|model| model.supports_images());
@@ -4531,43 +4598,13 @@ impl Thread {
         let model = self
             .model()
             .ok_or_else(|| anyhow!(NoModelConfiguredError))?;
-        let sandboxing_enabled = crate::sandboxing::sandboxing_enabled(cx);
         let tools = if let Some(turn) = self.running_turn.as_ref() {
             turn.tools
                 .iter()
                 .map(|(tool_name, tool)| {
                     log::trace!("Including tool: {}", tool_name);
-                    let mut description = tool.description().to_string();
-                    let mut schema = tool.input_schema();
-                    // TEMPORARY (sandboxing feature flag): with the flag off,
-                    // the fetch and create_directory descriptions/schemas must
-                    // not advertise sandbox-dependent behavior (host grants,
-                    // out-of-project creation via the `reason` field), since
-                    // the corresponding runtime paths are disabled. Restore
-                    // the pre-sandboxing model-facing surface here rather than
-                    // forking the tools; delete this when the flag is removed
-                    // again.
-                    if !sandboxing_enabled {
-                        if tool_name.as_ref() == FetchTool::NAME {
-                            description =
-                                "Fetches a URL and returns the content as Markdown.".to_string();
-                        } else if tool_name.as_ref() == CreateDirectoryTool::NAME {
-                            description = "Creates a new directory at the specified path within \
-                                the project. Returns confirmation that the directory was \
-                                created.\n\nThis tool creates a directory and all necessary \
-                                parent directories. It should be used whenever you need to \
-                                create new directories within the project.\nThe only supported \
-                                path outside the project is `~/.agents/skills` or a descendant, \
-                                for global agent skills."
-                                .to_string();
-                            if let Some(properties) = schema
-                                .get_mut("properties")
-                                .and_then(|value| value.as_object_mut())
-                            {
-                                properties.remove("reason");
-                            }
-                        }
-                    }
+                    let description = tool.description().to_string();
+                    let schema = tool.input_schema();
                     LanguageModelRequestTool::function(
                         tool_name.to_string(),
                         description,
@@ -4628,7 +4665,10 @@ impl Thread {
         // Terminal variants are configured by users under the canonical
         // `terminal` name. Expose the one matching the current sandbox state
         // to the model under that name.
-        let use_sandboxed_terminal = sandboxing_enabled_for_project(self.project.read(cx), cx);
+        let use_sandboxed_terminal = sandboxing_enabled_for_project(
+            self.project.read(cx),
+            SandboxMode::from(self.permissions),
+        );
 
         // Tools that aren't allowed in restricted workspaces must never be
         // provided to the model while the workspace is restricted, regardless
@@ -4868,9 +4908,9 @@ impl Thread {
             user_agents_md,
             prompt_prefix: profile.and_then(|profile| profile.prompt_prefix.clone()),
             prompt_suffix: profile.and_then(|profile| profile.prompt_suffix.clone()),
-            sandboxing: crate::sandboxing::sandboxing_enabled_for_project(
+            sandboxing: sandboxing_enabled_for_project(
                 self.project.read(cx),
-                cx,
+                SandboxMode::from(self.permissions),
             ),
             is_linux: cfg!(target_os = "linux"),
             is_windows: cfg!(target_os = "windows"),
@@ -5691,6 +5731,12 @@ where
         true
     }
 
+    /// Whether this tool modifies project files. Such tools fail without
+    /// running in a thread with read-only permissions.
+    fn modifies_files() -> bool {
+        false
+    }
+
     /// Runs the tool with the provided input.
     ///
     /// Returns `Result<Self::Output, Self::Output>` rather than `Result<Self::Output, anyhow::Error>`
@@ -5757,6 +5803,9 @@ pub trait AnyAgentTool {
     fn allow_in_restricted_mode(&self) -> bool {
         true
     }
+    fn modifies_files(&self) -> bool {
+        false
+    }
     /// See [`AgentTool::run`] for why this returns `Result<AgentToolOutput, AgentToolOutput>`.
     fn run(
         self: Arc<Self>,
@@ -5810,6 +5859,10 @@ where
 
     fn allow_in_restricted_mode(&self) -> bool {
         T::allow_in_restricted_mode()
+    }
+
+    fn modifies_files(&self) -> bool {
+        T::modifies_files()
     }
 
     fn run(
@@ -6079,6 +6132,8 @@ pub struct ToolCallEventStream {
     /// sandbox grant is recorded so it survives reopening. `None` in tests and
     /// for streams not tied to a live thread.
     thread: Option<WeakEntity<Thread>>,
+    /// The owning thread's permissions (see [`Thread::set_permissions`]).
+    permissions: watch::Receiver<AgentPermissions>,
 }
 
 impl ToolCallEventStream {
@@ -6110,9 +6165,20 @@ impl ToolCallEventStream {
             cancellation_rx,
             sandbox_grants,
             None,
+            watch::Receiver::constant(AgentPermissions::default()),
         );
 
         (stream, ToolCallEventStreamReceiver(events_rx))
+    }
+
+    /// Like [`Self::test`], but for a thread with the given permissions.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_with_permissions(
+        permissions: AgentPermissions,
+    ) -> (Self, ToolCallEventStreamReceiver) {
+        let (mut stream, receiver) = Self::test();
+        stream.permissions = watch::Receiver::constant(permissions);
+        (stream, receiver)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -6131,6 +6197,7 @@ impl ToolCallEventStream {
             cancellation_rx,
             Rc::new(RefCell::new(ThreadSandboxGrants::default())),
             None,
+            watch::Receiver::constant(AgentPermissions::default()),
         );
 
         (
@@ -6154,6 +6221,7 @@ impl ToolCallEventStream {
         cancellation_rx: watch::Receiver<bool>,
         sandbox_grants: Rc<RefCell<ThreadSandboxGrants>>,
         thread: Option<WeakEntity<Thread>>,
+        permissions: watch::Receiver<AgentPermissions>,
     ) -> Self {
         Self {
             tool_use_id,
@@ -6163,7 +6231,21 @@ impl ToolCallEventStream {
             cancellation_rx,
             sandbox_grants,
             thread,
+            permissions,
         }
+    }
+
+    /// The owning thread's current permissions.
+    pub(crate) fn permissions(&self) -> AgentPermissions {
+        *self.permissions.clone().borrow()
+    }
+
+    pub(crate) fn sandbox_mode(&self) -> SandboxMode {
+        SandboxMode::from(self.permissions())
+    }
+
+    pub(crate) fn approval_policy(&self) -> ApprovalPolicy {
+        ApprovalPolicy::from(self.permissions())
     }
 
     /// Whether the owning thread is a subagent, so prompts can say "for this
@@ -6350,6 +6432,44 @@ impl ToolCallEventStream {
         self.run_authorization_loop(title, options, Some(context), Some(check_settings), cx)
     }
 
+    /// Like [`Self::authorize`], for a terminal command that will run without a
+    /// sandbox, e.g. because the thread has full access or its project is
+    /// remote. When no rule decides, the thread's permissions do: full access
+    /// runs the command and workspace asks, since nothing contains it.
+    /// Read-only refuses it outright. A pending prompt follows the thread's
+    /// permissions if they change.
+    pub(crate) fn authorize_unsandboxed_command(
+        &self,
+        title: impl Into<String>,
+        context: ToolPermissionContext,
+        cx: &mut App,
+    ) -> Task<Result<()>> {
+        let title = title.into();
+        let options = context.build_permission_options();
+
+        let tool_name = context.tool_name.clone();
+        let input_values = context.input_values.clone();
+        let permissions = self.permissions.clone();
+        let check_settings: Box<dyn Fn(&App) -> ToolPermissionDecision> =
+            Box::new(move |cx: &App| {
+                let fallback = match SandboxMode::from(*permissions.clone().borrow()) {
+                    SandboxMode::ReadOnly => {
+                        return ToolPermissionDecision::Deny(UNSANDBOXED_READ_ONLY_MESSAGE.into());
+                    }
+                    SandboxMode::WorkspaceWrite => ToolPermissionMode::Confirm,
+                    SandboxMode::FullAccess => ToolPermissionMode::Allow,
+                };
+                decide_permission_from_settings_with_fallback(
+                    &tool_name,
+                    &input_values,
+                    agent_settings::AgentSettings::get_global(cx),
+                    fallback,
+                )
+            });
+
+        self.run_authorization_loop(title, options, Some(context), Some(check_settings), cx)
+    }
+
     /// Like [`Self::authorize`], but always prompts the user without
     /// consulting settings. Use this for authorizations that must be
     /// confirmed even when the user has configured `always_allow` rules —
@@ -6361,6 +6481,9 @@ impl ToolCallEventStream {
         context: ToolPermissionContext,
         cx: &mut App,
     ) -> Task<Result<()>> {
+        if self.approval_policy() == ApprovalPolicy::Never {
+            return Task::ready(Err(anyhow!(REQUEST_NOT_ALLOWED_MESSAGE)));
+        }
         let title = title.into();
         let options = context.build_permission_options();
         self.run_authorization_loop(title, options, Some(context), None, cx)
@@ -6380,6 +6503,9 @@ impl ToolCallEventStream {
         reason: String,
         cx: &mut App,
     ) -> Task<Result<()>> {
+        if self.approval_policy() == ApprovalPolicy::Never {
+            return Task::ready(Err(anyhow!(REQUEST_NOT_ALLOWED_MESSAGE)));
+        }
         if Self::sandbox_request_covered_by_grants(&request, &self.sandbox_grants, cx) {
             return Task::ready(Ok(()));
         }
@@ -6403,7 +6529,7 @@ impl ToolCallEventStream {
         } else {
             "Allow for this thread"
         };
-        let options = acp_thread::PermissionOptions::Flat(vec![
+        let mut options = vec![
             acp_v2::PermissionOption::new(
                 acp_v2::PermissionOptionId::new(acp_thread::SandboxPermission::AllowOnce.as_id()),
                 "Allow once",
@@ -6414,26 +6540,36 @@ impl ToolCallEventStream {
                 allow_thread_label,
                 acp_v2::PermissionOptionKind::AllowAlways,
             ),
-            acp_v2::PermissionOption::new(
+        ];
+        // Running unsandboxed can't be allowed persistently; full access
+        // permissions are the way to drop the sandbox for good.
+        if !request.unsandboxed {
+            options.push(acp_v2::PermissionOption::new(
                 acp_v2::PermissionOptionId::new(acp_thread::SandboxPermission::AllowAlways.as_id()),
                 "Allow always",
                 acp_v2::PermissionOptionKind::AllowAlways,
-            ),
-            acp_v2::PermissionOption::new(
-                acp_v2::PermissionOptionId::new(acp_thread::SandboxPermission::Deny.as_id()),
-                "Deny",
-                acp_v2::PermissionOptionKind::RejectOnce,
-            ),
-        ]);
+            ));
+        }
+        options.push(acp_v2::PermissionOption::new(
+            acp_v2::PermissionOptionId::new(acp_thread::SandboxPermission::Deny.as_id()),
+            "Deny",
+            acp_v2::PermissionOptionKind::RejectOnce,
+        ));
+        let options = acp_thread::PermissionOptions::Flat(options);
 
         let fs = self.fs.clone();
         let stream = self.stream.clone();
         let tool_call_id = self.tool_call_id.clone();
         let sandbox_grants = self.sandbox_grants.clone();
         let thread = self.thread.clone();
-        let auto_allow_outcome = match auto_resolve_permission_outcome(&options, true) {
-            Ok(outcome) => outcome,
-            Err(error) => return Task::ready(Err(error)),
+        let mut permissions_changes = self.permissions.clone();
+        let mut permissions = self.permissions.clone();
+        let (auto_allow_outcome, auto_deny_outcome) = match (
+            auto_resolve_permission_outcome(&options, true),
+            auto_resolve_permission_outcome(&options, false),
+        ) {
+            (Ok(allow), Ok(deny)) => (allow, deny),
+            (Err(error), _) | (_, Err(error)) => return Task::ready(Err(error)),
         };
         cx.spawn(async move |cx| {
             let (response_tx, mut response_rx) = oneshot::channel();
@@ -6471,7 +6607,22 @@ impl ToolCallEventStream {
                         std::future::pending::<()>().await;
                     }
                 };
+                let permissions_changed = async {
+                    if permissions_changes.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                };
                 futures::select_biased! {
+                    _ = permissions_changed.fuse() => {
+                        if ApprovalPolicy::from(*permissions.borrow()) == ApprovalPolicy::Never {
+                            drop(response_rx);
+                            stream.resolve_tool_call_authorization(
+                                &tool_call_id,
+                                auto_deny_outcome.clone(),
+                            );
+                            return Err(anyhow!(REQUEST_NOT_ALLOWED_MESSAGE));
+                        }
+                    }
                     outcome = (&mut response_rx).fuse() => {
                         let outcome = outcome.map_err(|_| anyhow!("authorization channel closed"))?;
                         ensure_tool_call_authorization_not_interrupted(&outcome)?;
@@ -6511,6 +6662,11 @@ impl ToolCallEventStream {
     /// via the banner's gear). Returns `Ok(())` on "Continue" (after which the
     /// caller proceeds to any escalation prompt) and `Err` on "Abort".
     pub(crate) fn authorize_windows_fs_warning(&self, cx: &mut App) -> Task<Result<()>> {
+        // The warning grants nothing, so a thread that never asks just runs
+        // the command without it.
+        if self.approval_policy() == ApprovalPolicy::Never {
+            return Task::ready(Ok(()));
+        }
         // If the warning is already disabled, don't prompt.
         if !AgentSettings::get_global(cx)
             .sandbox_permissions
@@ -6640,9 +6796,6 @@ impl ToolCallEventStream {
                 if request.allow_fs_write_all {
                     agent.allow_sandbox_fs_write_all();
                 }
-                if request.unsandboxed {
-                    agent.allow_sandbox_unsandboxed();
-                }
                 for granted in request.write_paths {
                     // Persist the full (requested, resolved-canonical) pair so a
                     // persistent grant is rebuilt from the vetted canonical
@@ -6669,35 +6822,44 @@ impl ToolCallEventStream {
         request: &SandboxRequest,
         persistent: &agent_settings::SandboxPermissions,
     ) -> SandboxRequest {
+        // Read-only ignores every standing grant, so nothing can widen it.
+        if self.sandbox_mode() == SandboxMode::ReadOnly {
+            return ThreadSandboxGrants::default().effective_with_persistent(
+                request,
+                &agent_settings::SandboxPermissions::default(),
+            );
+        }
         self.sandbox_grants
             .borrow()
             .effective_with_persistent(request, persistent)
     }
 
     /// Whether the user allowed running commands unsandboxed for the rest of
-    /// the thread (distinct from the persistent `allow_unsandboxed` setting).
+    /// the thread (distinct from full access permissions). Ignored while the
+    /// thread is read-only.
     pub(crate) fn sandbox_fallback_granted_for_thread(&self) -> bool {
-        self.sandbox_grants.borrow().fallback_granted_for_thread()
+        self.sandbox_mode() != SandboxMode::ReadOnly
+            && self.sandbox_grants.borrow().fallback_granted_for_thread()
     }
 
     /// Whether the user approved a model-requested `unsandboxed: true` escape
     /// for the rest of this thread. Like the fallback grant, this makes every
-    /// command in the thread run without a sandbox.
+    /// command in the thread run without a sandbox. Ignored while the thread is
+    /// read-only.
     pub(crate) fn unsandboxed_granted_for_thread(&self) -> bool {
-        self.sandbox_grants.borrow().unsandboxed_granted()
+        self.sandbox_mode() != SandboxMode::ReadOnly
+            && self.sandbox_grants.borrow().unsandboxed_granted()
     }
 
-    /// Whether unsandboxed access is currently in effect: granted for this
-    /// thread (a model-requested `unsandboxed` escape or a sandbox-creation
-    /// fallback) or configured persistently via `allow_unsandboxed`. When true,
+    /// Whether unsandboxed access is currently in effect: the thread has full
+    /// access, or it was granted for this thread (a model-requested
+    /// `unsandboxed` escape or a sandbox-creation fallback). When true,
     /// commands already run without any OS sandbox, so fetch's private-address
     /// guard no longer provides isolation and is skipped.
-    pub(crate) fn unsandboxed_access_granted(&self, cx: &App) -> bool {
-        self.unsandboxed_granted_for_thread()
+    pub(crate) fn unsandboxed_access_granted(&self) -> bool {
+        self.sandbox_mode() == SandboxMode::FullAccess
+            || self.unsandboxed_granted_for_thread()
             || self.sandbox_fallback_granted_for_thread()
-            || AgentSettings::get_global(cx)
-                .sandbox_permissions
-                .allow_unsandboxed
     }
 
     /// Ask the user how to proceed when the OS sandbox could not be created
@@ -6707,11 +6869,10 @@ impl ToolCallEventStream {
     /// Unlike [`Self::authorize_sandbox`] — which gates a model-requested
     /// *escalation* — this surfaces a *system limitation*: the sandbox failed,
     /// so the prompt explains why (`reason`) and lets the user retry, run the
-    /// command unsandboxed (once / for this thread / always), or deny it. The
-    /// "for this thread" choice is recorded in the in-memory thread grants and
-    /// "always" is persisted as the `allow_unsandboxed` setting. Only the
-    /// Bubblewrap sandboxes (Linux directly, Windows via WSL) can fail to
-    /// create a sandbox, so this is gated to those platforms.
+    /// command unsandboxed (once / for this thread), or deny it. The "for this
+    /// thread" choice is recorded in the thread grants. Only the Bubblewrap
+    /// sandboxes (Linux directly, Windows via WSL) can fail to create a
+    /// sandbox, so this is gated to those platforms.
     ///
     /// `retries` is how many times the user has already pressed Retry for this
     /// command; it's shown on the button so repeated presses visibly advance
@@ -6725,6 +6886,9 @@ impl ToolCallEventStream {
         retries: usize,
         cx: &mut App,
     ) -> Task<Result<SandboxFallbackDecision>> {
+        if self.approval_policy() == ApprovalPolicy::Never {
+            return Task::ready(Err(anyhow!(REQUEST_NOT_ALLOWED_MESSAGE)));
+        }
         let details = acp_thread::SandboxFallbackAuthorizationDetails {
             command,
             reason,
@@ -6762,18 +6926,12 @@ impl ToolCallEventStream {
                 acp_v2::PermissionOptionKind::AllowAlways,
             ),
             acp_v2::PermissionOption::new(
-                acp_v2::PermissionOptionId::new(acp_thread::SandboxPermission::AllowAlways.as_id()),
-                "Always run without sandbox",
-                acp_v2::PermissionOptionKind::AllowAlways,
-            ),
-            acp_v2::PermissionOption::new(
                 acp_v2::PermissionOptionId::new(acp_thread::SandboxPermission::Deny.as_id()),
                 "Deny",
                 acp_v2::PermissionOptionKind::RejectOnce,
             ),
         ]);
 
-        let fs = self.fs.clone();
         let stream = self.stream.clone();
         let tool_call_id = self.tool_call_id.clone();
         let sandbox_grants = self.sandbox_grants.clone();
@@ -6824,42 +6982,14 @@ impl ToolCallEventStream {
                     Self::persist_thread_grants(&thread, cx);
                     Ok(SandboxFallbackDecision::RunUnsandboxed)
                 }
-                Some(acp_thread::SandboxPermission::AllowAlways) => {
-                    sandbox_grants.borrow_mut().record_fallback();
-                    Self::persist_thread_grants(&thread, cx);
-                    Self::persist_sandbox_unsandboxed_permission(fs, cx);
-                    Ok(SandboxFallbackDecision::RunUnsandboxed)
-                }
                 Some(acp_thread::SandboxPermission::Deny) => Ok(SandboxFallbackDecision::Deny),
-                None => {
+                Some(acp_thread::SandboxPermission::AllowAlways) | None => {
                     let other = option_id;
                     debug_assert!(false, "unexpected sandbox fallback option_id: {other}");
                     Ok(SandboxFallbackDecision::Deny)
                 }
             }
         })
-    }
-
-    /// Persist the `allow_unsandboxed` setting. Going forward this turns
-    /// sandboxing off for the model-facing surface: later turns expose the
-    /// plain `terminal` tool (with no sandbox prompt section) and commands run
-    /// without an OS sandbox. On Windows, WSL sandbox setup is skipped.
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    fn persist_sandbox_unsandboxed_permission(fs: Option<Arc<dyn Fs>>, cx: &AsyncApp) {
-        let Some(fs) = fs else {
-            log::error!(
-                "Cannot persist \"allow always\" unsandboxed permission: no filesystem available"
-            );
-            return;
-        };
-        cx.update(|cx| {
-            update_settings_file(fs, cx, move |settings, _| {
-                settings
-                    .agent
-                    .get_or_insert_default()
-                    .allow_sandbox_unsandboxed();
-            });
-        });
     }
 
     /// Prompts the user to choose between an explicit set of actions and
@@ -6877,6 +7007,9 @@ impl ToolCallEventStream {
         options: Vec<acp_v2::PermissionOption>,
         cx: &mut App,
     ) -> Task<Result<acp_v2::PermissionOptionId>> {
+        if self.approval_policy() == ApprovalPolicy::Never {
+            return Task::ready(Err(anyhow!(REQUEST_NOT_ALLOWED_MESSAGE)));
+        }
         let options = acp_thread::PermissionOptions::Flat(options);
         let stream = self.stream.clone();
         let tool_call_id = self.tool_call_id.clone();
@@ -6986,6 +7119,8 @@ impl ToolCallEventStream {
         let fs = self.fs.clone();
         let stream = self.stream.clone();
         let tool_call_id = self.tool_call_id.clone();
+        let mut permissions_changes = self.permissions.clone();
+        let mut permissions = self.permissions.clone();
         let auto_resolution_outcomes = if check_settings.is_some() {
             match (
                 auto_resolve_permission_outcome(&options, true),
@@ -6997,6 +7132,7 @@ impl ToolCallEventStream {
         } else {
             None
         };
+        let never_deny_outcome = auto_resolve_permission_outcome(&options, false).ok();
         cx.spawn(async move |cx| {
             let (response_tx, mut response_rx) = oneshot::channel();
             if let Err(error) =
@@ -7018,12 +7154,33 @@ impl ToolCallEventStream {
             }
 
             let Some(check_settings) = check_settings else {
-                let outcome = response_rx
-                    .await
-                    .map_err(|_| anyhow!("authorization channel closed"))?;
-                ensure_tool_call_authorization_not_interrupted(&outcome)?;
-
-                return Self::persist_permission_outcome(&outcome, fs, cx);
+                // Without settings to consult, this prompt must be answered by
+                // the user, so it's denied as soon as the thread's permissions
+                // switch to never asking.
+                loop {
+                    let permissions_changed = async {
+                        if permissions_changes.changed().await.is_err() {
+                            std::future::pending::<()>().await;
+                        }
+                    };
+                    futures::select_biased! {
+                        outcome = (&mut response_rx).fuse() => {
+                            let outcome =
+                                outcome.map_err(|_| anyhow!("authorization channel closed"))?;
+                            ensure_tool_call_authorization_not_interrupted(&outcome)?;
+                            return Self::persist_permission_outcome(&outcome, fs.clone(), cx);
+                        }
+                        _ = permissions_changed.fuse() => {
+                            if ApprovalPolicy::from(*permissions.borrow()) == ApprovalPolicy::Never
+                                && let Some(deny_outcome) = never_deny_outcome.clone()
+                            {
+                                drop(response_rx);
+                                stream.resolve_tool_call_authorization(&tool_call_id, deny_outcome);
+                                return Err(anyhow!(REQUEST_NOT_ALLOWED_MESSAGE));
+                            }
+                        }
+                    }
+                }
             };
             let Some((auto_allow_outcome, auto_deny_outcome)) = auto_resolution_outcomes else {
                 return Err(anyhow!("missing auto-resolution outcomes"));
@@ -7036,14 +7193,19 @@ impl ToolCallEventStream {
                 })
             });
 
-            // Race the user's response against settings changes. On each
-            // settings change, re-evaluate `check_settings`: if it now
-            // yields a definitive Allow or Deny, resolve the prompt
-            // without user interaction. Otherwise keep waiting on the
-            // same prompt.
+            // Race the user's response against changes to the settings or the
+            // thread's permissions, which `check_settings` may consult. On
+            // each change, re-evaluate it: if it now yields a definitive
+            // Allow or Deny, resolve the prompt without user interaction.
+            // Otherwise keep waiting on the same prompt.
             loop {
                 let settings_changed = async {
                     if settings_rx.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                };
+                let permissions_changed = async {
+                    if permissions_changes.changed().await.is_err() {
                         std::future::pending::<()>().await;
                     }
                 };
@@ -7053,32 +7215,31 @@ impl ToolCallEventStream {
                         ensure_tool_call_authorization_not_interrupted(&outcome)?;
                         return Self::persist_permission_outcome(&outcome, fs.clone(), cx);
                     }
-                    _ = settings_changed.fuse() => {
-                        // On auto-resolve, we dismiss the prompt UI by
-                        // resolving the tool call's `WaitingForConfirmation`
-                        // status with an internal selected outcome. Dropping
-                        // `response_rx` prevents the synthetic response from
-                        // being delivered back into this loop.
-                        match cx.update(|cx| check_settings(cx)) {
-                            ToolPermissionDecision::Allow => {
-                                drop(response_rx);
-                                stream.resolve_tool_call_authorization(
-                                    &tool_call_id,
-                                    auto_allow_outcome.clone(),
-                                );
-                                return Ok(());
-                            }
-                            ToolPermissionDecision::Deny(reason) => {
-                                drop(response_rx);
-                                stream.resolve_tool_call_authorization(
-                                    &tool_call_id,
-                                    auto_deny_outcome.clone(),
-                                );
-                                return Err(anyhow!(reason));
-                            }
-                            ToolPermissionDecision::Confirm => continue,
-                        }
+                    _ = settings_changed.fuse() => {}
+                    _ = permissions_changed.fuse() => {}
+                }
+                // On auto-resolve, we dismiss the prompt UI by resolving the
+                // tool call's `WaitingForConfirmation` status with an internal
+                // selected outcome. Dropping `response_rx` prevents the
+                // synthetic response from being delivered back into this loop.
+                match cx.update(|cx| check_settings(cx)) {
+                    ToolPermissionDecision::Allow => {
+                        drop(response_rx);
+                        stream.resolve_tool_call_authorization(
+                            &tool_call_id,
+                            auto_allow_outcome.clone(),
+                        );
+                        return Ok(());
                     }
+                    ToolPermissionDecision::Deny(reason) => {
+                        drop(response_rx);
+                        stream.resolve_tool_call_authorization(
+                            &tool_call_id,
+                            auto_deny_outcome.clone(),
+                        );
+                        return Err(anyhow!(reason));
+                    }
+                    ToolPermissionDecision::Confirm => {}
                 }
             }
         })
@@ -7392,6 +7553,7 @@ mod tests {
     use serde_json::json;
     use settings::LanguageModelProviderSetting;
     use std::sync::Arc;
+    use util::path;
 
     #[gpui::test]
     async fn test_tool_call_events_preserve_opaque_id_storage(cx: &mut TestAppContext) {
@@ -7463,6 +7625,7 @@ mod tests {
             cancellation_rx,
             Rc::default(),
             None,
+            watch::Receiver::constant(AgentPermissions::default()),
         );
         let authorize = cx.update(|cx| {
             tool_stream.authorize_always_prompt(
@@ -9183,6 +9346,166 @@ mod tests {
         );
     }
 
+    fn build_write_request() -> SandboxRequest {
+        SandboxRequest {
+            allow_fs_write_all: false,
+            unsandboxed: false,
+            write_paths: vec![settings::GrantedWritePath::from_requested(PathBuf::from(
+                "/tmp/build",
+            ))],
+        }
+    }
+
+    fn settings_edit_context() -> ToolPermissionContext {
+        ToolPermissionContext::new(
+            crate::EditFileTool::NAME,
+            vec![".zed/settings.json".to_string()],
+        )
+    }
+
+    #[gpui::test]
+    async fn test_permissions_that_never_ask_deny_prompts_without_showing_them(
+        cx: &mut TestAppContext,
+    ) {
+        crate::tests::init_test(cx);
+
+        for permissions in [AgentPermissions::ReadOnly, AgentPermissions::FullAccess] {
+            let (event_stream, mut receiver) =
+                ToolCallEventStream::test_with_permissions(permissions);
+
+            let sandbox = cx.update(|cx| {
+                event_stream.authorize_sandbox(
+                    build_write_request(),
+                    "needs to write build artifacts".to_string(),
+                    cx,
+                )
+            });
+            let always_prompt = cx.update(|cx| {
+                event_stream.authorize_always_prompt("Edit settings", settings_edit_context(), cx)
+            });
+            let decision = cx.update(|cx| {
+                event_stream.prompt_for_decision(
+                    None,
+                    Some("This file has unsaved changes.".to_string()),
+                    vec![acp_v2::PermissionOption::new(
+                        acp_v2::PermissionOptionId::new("save"),
+                        "Save",
+                        acp_v2::PermissionOptionKind::AllowOnce,
+                    )],
+                    cx,
+                )
+            });
+
+            for result in [
+                sandbox.await,
+                always_prompt.await,
+                decision.await.map(|_| ()),
+            ] {
+                let error = result.expect_err("a thread that never asks should deny the request");
+                assert_eq!(error.to_string(), REQUEST_NOT_ALLOWED_MESSAGE);
+            }
+            assert!(
+                receiver.try_recv().is_err(),
+                "no prompt should be shown with {permissions:?} permissions"
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn test_switching_to_permissions_that_never_ask_denies_pending_prompts(
+        cx: &mut TestAppContext,
+    ) {
+        let (thread, _, _) = setup_thread_for_test(cx).await;
+        let (mut event_stream, mut receiver) = ToolCallEventStream::test();
+        event_stream.permissions =
+            thread.read_with(cx, |thread, _| thread.permissions_tx.receiver());
+
+        let sandbox = cx.update(|cx| {
+            event_stream.authorize_sandbox(
+                build_write_request(),
+                "needs to write build artifacts".to_string(),
+                cx,
+            )
+        });
+        let sandbox_authorization = receiver.expect_authorization().await;
+        let always_prompt = cx.update(|cx| {
+            event_stream.authorize_always_prompt("Edit settings", settings_edit_context(), cx)
+        });
+        let always_prompt_authorization = receiver.expect_authorization().await;
+
+        thread.update(cx, |thread, cx| {
+            thread.set_permissions(AgentPermissions::ReadOnly, cx)
+        });
+        cx.run_until_parked();
+
+        for result in [sandbox.await, always_prompt.await] {
+            let error = result.expect_err("switching to read-only should deny the pending prompt");
+            assert_eq!(error.to_string(), REQUEST_NOT_ALLOWED_MESSAGE);
+        }
+        for _ in 0..2 {
+            let (_, outcome) = receiver.expect_authorization_resolved().await;
+            assert_eq!(
+                outcome.option_kind,
+                acp_v2::PermissionOptionKind::RejectOnce
+            );
+        }
+        for authorization in [sandbox_authorization, always_prompt_authorization] {
+            let late_send =
+                authorization
+                    .response
+                    .send(acp_thread::SelectedPermissionOutcome::new(
+                        acp_v2::PermissionOptionId::new("allow"),
+                        acp_v2::PermissionOptionKind::AllowOnce,
+                    ));
+            assert!(
+                late_send.is_err(),
+                "the dismissed prompt should not accept answers"
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn test_unsandboxed_command_prompt_follows_permission_changes(cx: &mut TestAppContext) {
+        let (thread, _, _) = setup_thread_for_test(cx).await;
+        let (mut event_stream, mut receiver) = ToolCallEventStream::test();
+        event_stream.permissions =
+            thread.read_with(cx, |thread, _| thread.permissions_tx.receiver());
+        let context = || ToolPermissionContext::new(TerminalTool::NAME, vec!["ls".to_string()]);
+
+        let allowed =
+            cx.update(|cx| event_stream.authorize_unsandboxed_command("ls", context(), cx));
+        let _allowed_authorization = receiver.expect_authorization().await;
+        thread.update(cx, |thread, cx| {
+            thread.set_permissions(AgentPermissions::FullAccess, cx)
+        });
+        cx.run_until_parked();
+        allowed
+            .await
+            .expect("switching to full access should allow the command");
+        let (_, outcome) = receiver.expect_authorization_resolved().await;
+        assert_eq!(outcome.option_kind, acp_v2::PermissionOptionKind::AllowOnce);
+
+        thread.update(cx, |thread, cx| {
+            thread.set_permissions(AgentPermissions::Workspace, cx)
+        });
+        let refused =
+            cx.update(|cx| event_stream.authorize_unsandboxed_command("ls", context(), cx));
+        let _refused_authorization = receiver.expect_authorization().await;
+        thread.update(cx, |thread, cx| {
+            thread.set_permissions(AgentPermissions::ReadOnly, cx)
+        });
+        cx.run_until_parked();
+        let error = refused
+            .await
+            .expect_err("switching to read-only should refuse the command");
+        assert_eq!(error.to_string(), UNSANDBOXED_READ_ONLY_MESSAGE);
+        let (_, outcome) = receiver.expect_authorization_resolved().await;
+        assert_eq!(
+            outcome.option_kind,
+            acp_v2::PermissionOptionKind::RejectOnce
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn test_authorize_sandbox_fallback_options_and_details(cx: &mut TestAppContext) {
@@ -9848,6 +10171,7 @@ mod tests {
                 thread.set_thinking_enabled(true, cx);
                 thread.set_thinking_effort(Some("high".to_string()), cx);
                 thread.set_profile(AgentProfileId("custom-profile".into()), cx);
+                thread.set_permissions(AgentPermissions::ReadOnly, cx);
             });
         });
 
@@ -9859,6 +10183,87 @@ mod tests {
             assert!(sub.thinking_enabled());
             assert_eq!(sub.thinking_effort().map(|s| s.as_str()), Some("high"));
             assert_eq!(sub.profile(), &AgentProfileId("custom-profile".into()));
+            assert_eq!(sub.permissions(), AgentPermissions::ReadOnly);
+        });
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[gpui::test]
+    async fn test_permissions_choose_the_terminal_and_its_writable_paths(cx: &mut TestAppContext) {
+        let (thread, _event_stream, fake) = setup_thread_for_test(cx).await;
+        let fs = thread.read_with(cx, |thread, cx| thread.project.read(cx).fs().as_fake());
+        fs.insert_tree(path!("/root"), json!({})).await;
+        let project = thread.read_with(cx, |thread, _| thread.project.clone());
+        project
+            .update(cx, |project, cx| {
+                project.find_or_create_worktree(path!("/root"), true, cx)
+            })
+            .await
+            .expect("worktree should be created");
+
+        let model = fake.model("fake");
+        let environment: Rc<dyn ThreadEnvironment> =
+            Rc::new(crate::tests::FakeThreadEnvironment::default());
+        thread.update(cx, |thread, cx| {
+            thread.set_model(model, cx);
+            thread.add_tool(TerminalTool::new(project.clone(), environment.clone()));
+            thread.add_tool(SandboxedTerminalTool::new(project.clone(), environment));
+        });
+
+        for (permissions, terminal, writable_paths) in [
+            (
+                AgentPermissions::ReadOnly,
+                SandboxedTerminalTool::NAME,
+                vec![],
+            ),
+            (
+                AgentPermissions::Workspace,
+                SandboxedTerminalTool::NAME,
+                vec![PathBuf::from(path!("/root"))],
+            ),
+            (
+                AgentPermissions::FullAccess,
+                TerminalTool::NAME,
+                vec![PathBuf::from(path!("/root"))],
+            ),
+        ] {
+            thread.update(cx, |thread, cx| {
+                thread.set_permissions(permissions, cx);
+                let exposed = thread
+                    .enabled_tools(cx)
+                    .get(TerminalTool::NAME)
+                    .map(|tool| tool.name());
+                assert_eq!(
+                    exposed.as_deref(),
+                    Some(terminal),
+                    "{permissions:?} should expose {terminal} as `terminal`"
+                );
+                assert_eq!(
+                    thread.sandboxing_enabled(cx),
+                    permissions != AgentPermissions::FullAccess
+                );
+                assert_eq!(thread.sandbox_baseline_writable_paths(cx), writable_paths);
+            });
+        }
+    }
+
+    #[gpui::test]
+    async fn test_set_permissions_propagates_to_subagents(cx: &mut TestAppContext) {
+        let (parent, _event_stream, _) = setup_thread_for_test(cx).await;
+        let subagents = setup_parent_with_subagents(cx, &parent, 2);
+
+        cx.update(|cx| {
+            parent.update(cx, |thread, cx| {
+                thread.set_permissions(AgentPermissions::FullAccess, cx);
+            });
+
+            for subagent in &subagents {
+                assert_eq!(
+                    subagent.read(cx).permissions(),
+                    AgentPermissions::FullAccess,
+                    "Subagent permissions should match parent after set_permissions"
+                );
+            }
         });
     }
 

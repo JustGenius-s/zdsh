@@ -1,7 +1,7 @@
 use crate::{AgentMessage, AgentMessageContent, UserMessage, UserMessageContent};
 use acp_thread::ClientUserMessageId;
 use agent_client_protocol::schema::v2 as acp_v2;
-use agent_settings::AgentProfileId;
+use agent_settings::{AgentPermissions, AgentProfileId};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use collections::{HashMap, IndexMap};
@@ -75,6 +75,10 @@ pub struct DbThread {
     pub thinking_enabled: bool,
     #[serde(default)]
     pub thinking_effort: Option<String>,
+    /// `None` for threads saved before permissions existed, which load with the
+    /// configured default.
+    #[serde(default)]
+    pub permissions: Option<AgentPermissions>,
     #[serde(default)]
     pub draft_prompt: Option<Vec<acp_v2::ContentBlock>>,
     #[serde(default)]
@@ -158,6 +162,7 @@ impl SharedThread {
             speed: None,
             thinking_enabled: false,
             thinking_effort: None,
+            permissions: None,
             draft_prompt: None,
             ui_scroll_position: None,
             sandboxed_terminal_temp_dir: None,
@@ -344,6 +349,7 @@ impl DbThread {
             speed: None,
             thinking_enabled: false,
             thinking_effort: None,
+            permissions: None,
             draft_prompt: None,
             ui_scroll_position: None,
             sandboxed_terminal_temp_dir: None,
@@ -931,6 +937,7 @@ mod tests {
             speed: None,
             thinking_enabled: false,
             thinking_effort: None,
+            permissions: None,
             draft_prompt: None,
             ui_scroll_position: None,
             sandboxed_terminal_temp_dir: None,
@@ -1121,6 +1128,45 @@ mod tests {
             DbSandboxGrants::default(),
             "Legacy threads without sandbox_grants should default to empty grants"
         );
+    }
+
+    #[test]
+    fn test_permissions_default_to_none() {
+        let json = r#"{
+            "title": "Old Thread",
+            "messages": [],
+            "updated_at": "2024-01-01T00:00:00Z"
+        }"#;
+
+        let db_thread: DbThread = serde_json::from_str(json).expect("Failed to deserialize");
+
+        assert!(
+            db_thread.permissions.is_none(),
+            "Legacy threads without permissions should default to None"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_permissions_roundtrip_through_save_load(cx: &mut TestAppContext) {
+        let database = ThreadsDatabase::new(cx.executor()).unwrap();
+        let thread_id = session_id("permissions-thread");
+        let mut thread = make_thread(
+            "Permissions Thread",
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+        );
+        thread.permissions = Some(AgentPermissions::ReadOnly);
+
+        database
+            .save_thread(thread_id.clone(), thread, PathList::default())
+            .await
+            .unwrap();
+
+        let loaded = database
+            .load_thread(thread_id)
+            .await
+            .unwrap()
+            .expect("thread should exist");
+        assert_eq!(loaded.permissions, Some(AgentPermissions::ReadOnly));
     }
 
     #[gpui::test]

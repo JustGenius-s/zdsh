@@ -1,16 +1,14 @@
 //! Agent-side glue for the [`sandbox`] crate.
 //!
 //! Centralizes the "should agent-run terminal commands be sandboxed for this
-//! process?" check so the system prompt, the terminal tool, and any other
+//! thread?" check so the system prompt, the terminal tool, and any other
 //! caller see the same answer (and so the `target_os` gate lives in one
 //! place instead of scattered across the agent crate).
 //!
-//! The current policy is: enabled iff the user has the `sandboxing` feature
-//! flag turned on, the project is local, the platform has an integration, and
-//! the user has not persistently allowed unsandboxed execution (the
-//! `allow_unsandboxed` sandbox setting). Setting `allow_unsandboxed`
-//! persistently turns sandboxing off for the model-facing surface entirely:
-//! the plain (non-sandboxed) `terminal` tool is exposed and the system prompt
+//! The current policy is: enabled iff the project is local, the platform has
+//! an integration, and the thread's permissions aren't full access. Full
+//! access turns sandboxing off for the model-facing surface entirely: the
+//! plain (non-sandboxed) `terminal` tool is exposed and the system prompt
 //! omits the sandbox section, since every command would run without a wrap
 //! anyway. The model-requested `unsandboxed: true` escape approved "once" or
 //! "for this thread" does NOT change the prompt/tool set — the sandboxed tool
@@ -19,26 +17,85 @@
 //!
 //! macOS (Seatbelt), Linux (Bubblewrap), and Windows (Bubblewrap via WSL)
 //! have real sandbox integrations; on platforms without one the per-command
-//! wrap is a no-op, so commands run with the agent's ambient permissions even
-//! when the flag is on.
+//! wrap is a no-op, so commands run with the agent's ambient permissions.
 //!
 //! Naming note: this module is about agent terminal sandboxing specifically.
 //! Other agent operations (e.g. file edits) are gated separately.
 
-use agent_settings::{AgentSettings, SandboxPermissions};
-use feature_flags::{FeatureFlagAppExt as _, SandboxingFeatureFlag};
+use agent_settings::{AgentPermissions, SandboxPermissions};
 use gpui::App;
 use project::Project;
 use sandbox::{HostFilesystemLocation, SandboxFsPolicy, SandboxPolicy};
-use settings::{GrantedWritePath, Settings};
+use settings::GrantedWritePath;
 use std::path::PathBuf;
 
+/// How a thread's terminal commands are sandboxed, derived from its
+/// [`AgentPermissions`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SandboxMode {
+    /// Sandboxed, with no write access to the project. Neither persistent nor
+    /// thread grants apply.
+    ReadOnly,
+    /// Sandboxed, with write access to the project's worktrees.
+    WorkspaceWrite,
+    /// Not sandboxed.
+    FullAccess,
+}
+
+impl From<AgentPermissions> for SandboxMode {
+    fn from(permissions: AgentPermissions) -> Self {
+        match permissions {
+            AgentPermissions::ReadOnly => SandboxMode::ReadOnly,
+            AgentPermissions::Workspace => SandboxMode::WorkspaceWrite,
+            AgentPermissions::FullAccess => SandboxMode::FullAccess,
+        }
+    }
+}
+
+/// Whether a thread may ask the user for access beyond what its
+/// [`SandboxMode`] grants, derived from its [`AgentPermissions`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApprovalPolicy {
+    /// Ask the user.
+    Ask,
+    /// Never ask: every such request is denied without a prompt.
+    Never,
+}
+
+impl From<AgentPermissions> for ApprovalPolicy {
+    fn from(permissions: AgentPermissions) -> Self {
+        match permissions {
+            AgentPermissions::Workspace => ApprovalPolicy::Ask,
+            AgentPermissions::ReadOnly | AgentPermissions::FullAccess => ApprovalPolicy::Never,
+        }
+    }
+}
+
+/// Returned to the model when [`ApprovalPolicy::Never`] denies a request that
+/// would otherwise ask the user.
+pub(crate) const REQUEST_NOT_ALLOWED_MESSAGE: &str = "This thread's permissions don't allow \
+    asking the user for this, so it was denied. If the task needs it, ask the user to change \
+    the thread's permissions.";
+
+/// Returned to the model when a read-only thread runs a terminal command that
+/// can't be sandboxed, so nothing would stop it from writing.
+pub(crate) const UNSANDBOXED_READ_ONLY_MESSAGE: &str = "This command would run without a \
+    sandbox, so a thread with read-only permissions can't run it. Use the read and search tools \
+    instead, or ask the user to change the thread's permissions.";
+
 /// The directory subtrees the sandbox always grants write access to for a
-/// project: its worktree roots. This is the single source of truth shared by
-/// the terminal tool (which hands these to the sandbox as
-/// [`acp_thread::SandboxWrap::writable_paths`]) and the status UI (which lists
-/// them), so the two can't drift if the set ever changes.
-pub fn sandbox_worktree_writable_paths(project: &Project, cx: &App) -> Vec<PathBuf> {
+/// project under `mode`: its worktree roots, or nothing when read-only. This is
+/// the single source of truth shared by the terminal tool (which hands these to
+/// the sandbox as [`acp_thread::SandboxWrap::writable_paths`]) and the status UI
+/// (which lists them), so the two can't drift if the set ever changes.
+pub fn sandbox_worktree_writable_paths(
+    project: &Project,
+    mode: SandboxMode,
+    cx: &App,
+) -> Vec<PathBuf> {
+    if mode == SandboxMode::ReadOnly {
+        return Vec::new();
+    }
     project
         .worktrees(cx)
         .map(|worktree| worktree.read(cx).abs_path().to_path_buf())
@@ -140,15 +197,23 @@ impl ThreadSandbox {
     }
 }
 
-/// The sandbox the user's persistent settings establish for every thread, as a
-/// [`ThreadSandbox`]. The persistent `allow_unsandboxed` setting removes the
-/// sandbox entirely; otherwise the writable-path grants form its
-/// scope. The per-thread overrides come from [`ThreadSandboxGrants::thread_sandbox`].
-pub fn settings_thread_sandbox(persistent: &SandboxPermissions) -> ThreadSandbox {
-    if persistent.allow_unsandboxed {
-        ThreadSandbox::Unsandboxed
-    } else {
-        ThreadSandbox::Sandboxed(settings_sandbox_policy(persistent))
+/// The sandbox a thread's permissions and the persistent "allow always" grants
+/// establish for every command in the thread, as a [`ThreadSandbox`]. Full
+/// access removes the sandbox entirely, read-only ignores the persistent grants,
+/// and otherwise those grants form its scope. The per-thread overrides come from
+/// [`ThreadSandboxGrants::thread_sandbox`].
+pub fn permissions_thread_sandbox(
+    permissions: AgentPermissions,
+    persistent: &SandboxPermissions,
+) -> ThreadSandbox {
+    match SandboxMode::from(permissions) {
+        SandboxMode::FullAccess => ThreadSandbox::Unsandboxed,
+        SandboxMode::ReadOnly => {
+            ThreadSandbox::Sandboxed(settings_sandbox_policy(&SandboxPermissions::default()))
+        }
+        SandboxMode::WorkspaceWrite => {
+            ThreadSandbox::Sandboxed(settings_sandbox_policy(persistent))
+        }
     }
 }
 
@@ -180,37 +245,27 @@ pub fn settings_sandbox_policy(persistent: &SandboxPermissions) -> SandboxPolicy
     SandboxPolicy { fs }
 }
 
-/// Whether the sandboxed terminal can be exposed for this project.
+/// Whether the sandboxed terminal can be exposed for this project under
+/// `mode`.
 ///
-/// The persistent `allow_unsandboxed` setting turns sandboxing off for the
-/// model-facing surface: when it's set we expose the plain `terminal` tool and
-/// omit the sandbox section from the system prompt, because every command would
-/// run without a wrap regardless. This is deliberately keyed off the
-/// *persistent* setting only. A model-requested `unsandboxed: true` escape that
-/// the user approves "once" or "for this thread" keeps the sandboxed tool and
-/// prompt in place, since the model is still operating in the sandbox model and
-/// only escaping individual commands (tracked in `ThreadSandboxGrants`).
-pub(crate) fn sandboxing_enabled_for_project(project: &Project, cx: &App) -> bool {
-    sandboxing_available_for_project(project, cx)
-        && !AgentSettings::get_global(cx)
-            .sandbox_permissions
-            .allow_unsandboxed
+/// Full access turns sandboxing off for the model-facing surface: we expose the
+/// plain `terminal` tool and omit the sandbox section from the system prompt,
+/// because every command would run without a wrap regardless. A model-requested
+/// `unsandboxed: true` escape that the user approves "once" or "for this thread"
+/// keeps the sandboxed tool and prompt in place, since the model is still
+/// operating in the sandbox model and only escaping individual commands
+/// (tracked in `ThreadSandboxGrants`).
+pub(crate) fn sandboxing_enabled_for_project(project: &Project, mode: SandboxMode) -> bool {
+    sandboxing_available_for_project(project) && mode != SandboxMode::FullAccess
 }
 
-/// Whether agent-run terminal commands should be wrapped in an OS-level
-/// sandbox for this process. See module docs for the policy.
-pub(crate) fn sandboxing_enabled(cx: &App) -> bool {
-    cx.has_flag::<SandboxingFeatureFlag>()
-}
-
-/// Whether sandboxing is *applicable* for this project at all — the feature is
-/// enabled, the project is local, and the platform has a sandbox integration —
-/// independent of the persistent `allow_unsandboxed` setting. Used by the UI to
-/// distinguish "sandboxing isn't relevant here" (don't show the indicator) from
-/// "sandboxing is available but turned off in settings" (show it, struck out).
-pub(crate) fn sandboxing_available_for_project(project: &Project, cx: &App) -> bool {
-    sandboxing_enabled(cx)
-        && project.is_local()
+/// Whether sandboxing is *applicable* for this project at all — the project is
+/// local and the platform has a sandbox integration — independent of the
+/// thread's permissions. Used by the UI to distinguish "sandboxing isn't
+/// relevant here" (don't show the indicator) from "sandboxing is available but
+/// off for this thread" (show it, struck out).
+pub(crate) fn sandboxing_available_for_project(project: &Project) -> bool {
+    project.is_local()
         && cfg!(any(
             target_os = "macos",
             target_os = "linux",
@@ -280,13 +335,10 @@ impl ThreadSandboxGrants {
         persistent: &SandboxPermissions,
     ) -> bool {
         if request.unsandboxed {
-            // The persistent `allow_unsandboxed` setting is intentionally not
-            // consulted here: when it's set, sandboxing is removed from the
-            // model-facing surface (the plain `terminal` tool is exposed
-            // instead of the sandboxed one), so the model can't issue an
-            // `unsandboxed: true` request at all. Only a "for this thread"
-            // grant suppresses the re-prompt while the sandboxed tool is
-            // active — see `sandboxing_enabled_for_project`.
+            // There is no persistent grant for running unsandboxed: full access
+            // permissions remove the sandbox from the model-facing surface
+            // instead (see `sandboxing_enabled_for_project`). Only a "for this
+            // thread" grant suppresses the re-prompt.
             return self.unsandboxed;
         }
 
@@ -312,7 +364,7 @@ impl ThreadSandboxGrants {
 
     /// Whether the user allowed running commands unsandboxed for the rest of
     /// the thread (the fallback prompt's "Allow for this thread"). Distinct
-    /// from the persistent `allow_unsandboxed` setting.
+    /// from full access permissions.
     pub fn fallback_granted_for_thread(&self) -> bool {
         self.sandbox_fallback
     }
@@ -339,7 +391,7 @@ impl ThreadSandboxGrants {
     /// escape approved for the thread, or the sandbox-creation fallback) removes
     /// the sandbox entirely; otherwise the granted writable paths form its
     /// scope. This is the "overridden in this thread" half of the sandbox
-    /// status surface; the persistent half comes from [`settings_thread_sandbox`].
+    /// status surface; the persistent half comes from [`permissions_thread_sandbox`].
     pub fn thread_sandbox(&self) -> ThreadSandbox {
         if self.unsandboxed || self.sandbox_fallback {
             ThreadSandbox::Unsandboxed
@@ -533,16 +585,30 @@ mod tests {
     }
 
     #[test]
-    fn settings_thread_sandbox_reflects_allow_unsandboxed() {
-        let unsandboxed = SandboxPermissions {
-            allow_unsandboxed: true,
+    fn permissions_thread_sandbox_follows_the_sandbox_mode() {
+        let log_dir = tempfile::tempdir().expect("create temp log dir");
+        let persistent = SandboxPermissions {
+            write_paths: vec![resolved_grant(log_dir.path())],
             ..Default::default()
         };
-        assert!(settings_thread_sandbox(&unsandboxed).is_unsandboxed());
-        assert!(matches!(
-            settings_thread_sandbox(&SandboxPermissions::default()),
-            ThreadSandbox::Sandboxed(_)
-        ));
+
+        assert!(
+            permissions_thread_sandbox(AgentPermissions::FullAccess, &persistent).is_unsandboxed()
+        );
+        assert_eq!(
+            permissions_thread_sandbox(AgentPermissions::Workspace, &persistent),
+            ThreadSandbox::Sandboxed(settings_sandbox_policy(&persistent))
+        );
+        // Read-only ignores the persistent grants.
+        assert_eq!(
+            permissions_thread_sandbox(AgentPermissions::ReadOnly, &persistent),
+            ThreadSandbox::Sandboxed(SandboxPolicy {
+                fs: SandboxFsPolicy::Restricted {
+                    writable_paths: Vec::new(),
+                    protected_paths: Vec::new(),
+                },
+            })
+        );
     }
 
     #[test]
@@ -774,19 +840,6 @@ mod tests {
         // A thread-wide unsandboxed grant only covers unsandboxed requests; it
         // does not widen filesystem scope.
         assert!(!covers(&grants, &request(true, &[])));
-    }
-
-    #[test]
-    fn persistent_allow_unsandboxed_does_not_cover_here() {
-        // The persistent setting is handled by removing the sandboxed tool (see
-        // `sandboxing_enabled_for_project`), not by covering requests, so on
-        // its own it never makes an `unsandboxed: true` request "covered".
-        let grants = ThreadSandboxGrants::default();
-        let persistent = SandboxPermissions {
-            allow_unsandboxed: true,
-            ..Default::default()
-        };
-        assert!(!grants.covers_with_persistent(&unsandboxed_request(), &persistent));
     }
 
     #[test]

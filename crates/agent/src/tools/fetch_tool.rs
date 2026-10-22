@@ -292,21 +292,16 @@ impl AgentTool for FetchTool {
             // Then, unless unsandboxed access is already in effect, refuse hosts
             // that resolve into loopback / private / link-local space, so a
             // fetched page can't steer the model into the local machine, the
-            // LAN, or a cloud metadata endpoint. When unsandboxed access has
-            // been granted the terminal already runs without isolation, so we
-            // drop the check too; that's also how local services become
-            // reachable. When the sandboxing feature flag is off the terminal
-            // isn't sandboxed either, so skip it entirely (the pre-sandboxing
-            // behavior).
+            // LAN, or a cloud metadata endpoint. When the thread has full access
+            // or unsandboxed access has been granted, the terminal already runs
+            // without isolation, so we drop the check too; that's also how local
+            // services become reachable.
             //
             // The check applies to every redirect hop as well as the initial
             // URL, so a public host can't 30x-redirect the fetch into private
             // space. We disable the HTTP client's own redirect following and
             // re-run the check for each hop before requesting it.
-            let unsandboxed = cx.update(|cx| {
-                !crate::sandboxing::sandboxing_enabled(cx)
-                    || event_stream.unsandboxed_access_granted(cx)
-            });
+            let unsandboxed = event_stream.unsandboxed_access_granted();
 
             let mut current_url = input.url.clone();
             let mut redirects = 0;

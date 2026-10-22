@@ -392,5 +392,7 @@ pub(crate) mod m_2026_09_29 {
 pub(crate) mod m_2026_10_22 {
     mod settings;
 
-    pub(crate) use settings::remove_sandbox_network_permissions;
+    pub(crate) use settings::{
+        migrate_agent_permission_defaults, remove_sandbox_network_permissions,
+    };
 }

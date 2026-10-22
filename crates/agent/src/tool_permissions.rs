@@ -226,8 +226,9 @@ impl ToolPermissionDecision {
     ///    the tool call proceeds without prompting.
     /// 5. **Tool-specific `default`** - If no patterns match and the tool has an explicit
     ///    `default` configured, that mode is used.
-    /// 6. **Global `default`** - Falls back to `tool_permissions.default` when no
-    ///    tool-specific default is set, or when the tool has no entry at all.
+    /// 6. **Allow** - Otherwise the tool call is allowed here, and the thread's
+    ///    permissions decide what it may do (e.g. its sandbox). Use
+    ///    [`Self::from_input_with_fallback`] when they call for something else.
     ///
     /// # Shell Compatibility (Terminal Tool Only)
     ///
@@ -256,6 +257,24 @@ impl ToolPermissionDecision {
         permissions: &ToolPermissions,
         shell_kind: ShellKind,
     ) -> ToolPermissionDecision {
+        Self::from_input_with_fallback(
+            tool_name,
+            inputs,
+            permissions,
+            ToolPermissionMode::Allow,
+            shell_kind,
+        )
+    }
+
+    /// Like [`Self::from_input`], but `fallback` decides tool calls that no rule
+    /// matches.
+    pub fn from_input_with_fallback(
+        tool_name: &str,
+        inputs: &[String],
+        permissions: &ToolPermissions,
+        fallback: ToolPermissionMode,
+        shell_kind: ShellKind,
+    ) -> ToolPermissionDecision {
         // First, check hardcoded security rules, such as banning `rm -rf /` in terminal tool.
         // These cannot be bypassed by any user settings.
         if let Some(denial) = check_hardcoded_security_rules(tool_name, inputs, shell_kind) {
@@ -271,10 +290,9 @@ impl ToolPermissionDecision {
         }
 
         if tool_name == TerminalTool::NAME
-            && !rules.map_or(
-                matches!(permissions.default, ToolPermissionMode::Allow),
-                |rules| is_unconditional_allow_all(rules, permissions.default),
-            )
+            && !rules.map_or(fallback == ToolPermissionMode::Allow, |rules| {
+                is_unconditional_allow_all(rules, fallback)
+            })
             && inputs.iter().any(|input| {
                 matches!(
                     validate_terminal_command(input),
@@ -285,18 +303,8 @@ impl ToolPermissionDecision {
             return ToolPermissionDecision::Deny(INVALID_TERMINAL_COMMAND_MESSAGE.into());
         }
 
-        let rules = match rules {
-            Some(rules) => rules,
-            None => {
-                // No tool-specific rules, use the global default
-                return match permissions.default {
-                    ToolPermissionMode::Allow => ToolPermissionDecision::Allow,
-                    ToolPermissionMode::Deny => {
-                        ToolPermissionDecision::Deny("Blocked by global default: deny".into())
-                    }
-                    ToolPermissionMode::Confirm => ToolPermissionDecision::Confirm,
-                };
-            }
+        let Some(rules) = rules else {
+            return decision_for_mode(fallback, tool_name);
         };
 
         // For the terminal tool, parse each input command to extract all sub-commands.
@@ -329,7 +337,7 @@ impl ToolPermissionDecision {
                     rules,
                     tool_name,
                     false,
-                    permissions.default,
+                    fallback,
                 );
             }
 
@@ -346,20 +354,14 @@ impl ToolPermissionDecision {
                 }
             }
             // If any command failed to parse, disable allow patterns for safety.
-            check_commands(
-                all_commands,
-                rules,
-                tool_name,
-                !any_parse_failed,
-                permissions.default,
-            )
+            check_commands(all_commands, rules, tool_name, !any_parse_failed, fallback)
         } else {
             check_commands(
                 inputs.iter().map(|s| s.to_string()),
                 rules,
                 tool_name,
                 true,
-                permissions.default,
+                fallback,
             )
         }
     }
@@ -380,7 +382,7 @@ fn check_commands(
     rules: &ToolRules,
     tool_name: &str,
     allow_enabled: bool,
-    global_default: ToolPermissionMode,
+    fallback: ToolPermissionMode,
 ) -> ToolPermissionDecision {
     // Single pass through all commands:
     // - DENY: If ANY command matches a deny pattern, deny immediately (short-circuit)
@@ -421,7 +423,11 @@ fn check_commands(
         return ToolPermissionDecision::Allow;
     }
 
-    match rules.default.unwrap_or(global_default) {
+    decision_for_mode(rules.default.unwrap_or(fallback), tool_name)
+}
+
+fn decision_for_mode(mode: ToolPermissionMode, tool_name: &str) -> ToolPermissionDecision {
+    match mode {
         ToolPermissionMode::Deny => {
             ToolPermissionDecision::Deny(format!("{} tool is disabled", tool_name))
         }
@@ -430,16 +436,13 @@ fn check_commands(
     }
 }
 
-fn is_unconditional_allow_all(rules: &ToolRules, global_default: ToolPermissionMode) -> bool {
+fn is_unconditional_allow_all(rules: &ToolRules, fallback: ToolPermissionMode) -> bool {
     // `always_allow` is intentionally not checked here: when the effective default
     // is already Allow and there are no deny/confirm restrictions, allow patterns
     // are redundant — the user has opted into allowing everything.
     rules.always_deny.is_empty()
         && rules.always_confirm.is_empty()
-        && matches!(
-            rules.default.unwrap_or(global_default),
-            ToolPermissionMode::Allow
-        )
+        && rules.default.unwrap_or(fallback) == ToolPermissionMode::Allow
 }
 
 /// Checks if the tool rules contain any invalid regex patterns.
@@ -469,10 +472,27 @@ pub fn decide_permission_from_settings(
     inputs: &[String],
     settings: &AgentSettings,
 ) -> ToolPermissionDecision {
-    ToolPermissionDecision::from_input(
+    decide_permission_from_settings_with_fallback(
+        tool_name,
+        inputs,
+        settings,
+        ToolPermissionMode::Allow,
+    )
+}
+
+/// Like [`decide_permission_from_settings`], but `fallback` decides tool calls
+/// that no rule matches.
+pub fn decide_permission_from_settings_with_fallback(
+    tool_name: &str,
+    inputs: &[String],
+    settings: &AgentSettings,
+    fallback: ToolPermissionMode,
+) -> ToolPermissionDecision {
+    ToolPermissionDecision::from_input_with_fallback(
         tool_name,
         inputs,
         &settings.tool_permissions,
+        fallback,
         ShellKind::system(),
     )
 }
@@ -605,6 +625,7 @@ mod tests {
             cancel_generation_on_terminal_stop: true,
             use_modifier_to_send: true,
             message_editor_min_lines: 1,
+            default_permissions: Default::default(),
             tool_permissions,
             sandbox_permissions: Default::default(),
             show_turn_stats: false,
@@ -634,7 +655,6 @@ mod tests {
         allow: Vec<(&'static str, bool)>,
         deny: Vec<(&'static str, bool)>,
         confirm: Vec<(&'static str, bool)>,
-        global_default: ToolPermissionMode,
         shell: ShellKind,
     }
 
@@ -643,11 +663,12 @@ mod tests {
             Self {
                 tool: TerminalTool::NAME,
                 input,
-                mode: None,
+                // An unset default allows, which would hide whether a command
+                // matched a pattern or fell through, so tests start from Confirm.
+                mode: Some(ToolPermissionMode::Confirm),
                 allow: vec![],
                 deny: vec![],
                 confirm: vec![],
-                global_default: ToolPermissionMode::Confirm,
                 shell: ShellKind::Posix,
             }
         }
@@ -680,8 +701,8 @@ mod tests {
             self.confirm = p.iter().map(|s| (*s, false)).collect();
             self
         }
-        fn global_default(mut self, m: ToolPermissionMode) -> Self {
-            self.global_default = m;
+        fn without_default(mut self) -> Self {
+            self.mode = None;
             self
         }
         fn shell(mut self, s: ShellKind) -> Self {
@@ -749,10 +770,7 @@ mod tests {
             ToolPermissionDecision::from_input(
                 self.tool,
                 &[self.input.to_string()],
-                &ToolPermissions {
-                    default: self.global_default,
-                    tools,
-                },
+                &ToolPermissions { tools },
                 self.shell,
             )
         }
@@ -762,14 +780,11 @@ mod tests {
         PermTest::new(input)
     }
 
-    fn no_rules(input: &str, global_default: ToolPermissionMode) -> ToolPermissionDecision {
+    fn no_rules(input: &str) -> ToolPermissionDecision {
         ToolPermissionDecision::from_input(
             TerminalTool::NAME,
             &[input.to_string()],
-            &ToolPermissions {
-                default: global_default,
-                tools: collections::HashMap::default(),
-            },
+            &ToolPermissions::default(),
             ShellKind::Posix,
         )
     }
@@ -803,26 +818,17 @@ mod tests {
         t("python x.py").allow(&[pattern("cargo")]).is_confirm();
     }
     #[test]
-    fn allow_no_match_global_allows() {
+    fn allow_no_match_without_default_allows() {
         t("python x.py")
             .allow(&[pattern("cargo")])
-            .global_default(ToolPermissionMode::Allow)
+            .without_default()
             .is_allow();
     }
     #[test]
-    fn allow_no_match_tool_confirm_overrides_global_allow() {
-        t("python x.py")
-            .allow(&[pattern("cargo")])
-            .mode(ToolPermissionMode::Confirm)
-            .global_default(ToolPermissionMode::Allow)
-            .is_confirm();
-    }
-    #[test]
-    fn allow_no_match_tool_allow_overrides_global_confirm() {
+    fn allow_no_match_tool_allow_default_allows() {
         t("python x.py")
             .allow(&[pattern("cargo")])
             .mode(ToolPermissionMode::Allow)
-            .global_default(ToolPermissionMode::Confirm)
             .is_allow();
     }
 
@@ -831,12 +837,12 @@ mod tests {
     fn deny_blocks() {
         t("rm -rf ./temp").deny(&["rm\\s+-rf"]).is_deny();
     }
-    // global default: allow does NOT bypass user-configured deny rules
+    // An unset default does NOT bypass user-configured deny rules
     #[test]
-    fn deny_not_bypassed_by_global_default_allow() {
+    fn deny_not_bypassed_without_default() {
         t("rm -rf ./temp")
             .deny(&["rm\\s+-rf"])
-            .global_default(ToolPermissionMode::Allow)
+            .without_default()
             .is_deny();
     }
     #[test]
@@ -865,12 +871,12 @@ mod tests {
             .confirm(&[pattern("sudo")])
             .is_confirm();
     }
-    // global default: allow does NOT bypass user-configured confirm rules
+    // An unset default does NOT bypass user-configured confirm rules
     #[test]
-    fn global_default_allow_does_not_override_confirm_pattern() {
+    fn confirm_pattern_applies_without_default() {
         t("sudo reboot")
             .confirm(&[pattern("sudo")])
-            .global_default(ToolPermissionMode::Allow)
+            .without_default()
             .is_confirm();
     }
     #[test]
@@ -946,36 +952,90 @@ mod tests {
     fn default_deny() {
         t("python x.py").mode(ToolPermissionMode::Deny).is_deny();
     }
-    // Tool-specific default takes precedence over global default
     #[test]
-    fn tool_default_deny_overrides_global_allow() {
-        t("python x.py")
-            .mode(ToolPermissionMode::Deny)
-            .global_default(ToolPermissionMode::Allow)
-            .is_deny();
-    }
-
-    // Tool-specific default takes precedence over global default
-    #[test]
-    fn tool_default_confirm_overrides_global_allow() {
-        t("x")
-            .mode(ToolPermissionMode::Confirm)
-            .global_default(ToolPermissionMode::Allow)
-            .is_confirm();
+    fn default_unset_allows() {
+        t("python x.py").without_default().is_allow();
     }
 
     #[test]
-    fn no_rules_uses_global_default() {
+    fn no_rules_allows() {
+        assert_eq!(no_rules("x"), ToolPermissionDecision::Allow);
+    }
+
+    fn terminal_decision_with_fallback(
+        input: &str,
+        rules: Option<ToolRules>,
+        fallback: ToolPermissionMode,
+    ) -> ToolPermissionDecision {
+        let mut tools = collections::HashMap::default();
+        if let Some(rules) = rules {
+            tools.insert(Arc::from(TerminalTool::NAME), rules);
+        }
+        ToolPermissionDecision::from_input_with_fallback(
+            TerminalTool::NAME,
+            &[input.to_string()],
+            &ToolPermissions { tools },
+            fallback,
+            ShellKind::Posix,
+        )
+    }
+
+    #[test]
+    fn fallback_decides_calls_no_rule_matches() {
         assert_eq!(
-            no_rules("x", ToolPermissionMode::Confirm),
+            terminal_decision_with_fallback("ls", None, ToolPermissionMode::Confirm),
             ToolPermissionDecision::Confirm
         );
+        assert!(matches!(
+            terminal_decision_with_fallback("ls", None, ToolPermissionMode::Deny),
+            ToolPermissionDecision::Deny(_)
+        ));
+        let unrelated_allow = ToolRules {
+            always_allow: vec![CompiledRegex::new("^cargo\\b", false).unwrap()],
+            ..Default::default()
+        };
         assert_eq!(
-            no_rules("x", ToolPermissionMode::Allow),
+            terminal_decision_with_fallback(
+                "ls",
+                Some(unrelated_allow),
+                ToolPermissionMode::Confirm
+            ),
+            ToolPermissionDecision::Confirm
+        );
+    }
+
+    #[test]
+    fn rules_take_precedence_over_the_fallback() {
+        let allow_cargo = ToolRules {
+            always_allow: vec![CompiledRegex::new("^cargo\\b", false).unwrap()],
+            ..Default::default()
+        };
+        assert_eq!(
+            terminal_decision_with_fallback(
+                "cargo build",
+                Some(allow_cargo),
+                ToolPermissionMode::Confirm
+            ),
             ToolPermissionDecision::Allow
         );
+        let allow_by_default = ToolRules {
+            default: Some(ToolPermissionMode::Allow),
+            ..Default::default()
+        };
+        assert_eq!(
+            terminal_decision_with_fallback(
+                "ls",
+                Some(allow_by_default),
+                ToolPermissionMode::Confirm
+            ),
+            ToolPermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn invalid_substitution_bearing_command_denies_with_confirm_fallback() {
         assert!(matches!(
-            no_rules("x", ToolPermissionMode::Deny),
+            terminal_decision_with_fallback("echo $(whoami)", None, ToolPermissionMode::Confirm),
             ToolPermissionDecision::Deny(_)
         ));
     }
@@ -1035,10 +1095,7 @@ mod tests {
                 invalid_patterns: vec![],
             },
         );
-        let p = ToolPermissions {
-            default: ToolPermissionMode::Confirm,
-            tools,
-        };
+        let p = ToolPermissions { tools };
         assert!(matches!(
             ToolPermissionDecision::from_input(
                 TerminalTool::NAME,
@@ -1072,11 +1129,8 @@ mod tests {
                 invalid_patterns: vec![],
             },
         );
-        let p = ToolPermissions {
-            default: ToolPermissionMode::Confirm,
-            tools,
-        };
-        // "terminal" should not match "term" rules, so falls back to Confirm (no rules)
+        let p = ToolPermissions { tools };
+        // "terminal" should not match "term" rules, so it has no rules and is allowed
         assert_eq!(
             ToolPermissionDecision::from_input(
                 TerminalTool::NAME,
@@ -1084,7 +1138,7 @@ mod tests {
                 &p,
                 ShellKind::Posix
             ),
-            ToolPermissionDecision::Confirm
+            ToolPermissionDecision::Allow
         );
     }
 
@@ -1106,10 +1160,7 @@ mod tests {
                 }],
             },
         );
-        let p = ToolPermissions {
-            default: ToolPermissionMode::Confirm,
-            tools,
-        };
+        let p = ToolPermissions { tools };
         // Invalid patterns block the tool regardless of other settings
         assert!(matches!(
             ToolPermissionDecision::from_input(
@@ -1123,20 +1174,23 @@ mod tests {
     }
 
     #[test]
-    fn invalid_substitution_bearing_command_denies_by_default() {
-        let decision = no_rules("echo $HOME", ToolPermissionMode::Deny);
-        assert!(matches!(decision, ToolPermissionDecision::Deny(_)));
+    fn invalid_substitution_bearing_command_denies_with_confirm_pattern() {
+        t("echo $HOME")
+            .confirm(&[pattern("sudo")])
+            .without_default()
+            .is_deny();
     }
 
     #[test]
     fn invalid_substitution_bearing_command_denies_in_confirm_mode() {
-        let decision = no_rules("echo $(whoami)", ToolPermissionMode::Confirm);
-        assert!(matches!(decision, ToolPermissionDecision::Deny(_)));
+        t("echo $(whoami)")
+            .mode(ToolPermissionMode::Confirm)
+            .is_deny();
     }
 
     #[test]
     fn unconditional_allow_all_bypasses_invalid_command_rejection_without_tool_rules() {
-        let decision = no_rules("echo $HOME", ToolPermissionMode::Allow);
+        let decision = no_rules("echo $HOME");
         assert_eq!(decision, ToolPermissionDecision::Allow);
     }
 
@@ -1153,10 +1207,7 @@ mod tests {
                 invalid_patterns: vec![],
             },
         );
-        let permissions = ToolPermissions {
-            default: ToolPermissionMode::Confirm,
-            tools,
-        };
+        let permissions = ToolPermissions { tools };
 
         assert_eq!(
             ToolPermissionDecision::from_input(
@@ -1197,7 +1248,7 @@ mod tests {
 
     #[test]
     fn hardcoded_security_denial_overrides_unconditional_allow_all() {
-        let decision = no_rules("rm -rf /", ToolPermissionMode::Allow);
+        let decision = no_rules("rm -rf /");
         match decision {
             ToolPermissionDecision::Deny(message) => {
                 assert!(
@@ -1211,7 +1262,7 @@ mod tests {
 
     #[test]
     fn hardcoded_security_denial_overrides_unconditional_allow_all_for_invalid_command() {
-        let decision = no_rules("echo $(rm -rf /)", ToolPermissionMode::Allow);
+        let decision = no_rules("echo $(rm -rf /)");
         match decision {
             ToolPermissionDecision::Deny(message) => {
                 assert!(
@@ -1450,11 +1501,6 @@ mod tests {
             .tool("mcp:gh:issue")
             .mode(ToolPermissionMode::Confirm)
             .is_confirm();
-        t("")
-            .tool("mcp:gh:issue")
-            .mode(ToolPermissionMode::Confirm)
-            .global_default(ToolPermissionMode::Allow)
-            .is_confirm();
     }
 
     #[test]
@@ -1480,10 +1526,7 @@ mod tests {
                 invalid_patterns: vec![],
             },
         );
-        let p = ToolPermissions {
-            default: ToolPermissionMode::Confirm,
-            tools,
-        };
+        let p = ToolPermissions { tools };
         assert!(matches!(
             ToolPermissionDecision::from_input(
                 TerminalTool::NAME,
@@ -1595,10 +1638,7 @@ mod tests {
                 ],
             },
         );
-        let p = ToolPermissions {
-            default: ToolPermissionMode::Confirm,
-            tools,
-        };
+        let p = ToolPermissions { tools };
 
         let result = ToolPermissionDecision::from_input(
             TerminalTool::NAME,
@@ -1668,11 +1708,11 @@ mod tests {
             .deny(&["\\.env$"])
             .is_deny();
 
-        // global default allow does not bypass confirm on non-terminal tools
+        // an unset default does not bypass confirm on non-terminal tools
         t("/etc/passwd")
             .tool(EditFileTool::NAME)
             .confirm(&["/etc/"])
-            .global_default(ToolPermissionMode::Allow)
+            .without_default()
             .is_confirm();
     }
 
@@ -1784,23 +1824,13 @@ mod tests {
     }
 
     #[test]
-    fn hardcoded_cannot_be_bypassed_by_global() {
-        // Even with global default Allow, hardcoded rules block
-        t("rm -rf /")
-            .global_default(ToolPermissionMode::Allow)
-            .is_deny();
-        t("rm -rf ~")
-            .global_default(ToolPermissionMode::Allow)
-            .is_deny();
-        t("rm -rf $HOME")
-            .global_default(ToolPermissionMode::Allow)
-            .is_deny();
-        t("rm -rf .")
-            .global_default(ToolPermissionMode::Allow)
-            .is_deny();
-        t("rm -rf ..")
-            .global_default(ToolPermissionMode::Allow)
-            .is_deny();
+    fn hardcoded_cannot_be_bypassed_without_default() {
+        // Even when an unset default allows, hardcoded rules block
+        t("rm -rf /").without_default().is_deny();
+        t("rm -rf ~").without_default().is_deny();
+        t("rm -rf $HOME").without_default().is_deny();
+        t("rm -rf .").without_default().is_deny();
+        t("rm -rf ..").without_default().is_deny();
     }
 
     #[test]
@@ -1846,9 +1876,7 @@ mod tests {
         // Hardcoded rules should catch dangerous commands in chains
         t("ls && rm -rf /").is_deny();
         t("echo hello; rm -rf ~").is_deny();
-        t("cargo build && rm -rf /")
-            .global_default(ToolPermissionMode::Allow)
-            .is_deny();
+        t("cargo build && rm -rf /").without_default().is_deny();
         t("echo hello; rm -rf $HOME").is_deny();
         t("echo hello; rm -rf .").is_deny();
         t("echo hello; rm -rf ..").is_deny();
@@ -2013,10 +2041,8 @@ mod tests {
         // Traversal in chained commands
         t("ls && rm -rf /tmp/../../").is_deny();
         t("echo hello; rm -rf /./").is_deny();
-        // Traversal cannot be bypassed by global or allow patterns
-        t("rm -rf /tmp/../../")
-            .global_default(ToolPermissionMode::Allow)
-            .is_deny();
+        // Traversal cannot be bypassed by an unset default or allow patterns
+        t("rm -rf /tmp/../../").without_default().is_deny();
         t("rm -rf /./").allow(&[".*"]).is_deny();
         // Safe paths with traversal should still be allowed
         t("rm -rf /tmp/../tmp/foo")
@@ -2076,14 +2102,10 @@ mod tests {
         // Chained with sudo
         t("sudo rm -rf /").is_deny();
         t("sudo rm -rf --no-preserve-root /").is_deny();
-        // Traversal cannot be bypassed even with global allow or allow patterns
-        t("rm -rf /etc/../")
-            .global_default(ToolPermissionMode::Allow)
-            .is_deny();
+        // Traversal cannot be bypassed even by an unset default or allow patterns
+        t("rm -rf /etc/../").without_default().is_deny();
         t("rm -rf /etc/../").allow(&[".*"]).is_deny();
-        t("rm -rf --no-preserve-root /")
-            .global_default(ToolPermissionMode::Allow)
-            .is_deny();
+        t("rm -rf --no-preserve-root /").without_default().is_deny();
         t("rm -rf --no-preserve-root /").allow(&[".*"]).is_deny();
     }
 
@@ -2236,12 +2258,9 @@ mod tests {
     fn decide_permission_for_path_no_dots_early_return() {
         // When the path has no `.` or `..`, normalize_path returns the same string,
         // so decide_permission_for_path returns the raw decision directly.
-        let settings = test_agent_settings(ToolPermissions {
-            default: ToolPermissionMode::Confirm,
-            tools: Default::default(),
-        });
+        let settings = test_agent_settings(ToolPermissions::default());
         let decision = decide_permission_for_path(EditFileTool::NAME, "src/main.rs", &settings);
-        assert_eq!(decision, ToolPermissionDecision::Confirm);
+        assert_eq!(decision, ToolPermissionDecision::Allow);
     }
 
     #[test]
@@ -2258,10 +2277,7 @@ mod tests {
                 invalid_patterns: vec![],
             },
         );
-        let settings = test_agent_settings(ToolPermissions {
-            default: ToolPermissionMode::Confirm,
-            tools,
-        });
+        let settings = test_agent_settings(ToolPermissions { tools });
 
         let decision =
             decide_permission_for_path(EditFileTool::NAME, "/tmp/../etc/passwd", &settings);
@@ -2327,10 +2343,7 @@ mod tests {
                 invalid_patterns: vec![],
             },
         );
-        let permissions = ToolPermissions {
-            default: ToolPermissionMode::Confirm,
-            tools,
-        };
+        let permissions = ToolPermissions { tools };
         let raw_decision = ToolPermissionDecision::from_input(
             tool,
             &[input.to_string()],

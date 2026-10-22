@@ -20,8 +20,8 @@ pub use native_agent_server::NativeAgentServer;
 use parking_lot::Mutex;
 pub use pattern_extraction::*;
 pub use sandboxing::{
-    ThreadSandbox, sandbox_worktree_writable_paths, settings_sandbox_policy,
-    settings_thread_sandbox,
+    ApprovalPolicy, SandboxMode, ThreadSandbox, permissions_thread_sandbox,
+    sandbox_worktree_writable_paths, settings_sandbox_policy,
 };
 pub use shell_command_parser::extract_commands;
 pub use templates::*;
@@ -4479,15 +4479,17 @@ mod internal_tests {
     #[cfg(target_os = "macos")]
     #[gpui::test]
     async fn test_native_terminal_tool_releases_pty_resources(cx: &mut TestAppContext) {
-        use feature_flags::FeatureFlagAppExt as _;
-
         init_test(cx);
         cx.executor().allow_parking();
         cx.update(|cx| {
-            cx.update_flags(true, vec!["sandboxing".to_string()]);
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Confirm;
-            settings.tool_permissions.tools.remove(TerminalTool::NAME);
+            settings.tool_permissions.tools.insert(
+                TerminalTool::NAME.into(),
+                agent_settings::ToolRules {
+                    default: Some(settings::ToolPermissionMode::Confirm),
+                    ..Default::default()
+                },
+            );
             settings.sandbox_permissions = agent_settings::SandboxPermissions::default();
             agent_settings::AgentSettings::override_global(settings, cx);
         });
@@ -5891,8 +5893,14 @@ mod internal_tests {
         let model = fake.model("fake");
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Confirm;
             settings.tool_permissions.tools.clear();
+            settings.tool_permissions.tools.insert(
+                DeletePathTool::NAME.into(),
+                agent_settings::ToolRules {
+                    default: Some(settings::ToolPermissionMode::Confirm),
+                    ..Default::default()
+                },
+            );
             agent_settings::AgentSettings::override_global(settings, cx);
         });
         thread.update(cx, |thread, cx| thread.set_model(model.clone(), cx));
@@ -6607,7 +6615,6 @@ mod internal_tests {
             .expect("test file should be written");
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
             settings.tool_permissions.tools.clear();
             agent_settings::AgentSettings::override_global(settings, cx);
             thread.update(cx, |thread, cx| thread.set_model(model.clone(), cx));

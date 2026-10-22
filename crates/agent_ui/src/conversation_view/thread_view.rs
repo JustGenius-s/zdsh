@@ -4221,9 +4221,9 @@ impl ThreadView {
         };
 
         let tooltip = match (settings_sandbox, thread_sandbox) {
-            // No sandbox at all because the user turned it off in settings: the
+            // No sandbox at all because the thread has full access: the
             // per-thread layer is moot, so don't show it.
-            (ThreadSandbox::Unsandboxed, _) => SandboxStatusTooltip::disabled_in_settings(),
+            (ThreadSandbox::Unsandboxed, _) => SandboxStatusTooltip::full_access(),
             // Sandboxed by settings, but disabled for this thread: show the
             // settings scope (greyed) for context above the disabled status.
             (ThreadSandbox::Sandboxed(settings_policy), ThreadSandbox::Unsandboxed) => {

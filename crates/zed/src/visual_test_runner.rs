@@ -2318,7 +2318,6 @@ fn run_tool_permissions_visual_tests(
 ) -> Result<TestResult> {
     use agent_settings::{AgentSettings, CompiledRegex, ToolPermissions, ToolRules};
     use collections::HashMap;
-    use settings::ToolPermissionMode;
     use zed_actions::OpenSettingsAt;
 
     // Set up tool permissions with "hi" as both always_deny and always_allow for terminal
@@ -2335,10 +2334,7 @@ fn run_tool_permissions_visual_tests(
             },
         );
         let mut settings = AgentSettings::get_global(cx).clone();
-        settings.tool_permissions = ToolPermissions {
-            default: ToolPermissionMode::Confirm,
-            tools,
-        };
+        settings.tool_permissions = ToolPermissions { tools };
         AgentSettings::override_global(settings, cx);
     });
 
@@ -2738,6 +2734,7 @@ fn run_multi_workspace_sidebar_visual_tests(
                             speed: None,
                             thinking_enabled: false,
                             thinking_effort: None,
+                            permissions: None,
                             ui_scroll_position: None,
                             draft_prompt: None,
                             sandboxed_terminal_temp_dir: None,

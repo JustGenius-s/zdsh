@@ -215,6 +215,10 @@ impl AgentTool for WriteFileTool {
         acp::ToolKind::Edit
     }
 
+    fn modifies_files() -> bool {
+        true
+    }
+
     fn initial_title(
         &self,
         input: Result<Self::Input, serde_json::Value>,
@@ -280,7 +284,7 @@ mod tests {
     use project::{Project, ProjectPath};
     use prompt_store::ProjectContext;
     use serde_json::json;
-    use settings::{Settings, SettingsStore};
+    use settings::SettingsStore;
     use std::{path::PathBuf, sync::Arc};
     use util::path;
     use util::rel_path::{RelPath, rel_path};
@@ -1117,11 +1121,6 @@ mod tests {
     async fn test_streaming_write_file_tool_registers_changed_buffers(cx: &mut TestAppContext) {
         let (write_tool, _project, action_log, _fs, _thread) =
             setup_test(cx, json!({"file.txt": "original content"})).await;
-        cx.update(|cx| {
-            let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
-            agent_settings::AgentSettings::override_global(settings, cx);
-        });
 
         let (event_stream, _rx) = ToolCallEventStream::test();
         let task = cx.update(|cx| {
@@ -1185,11 +1184,6 @@ mod tests {
     async fn test_streaming_reject_created_file_deletes_it(cx: &mut TestAppContext) {
         let (write_tool, _project, action_log, fs, _thread) =
             setup_test(cx, json!({"dir": {}})).await;
-        cx.update(|cx| {
-            let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.default = settings::ToolPermissionMode::Allow;
-            agent_settings::AgentSettings::override_global(settings, cx);
-        });
 
         // Create a new file via the streaming write file tool
         let (event_stream, _rx) = ToolCallEventStream::test();
