@@ -331,6 +331,10 @@ static ZED_WINDOW_POSITION: LazyLock<Option<Point<Pixels>>> = LazyLock::new(|| {
 });
 
 pub trait TerminalProvider {
+    fn quick_actions(&self, _cx: &mut App) -> Vec<(SharedString, Box<dyn Action>)> {
+        Vec::new()
+    }
+
     fn spawn(
         &self,
         task: SpawnInTerminal,
@@ -648,6 +652,14 @@ pub struct NewTerminal {
     #[serde(default)]
     pub local: bool,
 }
+
+actions!(
+    terminal,
+    [
+        /// Opens the terminal quick actions tab.
+        OpenTerminalQuickActions,
+    ]
+);
 
 /// Increases size of a currently focused dock by a given amount of pixels.
 #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]

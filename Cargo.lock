@@ -15780,6 +15780,7 @@ dependencies = [
  "dirs",
  "editor",
  "futures",
+ "gpui-kit",
  "gpui-pre",
  "itertools 0.14.0",
  "language",
@@ -15804,6 +15805,7 @@ dependencies = [
  "theme_settings",
  "ui",
  "util",
+ "uuid",
  "workspace",
  "zed_actions",
 ]

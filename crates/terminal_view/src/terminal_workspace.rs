@@ -378,6 +378,10 @@ async fn wait_for_terminals_tasks(
 struct TerminalProvider(Entity<TerminalWorkspace>);
 
 impl workspace::TerminalProvider for TerminalProvider {
+    fn quick_actions(&self, cx: &mut App) -> Vec<(gpui::SharedString, Box<dyn gpui::Action>)> {
+        crate::quick_actions::menu_actions(cx)
+    }
+
     fn spawn(
         &self,
         task: SpawnInTerminal,

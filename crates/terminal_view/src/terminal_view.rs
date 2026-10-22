@@ -1,4 +1,5 @@
 mod command_blocks;
+mod quick_actions;
 mod terminal_db;
 pub mod terminal_element;
 mod terminal_path_like_target;
@@ -146,6 +147,7 @@ pub struct RenameTerminal;
 
 pub fn init(cx: &mut App) {
     terminal_workspace::init(cx);
+    quick_actions::init(cx);
 
     register_serializable_item::<TerminalView>(cx);
 

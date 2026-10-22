@@ -98,6 +98,8 @@ Use `terminal::Focus` to focus the most recent terminal, creating one if necessa
 
 Use `workspace::NewTerminal` to create additional terminal tabs. Move or split them with the same tab and pane controls used for files.
 
+The quick actions button beside **Terminal** in the right sidebar lists saved command sequences. Choose **Manage quick actions…** to open their management tab, or use `terminal::OpenTerminalQuickActions`. Add, edit, and delete actions there; saved actions are shared across workspaces in the current user data directory. Each command targets the current terminal or a new terminal using its working directory. The current target starts as the most recently active terminal and follows any terminal created by an earlier step; when no terminal is open, one is created. Commands require shell integration and wait for the target shell to be ready. **Stop remaining steps** cancels queued steps without interrupting commands already submitted. Switching tabs preserves an editing draft; closing the management tab discards unsaved edits.
+
 Terminal tabs restore through the workspace layout. Existing terminal-panel sessions are imported as central tabs, preserving working directories and custom titles; panel splits become tabs. Running processes and command output are not restored.
 
 The terminal panel and its settings controls are removed. Legacy `terminal.button`, `dock`, `starts_open`, `flexible`, `default_width`, `default_height`, and `show_count_badge` values are accepted but have no effect. Tasks use `reveal_target: "center"`; legacy `"dock"` values are accepted as an alias. `reveal: "never"` keeps the current tab active, while `"no_focus"` displays the terminal without taking keyboard focus.
