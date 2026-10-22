@@ -28,12 +28,12 @@ use gpui::{
 };
 use gpui_kit::{
     assets::IconName as KitIconName,
-    base::{POPUP_PRIORITY, Selectable as _},
+    base::{ElementExt as _, POPUP_PRIORITY, Selectable as _, Tab, Tabs},
     component::{
-        Icon as KitIcon, Sizable as _, Size as KitSize,
+        Icon as KitIcon, Sizable as _,
         button::{Button, ButtonVariants as _},
         menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
-        tab::{Tab, TabBar},
+        tab::Tab as KitTab,
     },
 };
 use itertools::Itertools;
@@ -65,16 +65,6 @@ use util::{
     serde::default_true, truncate_and_remove_front,
 };
 
-/// Only macOS's title bar, which the center's tab bar shares, is tall enough for large segmented
-/// tabs, whose selected tab leaves more room above and below its label.
-const SEGMENTED_TAB_SIZE: KitSize = if cfg!(target_os = "macos") {
-    KitSize::Large
-} else {
-    KitSize::Medium
-};
-
-/// The height of GPUI Kit's segmented tabs at `SEGMENTED_TAB_SIZE`, which empty tab bar space
-/// matches so it stays a drop target of the same size.
 const SEGMENTED_TAB_HEIGHT: Pixels = if cfg!(target_os = "macos") {
     px(36.)
 } else {
@@ -464,6 +454,9 @@ pub struct Pane {
     use_max_tabs: bool,
     _subscriptions: Vec<Subscription>,
     tab_bar_scroll_handle: ScrollHandle,
+    pinned_tab_bar_scroll_handle: ScrollHandle,
+    tab_bar_overflow: bool,
+    pinned_tab_bar_overflow: bool,
     tab_context_menu: Option<(Entity<PopupMenu>, Point<Pixels>, Subscription)>,
     /// This is set to true if a user scroll has occurred more recently than a system scroll
     /// We want to suppress certain system scrolls when the user has intentionally scrolled
@@ -631,6 +624,9 @@ impl Pane {
             }))),
             toolbar: cx.new(|_| Toolbar::new()),
             tab_bar_scroll_handle: ScrollHandle::new(),
+            pinned_tab_bar_scroll_handle: ScrollHandle::new(),
+            tab_bar_overflow: false,
+            pinned_tab_bar_overflow: false,
             tab_context_menu: None,
             suppress_scroll: false,
             drag_split_direction: None,
@@ -1557,7 +1553,9 @@ impl Pane {
     }
 
     fn update_active_tab(&mut self, index: usize) {
-        if !self.is_tab_pinned(index) {
+        if self.is_tab_pinned(index) {
+            self.pinned_tab_bar_scroll_handle.scroll_to_item(index);
+        } else {
             self.suppress_scroll = false;
             self.tab_bar_scroll_handle
                 .scroll_to_item(index - self.pinned_tab_count);
@@ -2857,7 +2855,7 @@ impl Pane {
         };
 
         let knockout_item_color = if is_active {
-            cx.theme().colors().tab_active_background
+            Self::active_tab_background(cx)
         } else {
             cx.theme().colors().tab_bar_background
         };
@@ -3007,22 +3005,42 @@ impl Pane {
         };
         let has_prefix = indicator.is_some() || leading_icon.is_some() || leading_button.is_some();
 
-        let tab = Tab::new()
+        let tab = Tab::new(("pane-tab", ix))
+            .selected(is_active)
+            .relative()
+            .flex_none()
+            .flex_nowrap()
+            .max_w(MAX_TAB_WIDTH)
+            .h(SEGMENTED_TAB_HEIGHT - px(8.))
+            .gap_1()
+            .rounded(px(6.))
+            .overflow_hidden()
+            .map(|tab| {
+                if cfg!(target_os = "macos") {
+                    tab.text_base()
+                } else {
+                    tab.text_sm()
+                }
+            })
+            .text_color(cx.theme().colors().text_muted)
+            .when(is_active, |tab| {
+                tab.bg(Self::active_tab_background(cx))
+                    .text_color(cx.theme().colors().text)
+            })
+            .hover(|tab| tab.text_color(cx.theme().colors().text))
             .debug_selector(|| format!("TAB-{ix}"))
             // Close buttons shown on hover reveal themselves for the hovered tab.
             .group("")
             .when(has_prefix, |tab| {
-                tab.prefix(
+                tab.child(
                     h_flex()
+                        .flex_none()
                         .pl_2()
                         .gap_1()
                         .children(leading_button)
                         .children(indicator)
                         .children(leading_icon),
                 )
-            })
-            .when_some(trailing_button, |tab, button| {
-                tab.suffix(h_flex().pr_1().child(button))
             })
             .on_click(cx.listener({
                 let item_handle = item.boxed_clone();
@@ -3106,6 +3124,16 @@ impl Pane {
                 h_flex()
                     .id(("pane-tab-content", ix))
                     .min_w_0()
+                    .flex_auto()
+                    .justify_center()
+                    .px(if cfg!(target_os = "macos") {
+                        px(16.)
+                    } else {
+                        px(12.)
+                    })
+                    .line_height(gpui::relative(1.25))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
                     .gap_1()
                     .child(label)
                     .map(|this| match tab_tooltip_content {
@@ -3127,7 +3155,10 @@ impl Pane {
                     .when(capability == Capability::Read && has_file_icon, |this| {
                         this.child(read_only_toggle(true))
                     }),
-            );
+            )
+            .when_some(trailing_button, |tab, button| {
+                tab.child(h_flex().flex_none().pr_1().child(button))
+            });
 
         let single_entry_to_resolve = (self.items[ix].buffer_kind(cx) == ItemBufferKind::Singleton)
             .then(|| self.items[ix].project_entry_ids(cx).get(0).copied())
@@ -3692,8 +3723,6 @@ impl Pane {
         (start_children, end_children)
     }
 
-    /// The tabs sit in GPUI Kit's segmented bars, laid out in a row with the bar's buttons.
-    /// The row is as tall as the title bar, which shows the center's tab bar.
     fn render_tab_bar_row(
         start_children: Vec<AnyElement>,
         tab_bars: impl IntoIterator<Item = AnyElement>,
@@ -3703,6 +3732,8 @@ impl Pane {
     ) -> Div {
         h_flex()
             .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .h(ui::utils::platform_title_bar_height(window))
             .px_1()
             .gap_1()
@@ -3716,13 +3747,137 @@ impl Pane {
             })
     }
 
-    fn segmented_tab_bar(id: &'static str, selected_index: Option<usize>) -> TabBar {
-        TabBar::new(id)
-            .segmented()
-            .with_size(SEGMENTED_TAB_SIZE)
-            .max_width(MAX_TAB_WIDTH)
-            .when_some(selected_index, |tab_bar, selected_index| {
-                tab_bar.selected_index(selected_index)
+    fn active_tab_background(cx: &App) -> gpui::Hsla {
+        if cx.theme().appearance().is_light() {
+            cx.theme().colors().tab_active_background
+        } else {
+            cx.theme()
+                .colors()
+                .tab_bar_background
+                .blend(gpui::white().opacity(0.14))
+        }
+    }
+
+    fn segmented_tab_bar(id: &'static str) -> Tabs {
+        // Kit's segmented component uses the page background for its indicator;
+        // the base tabs let this bar provide a contrasting selection in dark themes.
+        Tabs::new(id)
+            .flex()
+            .items_center()
+            .h(SEGMENTED_TAB_HEIGHT)
+            .px_1()
+            .gap(px(2.))
+            // Let GPUI map vertical mouse-wheel deltas onto this single scroll axis.
+            .overflow_x_scroll()
+    }
+
+    fn render_tab_strip(
+        &self,
+        id: &'static str,
+        tabs: Vec<Tab>,
+        pinned: bool,
+        drop_target: impl IntoElement,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let has_tabs = !tabs.is_empty();
+        let (scroll_handle, overflow) = if pinned {
+            (
+                &self.pinned_tab_bar_scroll_handle,
+                self.pinned_tab_bar_overflow,
+            )
+        } else {
+            (&self.tab_bar_scroll_handle, self.tab_bar_overflow)
+        };
+        let pane = cx.entity().downgrade();
+        let scroll_handle = scroll_handle.clone();
+        h_flex()
+            .id(id)
+            .relative()
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                Self::segmented_tab_bar("tabs")
+                    .flex_1()
+                    .min_w_0()
+                    .track_scroll(&scroll_handle)
+                    .children(tabs)
+                    .child(drop_target),
+            )
+            .when(overflow, |strip| {
+                strip.child(self.render_tab_overflow_menu(pinned, cx))
+            })
+            .on_prepaint(move |bounds, _, cx| {
+                // Compare against the whole strip so showing the menu cannot keep
+                // itself visible by reducing the scroll viewport's width.
+                let content_width =
+                    scroll_handle.bounds().size.width + scroll_handle.max_offset().x;
+                let overflow = has_tabs && content_width > bounds.size.width + px(1.);
+                if let Some(pane) = pane.upgrade() {
+                    let previous = if pinned {
+                        pane.read(cx).pinned_tab_bar_overflow
+                    } else {
+                        pane.read(cx).tab_bar_overflow
+                    };
+                    if previous != overflow {
+                        cx.defer(move |cx| {
+                            pane.update(cx, |pane, cx| {
+                                if pinned {
+                                    pane.pinned_tab_bar_overflow = overflow;
+                                } else {
+                                    pane.tab_bar_overflow = overflow;
+                                }
+                                pane.update_active_tab(pane.active_item_index);
+                                cx.notify();
+                            });
+                        });
+                    }
+                }
+            })
+    }
+
+    fn render_tab_overflow_menu(&self, pinned: bool, cx: &Context<Self>) -> impl IntoElement {
+        let pane = cx.entity().downgrade();
+        Button::new("tab-overflow-menu")
+            .ghost()
+            .small()
+            .flex_none()
+            .icon(KitIconName::ChevronDown)
+            .debug_selector(|| "tab-overflow-menu".into())
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, window, cx| {
+                let Some(pane) = pane.upgrade() else {
+                    return menu;
+                };
+                let state = pane.read(cx);
+                let entries = state
+                    .items
+                    .iter()
+                    .zip(tab_details(&state.items, window, cx))
+                    .enumerate()
+                    .filter(|(index, _)| state.is_tab_pinned(*index) == pinned)
+                    .map(|(index, (item, detail))| {
+                        (
+                            item.item_id(),
+                            item.tab_content_text(detail, cx),
+                            index == state.active_item_index,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                menu = menu.scrollable(true);
+                for (item_id, label, active) in entries {
+                    let pane = pane.downgrade();
+                    menu = menu.item(PopupMenuItem::new(label).checked(active).on_click(
+                        move |_, window, cx| {
+                            if let Some(pane) = pane.upgrade() {
+                                pane.update(cx, |pane, cx| {
+                                    if let Some(index) = pane.index_for_item_id(item_id) {
+                                        pane.activate_item(index, true, true, window, cx);
+                                    }
+                                });
+                            }
+                        },
+                    ));
+                }
+                menu
             })
     }
 
@@ -3731,23 +3886,16 @@ impl Pane {
         unpinned_tabs: Vec<Tab>,
         tab_count: usize,
         cx: &mut Context<Pane>,
-    ) -> TabBar {
-        let selected_index = self
-            .active_item_index
-            .checked_sub(self.pinned_tab_count)
-            .filter(|index| *index < unpinned_tabs.len());
-        Self::segmented_tab_bar("tab_bar", selected_index)
-            .flex_1()
-            .min_w_0()
-            .track_scroll(&self.tab_bar_scroll_handle)
-            .children(unpinned_tabs)
-            .last_empty_space(self.render_tab_bar_drop_target(tab_count, cx))
-            // GPUI Kit only lays out the trailing drop target when the bar has a suffix.
-            .suffix(div())
-    }
-
-    fn pinned_selected_index(&self) -> Option<usize> {
-        (self.active_item_index < self.pinned_tab_count).then_some(self.active_item_index)
+    ) -> gpui::Stateful<Div> {
+        self.render_tab_strip(
+            "tab_bar",
+            unpinned_tabs,
+            false,
+            self.render_tab_bar_drop_target(tab_count, cx)
+                .into_any_element(),
+            cx,
+        )
+        .flex_1()
     }
 
     fn render_single_row_tab_bar(
@@ -3764,9 +3912,9 @@ impl Pane {
             self.render_tab_bar_edges(navigate_backward, navigate_forward, window, cx);
         // Pinned tabs get a bar of their own, so they stay put while the unpinned ones scroll.
         let pinned_tab_bar = (!pinned_tabs.is_empty()).then(|| {
-            Self::segmented_tab_bar("pinned_tabs", self.pinned_selected_index())
-                .flex_none()
-                .children(pinned_tabs)
+            self.render_tab_strip("pinned_tabs", pinned_tabs, true, div(), cx)
+                .flex_shrink_1()
+                .max_w(gpui::relative(0.5))
                 .into_any_element()
         });
         let tab_bars = pinned_tab_bar.into_iter().chain([self
@@ -3788,13 +3936,16 @@ impl Pane {
     ) -> AnyElement {
         let (start_children, end_children) =
             self.render_tab_bar_edges(navigate_backward, navigate_forward, window, cx);
-        let pinned_tab_bar =
-            Self::segmented_tab_bar("pinned_tab_bar", self.pinned_selected_index())
-                .flex_1()
-                .min_w_0()
-                .children(pinned_tabs)
-                .last_empty_space(self.render_pinned_tab_bar_drop_target(cx))
-                .suffix(div());
+        let pinned_tab_bar = self
+            .render_tab_strip(
+                "pinned_tab_bar",
+                pinned_tabs,
+                true,
+                self.render_pinned_tab_bar_drop_target(cx)
+                    .into_any_element(),
+                cx,
+            )
+            .flex_1();
         v_flex()
             .w_full()
             .flex_none()
@@ -5209,7 +5360,7 @@ impl Render for DraggedTab {
             self.pane
                 .read(cx)
                 .tab_icon_element(self.item.as_ref(), self.is_active, window, cx);
-        Tab::new()
+        KitTab::new()
             .selected(self.is_active)
             .font(ui_font)
             .child(h_flex().gap_1().children(icon).child(label))

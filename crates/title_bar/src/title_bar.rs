@@ -221,6 +221,7 @@ impl Render for TitleBar {
 
         children.push(
             h_flex()
+                .flex_none()
                 .pr_1()
                 .gap_1()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -297,6 +298,7 @@ impl TitleBar {
             div()
                 .flex_1()
                 .min_w_0()
+                .overflow_hidden()
                 .h_full()
                 // Tabs are dragged and double-clicked as tabs, not as the title bar.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

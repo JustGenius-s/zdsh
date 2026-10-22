@@ -231,7 +231,12 @@ impl Render for PlatformTitleBar {
                     .items_center()
                     .justify_between()
                     .overflow_x_hidden()
-                    .w_full()
+                    // Kit's title-bar content wrapper has an automatic minimum width.
+                    // A zero intrinsic width prevents long tab lists from sizing that
+                    // wrapper beyond the window before flex distributes the free space.
+                    .w_0()
+                    .min_w_0()
+                    .flex_1()
                     .h_full()
                     .children(children),
             );

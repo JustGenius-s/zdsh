@@ -32,8 +32,21 @@ use feature_flags::{
 use gpui::{
     Action as _, Animation, AnimationExt as _, AnyElement, App, ClickEvent, Context, DismissEvent,
     Entity, EntityId, FocusHandle, Focusable, KeyContext, ListState, Modifiers, MouseButton,
-    Pixels, Render, SharedString, Task, TaskExt, WeakEntity, Window, anchored, deferred,
-    linear_color_stop, linear_gradient, list, prelude::*, pulsating_between, px,
+    Pixels, Render, SharedString, Task, TaskExt, WeakEntity, Window, anchored, deferred, list,
+    prelude::*, pulsating_between, px, rems,
+};
+use gpui_kit::{
+    base::{Scrollbar, ScrollbarAxis, ScrollbarMode, StyledExt as _},
+    component::{
+        Sizable as _,
+        button::{Button as KitButton, ButtonVariants as _},
+        h_flex,
+        label::Label as KitLabel,
+        menu::{DropdownMenu as _, PopupMenuItem},
+        spinner::Spinner,
+        tooltip::Tooltip as KitTooltip,
+        v_flex,
+    },
 };
 use itertools::Itertools;
 use language_model::LanguageModelRegistry;
@@ -58,10 +71,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use theme::ActiveTheme;
 use ui::{
-    AgentThreadStatus, CommonAnimationExt, ContextMenu, ContextMenuEntry, HighlightedLabel,
-    KeyBinding, PopoverMenu, PopoverMenuHandle, ProjectEmptyState, ScrollAxes, Scrollbars,
-    ThreadItemWorktreeInfo, TintColor, Tooltip, WithScrollbar, WorktreeKind, prelude::*,
-    render_modifiers, right_click_menu,
+    AgentThreadStatus, ContextMenu, ContextMenuEntry, HighlightedLabel, PopoverMenu,
+    PopoverMenuHandle, ThreadItemWorktreeInfo, WorktreeKind, prelude::*, render_modifiers,
+    right_click_menu,
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 use util::ResultExt as _;
@@ -80,7 +92,9 @@ use zed_actions::{CreateWorktree, NewWorktreeBranchTarget, OpenRecent};
 use zed_actions::agents_sidebar::{FocusSidebarFilter, ToggleThreadSwitcher};
 use zed_actions::unified_search::{self, SearchTab};
 
-use crate::sidebar_row::{GROUP_GAP, LIST_INSET, SidebarRow, StatusDot};
+use crate::sidebar_row::{
+    GROUP_GAP, MenuTrigger, SidebarRow, StatusDot, sidebar_icon, sidebar_icon_button,
+};
 use crate::thread_switcher::{
     ThreadSwitcher, ThreadSwitcherEntry, ThreadSwitcherEvent, ThreadSwitcherSelection,
     ThreadSwitcherTerminalEntry, ThreadSwitcherThreadEntry,
@@ -114,6 +128,7 @@ enum SerializedSidebarView {
 
 #[derive(Clone, Copy)]
 enum NewEntryTarget {
+    Agent,
     LastCreatedKind,
     Terminal,
 }
@@ -1315,6 +1330,7 @@ impl Sidebar {
         cx.spawn_in(window, async move |this, cx| {
             let workspace = task.await?;
             this.update_in(cx, |this, window, cx| match target {
+                NewEntryTarget::Agent => this.create_new_thread(&workspace, window, cx),
                 NewEntryTarget::LastCreatedKind => this.create_new_entry(&workspace, window, cx),
                 NewEntryTarget::Terminal => this.create_new_terminal(&workspace, window, cx),
             })?;
@@ -2149,6 +2165,7 @@ impl Sidebar {
         &self,
         ix: usize,
         host: Option<&RemoteConnectionOptions>,
+        cx: &App,
     ) -> Option<AnyElement> {
         let remote_icon_per_type = match host? {
             RemoteConnectionOptions::Wsl(_) => IconName::Linux,
@@ -2160,11 +2177,11 @@ impl Sidebar {
             div()
                 .id(format!("remote-project-icon-{}", ix))
                 .child(
-                    Icon::new(remote_icon_per_type)
-                        .size(IconSize::XSmall)
-                        .color(Color::Muted),
+                    sidebar_icon(remote_icon_per_type)
+                        .size(rems(0.875))
+                        .text_color(cx.theme().colors().text_muted),
                 )
-                .tooltip(Tooltip::text("Remote Project"))
+                .tooltip(|window, cx| KitTooltip::new("Remote Project").build(window, cx))
                 .into_any_element(),
         )
     }
@@ -2201,8 +2218,12 @@ impl Sidebar {
         let key_for_focus = key.clone();
 
         let label = if highlight_positions.is_empty() {
-            Label::new(label.clone())
-                .when(!is_active, |this| this.color(Color::Muted))
+            KitLabel::new(label.clone())
+                .font_semibold()
+                .text_sm()
+                .when(!is_active, |this| {
+                    this.text_color(cx.theme().colors().text_muted)
+                })
                 .truncate()
                 .into_any_element()
         } else {
@@ -2217,17 +2238,12 @@ impl Sidebar {
             .gap_1()
             .child(label)
             .when_some(
-                self.render_remote_project_icon(ix, host.as_ref()),
+                self.render_remote_project_icon(ix, host.as_ref(), cx),
                 |this, icon| this.child(icon),
             )
             .when(is_collapsed, |this| {
                 this.when(has_running_threads, |this| {
-                    this.child(
-                        Icon::new(IconName::LoadCircle)
-                            .size(IconSize::XSmall)
-                            .color(Color::Muted)
-                            .with_rotate_animation(2),
-                    )
+                    this.child(Spinner::new().small().color(cx.theme().colors().text_muted))
                 })
                 .when(waiting_thread_count > 0, |this| {
                     let tooltip_text = if waiting_thread_count == 1 {
@@ -2239,11 +2255,13 @@ impl Sidebar {
                         div()
                             .id(format!("{id_prefix}waiting-indicator-{ix}"))
                             .child(
-                                Icon::new(IconName::Warning)
-                                    .size(IconSize::XSmall)
-                                    .color(Color::Warning),
+                                sidebar_icon(IconName::Warning)
+                                    .size(rems(0.875))
+                                    .text_color(cx.theme().status().warning),
                             )
-                            .tooltip(Tooltip::text(tooltip_text)),
+                            .tooltip(move |window, cx| {
+                                KitTooltip::new(tooltip_text.clone()).build(window, cx)
+                            }),
                     )
                 })
                 .when(
@@ -2252,12 +2270,8 @@ impl Sidebar {
                 )
             });
 
-        let folder = Icon::new(IconName::Folder)
-            .size(IconSize::Small)
-            .color(Color::Muted);
-        let disclosure = Icon::new(disclosure_icon)
-            .size(IconSize::Small)
-            .color(Color::Muted);
+        let folder = sidebar_icon(IconName::Folder).text_color(cx.theme().colors().text_muted);
+        let disclosure = sidebar_icon(disclosure_icon).text_color(cx.theme().colors().text_muted);
         let row = if is_focused {
             SidebarRow::new(id, disclosure, title)
         } else {
@@ -2283,7 +2297,7 @@ impl Sidebar {
                     .focused(is_focused)
                     .end(
                         h_flex()
-                            .gap_px()
+                            .gap_1()
                             .child(self.render_new_thread_button(
                                 ix,
                                 id_prefix,
@@ -2326,7 +2340,9 @@ impl Sidebar {
                 .child(SidebarRow::new(
                     SharedString::from(format!("{id_prefix}no-threads-{ix}")),
                     StatusDot::Draft,
-                    Label::new("No threads yet").color(Color::Placeholder),
+                    KitLabel::new("No threads yet")
+                        .text_sm()
+                        .text_color(cx.theme().colors().text_placeholder),
                 ))
                 .into_any_element()
         } else {
@@ -2342,8 +2358,6 @@ impl Sidebar {
         group_name: &SharedString,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let focus_handle = self.focus_handle.clone();
-
         let menu_handle = self
             .project_header_new_thread_menu_handles
             .get(&ix)
@@ -2351,18 +2365,11 @@ impl Sidebar {
             .unwrap_or_default();
         let is_menu_open = menu_handle.is_deployed();
 
-        let button = IconButton::new(
+        let button = sidebar_icon_button(
             SharedString::from(format!("{id_prefix}project-header-new-thread-{ix}")),
             IconName::Plus,
         )
-        .when(!is_menu_open, |button| {
-            let color = cx.theme().colors();
-            button
-                .hover_background(color.element_background)
-                .active_background(color.element_active)
-        })
-        .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-        .icon_size(IconSize::Small)
+        .tooltip_with_action("New Thread", &NewThread, Some("Workspace"))
         .when(!is_menu_open, |this| this.visible_on_hover(group_name));
 
         let open_workspaces = self
@@ -2374,10 +2381,8 @@ impl Sidebar {
         if open_workspaces.is_empty() {
             let key = key.clone();
             return button
-                .tooltip(move |_, cx| {
-                    Tooltip::for_action_in("Start New Agent Thread", &NewThread, &focus_handle, cx)
-                })
                 .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
                     this.set_group_expanded(&key, true, cx);
                     this.selection = None;
                     if let Some(workspace) = this.workspace_for_group(&key, cx) {
@@ -2401,9 +2406,7 @@ impl Sidebar {
             "{id_prefix}project-header-new-thread-menu-{ix}"
         )))
         .with_handle(menu_handle)
-        .trigger_with_tooltip(button, move |_, cx| {
-            Tooltip::for_action_in("Start New Agent Thread", &NewThread, &focus_handle, cx)
-        })
+        .trigger(MenuTrigger(button))
         .anchor(gpui::Anchor::TopLeft)
         .on_open(Rc::new({
             let this = this.clone();
@@ -2663,18 +2666,11 @@ impl Sidebar {
 
         PopoverMenu::new(format!("{id_prefix}project-header-menu-{ix}"))
             .with_handle(menu_handle)
-            .trigger(
-                IconButton::new(trigger_id, IconName::Ellipsis)
-                    .when(!is_menu_open, |button| {
-                        let color = cx.theme().colors();
-                        button
-                            .hover_background(color.element_background)
-                            .active_background(color.element_active)
-                    })
-                    .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                    .icon_size(IconSize::Small)
-                    .when(!is_menu_open, |el| el.visible_on_hover(group_name)),
-            )
+            .trigger(MenuTrigger(
+                sidebar_icon_button(trigger_id, IconName::Ellipsis)
+                    .tooltip("Project Actions")
+                    .when(!is_menu_open, |button| button.visible_on_hover(group_name)),
+            ))
             .on_open(Rc::new({
                 let this = this.clone();
                 move |_window, cx| {
@@ -2878,13 +2874,12 @@ impl Sidebar {
                                                 let close_workspace = close_workspace.clone();
 
                                                 this.child(
-                                                    IconButton::new(
+                                                    sidebar_icon_button(
                                                         ("close-workspace", workspace_index),
                                                         IconName::Close,
                                                     )
-                                                    .icon_size(IconSize::Small)
                                                     .visible_on_hover(&row_group_name)
-                                                    .tooltip(Tooltip::text("Close Worktree"))
+                                                    .tooltip("Close Worktree")
                                                     .on_click(move |_, window, cx| {
                                                         cx.stop_propagation();
                                                         window.prevent_default();
@@ -6039,14 +6034,11 @@ impl Sidebar {
 
         let thread_id_for_actions = thread.metadata.thread_id;
         let session_id_for_delete = thread.metadata.session_id.clone();
-        let focus_handle = self.focus_handle.clone();
         let rename_title_editor = is_renaming.then(|| self.render_rename_title_editor(cx));
 
         let id = SharedString::from(format!("thread-entry-{}", ix));
 
         let color = cx.theme().colors();
-        let button_hover_bg = color.element_background;
-        let button_active_bg = color.element_active;
 
         let timestamp =
             (!is_empty_draft).then(|| relative_time(Self::thread_display_time(&thread.metadata)));
@@ -6084,19 +6076,19 @@ impl Sidebar {
         };
         let title_label = match rename_title_editor {
             Some(title_editor) => title_editor,
-            None if title_generating => Label::new(title.clone())
-                .color(Color::Muted)
+            None if title_generating => KitLabel::new(title.clone())
+                .text_color(color.text_muted)
                 .truncate()
                 .with_animation(
                     "generating-title",
                     Animation::new(Duration::from_secs(2))
                         .repeat()
                         .with_easing(pulsating_between(0.4, 0.8)),
-                    |label, delta| label.alpha(delta),
+                    |label, delta| label.opacity(delta),
                 )
                 .into_any_element(),
-            None if thread.highlight_positions.is_empty() => Label::new(title.clone())
-                .color(title_color)
+            None if thread.highlight_positions.is_empty() => KitLabel::new(title.clone())
+                .text_color(color.text)
                 .truncate()
                 .into_any_element(),
             None => HighlightedLabel::new(title.clone(), thread.highlight_positions.to_vec())
@@ -6104,40 +6096,33 @@ impl Sidebar {
                 .truncate()
                 .into_any_element(),
         };
-        let title_row = h_flex()
+        let title_row = v_flex()
+            .w_full()
             .min_w_0()
-            .gap_1p5()
-            .child(div().min_w_0().child(title_label))
+            .gap_0p5()
+            .child(div().min_w_0().w_full().child(title_label))
             .when_some(worktree_label, |this, worktree_label| {
                 this.child(
-                    div().min_w_0().child(
-                        Label::new(worktree_label)
-                            .color(Color::Muted)
-                            .alpha(0.6)
-                            .truncate(),
-                    ),
+                    h_flex()
+                        .min_w_0()
+                        .gap_1()
+                        .text_color(color.text_muted)
+                        .child(sidebar_icon(IconName::GitBranch).size(rems(0.75)))
+                        .child(KitLabel::new(worktree_label).text_xs().truncate()),
                 )
             });
 
         let actions = (is_hovered && !is_renaming).then(|| {
-            let rename_button = IconButton::new(("rename-thread", ix), IconName::Pencil)
-                .hover_background(button_hover_bg)
-                .active_background(button_active_bg)
-                .icon_size(IconSize::Small)
-                .tooltip({
-                    let focus_handle = focus_handle.clone();
-                    move |_window, cx| {
-                        Tooltip::for_action_in(
-                            "Rename Thread",
-                            &RenameSelectedThread,
-                            &focus_handle,
-                            cx,
-                        )
-                    }
-                })
+            let rename_button = sidebar_icon_button(("rename-thread", ix), IconName::Pencil)
+                .tooltip_with_action(
+                    "Rename Thread",
+                    &RenameSelectedThread,
+                    Some("ThreadsSidebar"),
+                )
                 .on_click({
                     let title = title.clone();
                     cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
                         this.start_renaming_entry(
                             ix,
                             RenameTarget::Thread(thread_id_for_actions),
@@ -6150,12 +6135,11 @@ impl Sidebar {
 
             let contextual_action: Option<AnyElement> = if is_running {
                 Some(
-                    IconButton::new("stop-thread", IconName::Stop)
-                        .icon_size(IconSize::Small)
-                        .icon_color(Color::Error)
-                        .style(ButtonStyle::Tinted(TintColor::Error))
-                        .tooltip(Tooltip::text("Stop Generation"))
+                    sidebar_icon_button("stop-thread", IconName::Stop)
+                        .text_color(cx.theme().status().error)
+                        .tooltip("Stop Generation")
                         .on_click(cx.listener(move |this, _, _window, cx| {
+                            cx.stop_propagation();
                             this.stop_thread(&thread_id_for_actions, cx);
                         }))
                         .into_any_element(),
@@ -6164,14 +6148,12 @@ impl Sidebar {
                 match thread.draft {
                     Some(DraftKind::Empty) => None,
                     Some(DraftKind::WithContent) => Some(
-                        IconButton::new("discard_thread", IconName::Close)
-                            .hover_background(button_hover_bg)
-                            .active_background(button_active_bg)
-                            .icon_size(IconSize::Small)
-                            .tooltip(Tooltip::text("Discard Draft"))
+                        sidebar_icon_button("discard_thread", IconName::Close)
+                            .tooltip("Discard Draft")
                             .on_click({
                                 let thread_workspace = thread_workspace.clone();
                                 cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
                                     this.remove_draft(
                                         thread_id_for_actions,
                                         &thread_workspace,
@@ -6183,24 +6165,16 @@ impl Sidebar {
                             .into_any_element(),
                     ),
                     None => Some(
-                        IconButton::new("archive-thread", IconName::Archive)
-                            .hover_background(button_hover_bg)
-                            .active_background(button_active_bg)
-                            .icon_size(IconSize::Small)
-                            .tooltip({
-                                let focus_handle = focus_handle.clone();
-                                move |_window, cx| {
-                                    Tooltip::for_action_in(
-                                        "Archive Thread",
-                                        &ArchiveSelectedThread,
-                                        &focus_handle,
-                                        cx,
-                                    )
-                                }
-                            })
+                        sidebar_icon_button("archive-thread", IconName::Archive)
+                            .tooltip_with_action(
+                                "Archive Thread",
+                                &ArchiveSelectedThread,
+                                Some("ThreadsSidebar"),
+                            )
                             .on_click({
                                 let session_id = session_id_for_delete.clone();
                                 cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
                                     if let Some(ref session_id) = session_id {
                                         this.archive_thread(session_id, window, cx);
                                     }
@@ -6221,26 +6195,22 @@ impl Sidebar {
         // Hovering swaps the time for the actions.
         let end = actions.or_else(|| {
             timestamp.map(|timestamp| {
-                Label::new(timestamp)
-                    .color(Color::Placeholder)
+                KitLabel::new(timestamp)
+                    .text_xs()
+                    .text_color(color.text_placeholder)
                     .into_any_element()
             })
         });
 
         let status_tooltip = match thread.status {
-            AgentThreadStatus::Error => {
-                Some((IconName::Close, Color::Error, "Thread has an Error"))
-            }
-            AgentThreadStatus::WaitingForConfirmation => Some((
-                IconName::Warning,
-                Color::Warning,
-                "Waiting for Confirmation",
-            )),
+            AgentThreadStatus::Error => Some("Thread has an Error"),
+            AgentThreadStatus::WaitingForConfirmation => Some("Waiting for Confirmation"),
             AgentThreadStatus::Running | AgentThreadStatus::Completed => None,
         };
 
         let thread_item = SidebarRow::new(id, status_dot, title_row)
-            .when_some(end, |row, end| row.end(end))
+            .nested()
+            .end(h_flex().w(rems(3.5)).justify_end().children(end))
             .selected(is_selected)
             .focused(is_focused)
             .on_hover(cx.listener(move |this, is_hovered: &bool, _window, cx| {
@@ -6251,18 +6221,13 @@ impl Sidebar {
                 }
                 cx.notify();
             }))
-            .when_some(status_tooltip, |row, (icon, color, text)| {
-                row.tooltip(Tooltip::element(move |_, _| {
-                    h_flex()
-                        .gap_1()
-                        .child(Icon::new(icon).size(IconSize::Small).color(color))
-                        .child(Label::new(text))
-                        .into_any_element()
-                }))
+            .when_some(status_tooltip, |row, text| {
+                row.tooltip(move |window, cx| KitTooltip::new(text).build(window, cx))
             })
             .on_click({
                 let thread_workspace = thread_workspace.clone();
                 cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
                     this.selection = None;
                     match &thread_workspace {
                         ThreadEntryWorkspace::Open(workspace) => {
@@ -6425,16 +6390,13 @@ impl Sidebar {
         let id = ElementId::from(format!("terminal-{}", terminal.metadata.terminal_id));
         let timestamp = relative_time(terminal.metadata.created_at);
         let is_hovered = self.hovered_thread_index == Some(ix);
-        let color = cx.theme().colors();
-        let button_hover_bg = color.element_background;
-        let button_active_bg = color.element_active;
         let metadata = terminal.metadata.clone();
         let workspace = terminal.workspace.clone();
-        let focus_handle = self.focus_handle.clone();
         let is_renaming =
             self.rename_target == Some(RenameTarget::Terminal(terminal.metadata.terminal_id));
         let rename_title_editor = is_renaming.then(|| self.render_rename_title_editor(cx));
 
+        let color = cx.theme().colors();
         let display_title = terminal.metadata.display_title();
         let (icon_char, title, highlight_positions) =
             match split_leading_icon_char(&display_title, &terminal.highlight_positions) {
@@ -6445,14 +6407,13 @@ impl Sidebar {
         let leading = if terminal.has_notification {
             StatusDot::Unread.into_any_element()
         } else if let Some(icon_char) = icon_char {
-            Label::new(icon_char)
-                .size(LabelSize::Small)
-                .color(Color::Muted)
+            KitLabel::new(icon_char)
+                .text_sm()
+                .text_color(color.text_muted)
                 .into_any_element()
         } else {
-            Icon::new(IconName::Terminal)
-                .size(IconSize::Small)
-                .color(Color::Muted)
+            sidebar_icon(IconName::Terminal)
+                .text_color(color.text_muted)
                 .into_any_element()
         };
 
@@ -6463,8 +6424,8 @@ impl Sidebar {
         };
         let title_label = match rename_title_editor {
             Some(title_editor) => title_editor,
-            None if highlight_positions.is_empty() => Label::new(title)
-                .color(title_color)
+            None if highlight_positions.is_empty() => KitLabel::new(title)
+                .text_color(color.text)
                 .truncate()
                 .into_any_element(),
             None => HighlightedLabel::new(title, highlight_positions)
@@ -6474,31 +6435,28 @@ impl Sidebar {
         };
 
         let end = if is_hovered && !is_renaming {
-            IconButton::new("close-terminal", IconName::Close)
-                .hover_background(button_hover_bg)
-                .active_background(button_active_bg)
-                .icon_size(IconSize::Small)
-                .icon_color(Color::Muted)
-                .tooltip(move |_window, cx| {
-                    Tooltip::for_action_in(
-                        "Close Terminal",
-                        &ArchiveSelectedThread,
-                        &focus_handle,
-                        cx,
-                    )
-                })
+            sidebar_icon_button("close-terminal", IconName::Close)
+                .text_color(color.text_muted)
+                .tooltip_with_action(
+                    "Close Terminal",
+                    &ArchiveSelectedThread,
+                    Some("ThreadsSidebar"),
+                )
                 .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
                     this.close_terminal(&metadata, &workspace, window, cx);
                 }))
                 .into_any_element()
         } else {
-            Label::new(timestamp)
-                .color(Color::Placeholder)
+            KitLabel::new(timestamp)
+                .text_xs()
+                .text_color(color.text_placeholder)
                 .into_any_element()
         };
 
         let terminal_item = SidebarRow::new(id, leading, div().min_w_0().child(title_label))
-            .end(end)
+            .nested()
+            .end(h_flex().w(rems(3.5)).justify_end().child(end))
             .selected(is_active)
             .focused(is_focused)
             .on_hover(cx.listener(move |this, is_hovered: &bool, _window, cx| {
@@ -6602,33 +6560,24 @@ impl Sidebar {
         cx.notify();
     }
 
-    /// The "Workspaces" line above the groups, with the menu for history and adding projects.
     fn render_collection_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let this = cx.weak_entity();
-        let menu = PopoverMenu::new("sidebar-collection-menu")
-            .trigger_with_tooltip(
-                IconButton::new("sidebar-collection-menu-button", IconName::Filter)
-                    .icon_size(IconSize::Small)
-                    .selected_style(ButtonStyle::Tinted(TintColor::Accent)),
-                Tooltip::text("Filter"),
-            )
-            .anchor(gpui::Anchor::TopRight)
-            .menu(move |window, cx| {
-                let this = this.clone();
-                Some(ContextMenu::build(window, cx, move |menu, _window, _cx| {
-                    menu.entry("Archived", Some(ToggleThreadHistory.boxed_clone()), {
-                        let this = this.clone();
-                        move |window, cx| {
-                            this.update(cx, |sidebar, cx| sidebar.show_archive(window, cx))
-                                .ok();
-                        }
-                    })
-                    .entry(
-                        "Open Project…",
-                        Some(search_projects_action()),
-                        move |window, cx| window.dispatch_action(search_projects_action(), cx),
-                    )
-                }))
+        let sidebar = cx.weak_entity();
+        let menu = sidebar_icon_button("sidebar-collection-menu", IconName::Ellipsis)
+            .tooltip("More Actions")
+            .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
+                let sidebar = sidebar.clone();
+                menu.item(
+                    PopupMenuItem::new("Open Project…").on_click(|_, window, cx| {
+                        window.dispatch_action(search_projects_action(), cx);
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new("Recent Projects…").on_click(move |_, window, cx| {
+                        sidebar
+                            .update(cx, |sidebar, cx| sidebar.toggle_recent_projects(window, cx))
+                            .log_err();
+                    }),
+                )
             });
 
         let recent_projects = self.recent_projects.clone().map(|recent_projects| {
@@ -6652,15 +6601,76 @@ impl Sidebar {
             )
         });
 
-        h_flex().w_full().px(rems_from_px(LIST_INSET)).child(
-            h_flex()
-                .w_full()
-                .min_h(rems_from_px(28_f32))
-                .pl_2()
-                .justify_between()
-                .child(Label::new("Workspaces").color(Color::Placeholder))
-                .child(div().relative().child(menu).children(recent_projects)),
-        )
+        v_flex()
+            .flex_none()
+            .w_full()
+            .gap_2()
+            .px_3()
+            .pt_2()
+            .pb_3()
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_h(rems(2.))
+                    .justify_between()
+                    .gap_2()
+                    .child(KitLabel::new("Threads").font_semibold().truncate())
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .gap_1p5()
+                            .child(
+                                sidebar_icon_button("search-threads", IconName::MagnifyingGlass)
+                                    .tooltip_with_action(
+                                        "Search Threads",
+                                        &FocusSidebarFilter,
+                                        Some("ThreadsSidebar"),
+                                    )
+                                    .on_click(|_, window, cx| open_thread_search(window, cx)),
+                            )
+                            .child(
+                                sidebar_icon_button("thread-history", IconName::Archive)
+                                    .tooltip_with_action(
+                                        "Thread History",
+                                        &ToggleThreadHistory,
+                                        Some("ThreadsSidebar"),
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.show_archive(window, cx)
+                                    })),
+                            )
+                            .child(div().relative().child(menu).children(recent_projects)),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(
+                        KitButton::new("new-sidebar-thread")
+                            .primary()
+                            .small()
+                            .flex_1()
+                            .icon(sidebar_icon(IconName::Plus))
+                            .label("New Thread")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.create_entry_in_selected_group(
+                                    NewEntryTarget::Agent,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        KitButton::new("new-sidebar-terminal")
+                            .small()
+                            .child(sidebar_icon(IconName::Terminal).size(rems(1.125)))
+                            .tooltip("New Terminal")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_terminal_thread(&NewTerminalThread, window, cx);
+                            })),
+                    ),
+            )
     }
 
     fn new_thread_in_group(
@@ -6669,22 +6679,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(key) = self.selected_group_key() {
-            self.set_group_expanded(&key, true, cx);
-            self.selection = None;
-            if let Some(workspace) = self.workspace_for_group(&key, cx) {
-                self.create_new_entry(&workspace, window, cx);
-            } else {
-                self.open_workspace_and_create_entry(
-                    &key,
-                    NewEntryTarget::LastCreatedKind,
-                    window,
-                    cx,
-                );
-            }
-        } else if let Some(workspace) = self.active_workspace(cx) {
-            self.create_new_entry(&workspace, window, cx);
-        }
+        self.create_entry_in_selected_group(NewEntryTarget::LastCreatedKind, window, cx);
     }
 
     fn new_terminal_thread(
@@ -6694,17 +6689,34 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         cx.stop_propagation();
+        self.create_entry_in_selected_group(NewEntryTarget::Terminal, window, cx);
+    }
 
-        if let Some(key) = self.selected_group_key() {
+    fn create_entry_in_selected_group(
+        &mut self,
+        target: NewEntryTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace = if let Some(key) = self.selected_group_key() {
             self.set_group_expanded(&key, true, cx);
             self.selection = None;
             if let Some(workspace) = self.workspace_for_group(&key, cx) {
-                self.create_new_terminal(&workspace, window, cx);
+                Some(workspace)
             } else {
-                self.open_workspace_and_create_entry(&key, NewEntryTarget::Terminal, window, cx);
+                self.open_workspace_and_create_entry(&key, target, window, cx);
+                return;
             }
-        } else if let Some(workspace) = self.active_workspace(cx) {
-            self.create_new_terminal(&workspace, window, cx);
+        } else {
+            self.active_workspace(cx)
+        };
+
+        if let Some(workspace) = workspace {
+            match target {
+                NewEntryTarget::Agent => self.create_new_thread(&workspace, window, cx),
+                NewEntryTarget::Terminal => self.create_new_terminal(&workspace, window, cx),
+                NewEntryTarget::LastCreatedKind => self.create_new_entry(&workspace, window, cx),
+            }
         }
     }
 
@@ -7203,45 +7215,80 @@ impl Sidebar {
         self.cycle_thread_impl(false, window, cx);
     }
 
-    fn render_no_results(&self) -> impl IntoElement {
-        let message = "No threads yet";
-
+    fn render_no_results(&self, cx: &App) -> impl IntoElement {
         v_flex()
             .id("sidebar-no-results")
             .p_4()
             .size_full()
             .items_center()
             .justify_center()
-            .child(
-                Label::new(message)
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
-            )
+            .gap_2()
+            .text_color(cx.theme().colors().text_muted)
+            .child(sidebar_icon(IconName::Thread).size(rems(1.5)))
+            .child(KitLabel::new("No threads yet").text_sm())
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        ProjectEmptyState::new(
-            "Threads Sidebar",
-            self.focus_handle(cx),
-            KeyBinding::for_action(&workspace::Open::default(), cx),
-        )
-        .on_open_project(|_, window, cx| {
-            let side = match AgentSettings::get_global(cx).sidebar_side() {
-                SidebarSide::Left => "left",
-                SidebarSide::Right => "right",
-            };
-            telemetry::event!("Sidebar Add Project Clicked", side = side);
-            window.dispatch_action(
-                Open {
-                    create_new_window: Some(false),
-                }
-                .boxed_clone(),
-                cx,
-            );
-        })
-        .on_clone_repo(|_, window, cx| {
-            window.dispatch_action(git::Clone.boxed_clone(), cx);
-        })
+        v_flex()
+            .size_full()
+            .p_4()
+            .gap_4()
+            .items_center()
+            .justify_center()
+            .child(
+                sidebar_icon(IconName::Thread)
+                    .size(rems(2.))
+                    .text_color(cx.theme().colors().text_muted),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(KitLabel::new("Your threads, organized").font_semibold())
+                    .child(
+                        KitLabel::new("Open a project to start an agent thread or terminal.")
+                            .text_sm()
+                            .text_center()
+                            .text_color(cx.theme().colors().text_muted),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(
+                        KitButton::new("sidebar-open-project")
+                            .primary()
+                            .small()
+                            .w_full()
+                            .label("Open Project")
+                            .icon(sidebar_icon(IconName::FolderOpen))
+                            .on_click(|_, window, cx| {
+                                let side = match AgentSettings::get_global(cx).sidebar_side() {
+                                    SidebarSide::Left => "left",
+                                    SidebarSide::Right => "right",
+                                };
+                                telemetry::event!("Sidebar Add Project Clicked", side = side);
+                                window.dispatch_action(
+                                    Open {
+                                        create_new_window: Some(false),
+                                    }
+                                    .boxed_clone(),
+                                    cx,
+                                );
+                            }),
+                    )
+                    .child(
+                        KitButton::new("sidebar-clone-repository")
+                            .ghost()
+                            .small()
+                            .w_full()
+                            .label("Clone Repository")
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(git::Clone.boxed_clone(), cx)
+                            }),
+                    ),
+            )
     }
 
     fn active_workspace(&self, cx: &App) -> Option<Entity<Workspace>> {
@@ -7459,7 +7506,7 @@ impl Sidebar {
                 ThreadsArchiveViewEvent::NewThread => {
                     this.show_thread_list(window, cx);
                     if let Some(workspace) = this.active_workspace(cx) {
-                        this.create_new_entry(&workspace, window, cx);
+                        this.create_new_thread(&workspace, window, cx);
                     }
                 }
             },
@@ -7512,57 +7559,48 @@ fn render_import_onboarding_banner(
     cx: &App,
 ) -> impl IntoElement {
     let id: SharedString = id.into();
-    let bg = cx.theme().colors().text_accent;
+    let colors = cx.theme().colors();
 
     v_flex()
         .min_w_0()
         .w_full()
-        .p_2()
+        .p_3()
+        .gap_2()
         .border_t_1()
-        .border_color(cx.theme().colors().border)
-        .bg(linear_gradient(
-            360.,
-            linear_color_stop(bg.opacity(0.06), 1.),
-            linear_color_stop(bg.opacity(0.), 0.),
-        ))
+        .border_color(colors.border)
         .child(
             h_flex()
                 .min_w_0()
                 .w_full()
-                .gap_1()
+                .gap_2()
                 .items_start()
-                .justify_between()
                 .child(
-                    div()
-                        .min_w_0()
+                    KitLabel::new(title)
+                        .text_sm()
+                        .font_semibold()
                         .flex_1()
-                        .child(Label::new(title).size(LabelSize::Small)),
+                        .min_w_0(),
                 )
                 .child(
-                    IconButton::new(
+                    sidebar_icon_button(
                         SharedString::from(format!("close-{id}-onboarding")),
                         IconName::Close,
                     )
-                    .icon_size(IconSize::Small)
+                    .tooltip("Dismiss")
                     .on_click(on_dismiss),
                 ),
         )
         .child(
-            Label::new(description)
-                .size(LabelSize::Small)
-                .color(Color::Muted)
-                .mb_2(),
+            KitLabel::new(description)
+                .text_xs()
+                .text_color(colors.text_muted),
         )
         .child(
-            Button::new(SharedString::from(format!("import-{id}")), button_label)
-                .full_width()
-                .style(ButtonStyle::OutlinedCustom(cx.theme().colors().border))
-                .label_size(LabelSize::Small)
-                .start_icon(
-                    Icon::new(IconName::Download)
-                        .size(IconSize::Small)
-                        .color(Color::Muted),
-                )
+            KitButton::new(SharedString::from(format!("import-{id}")))
+                .small()
+                .w_full()
+                .label(button_label)
+                .icon(sidebar_icon(IconName::Download))
                 .on_click(on_import),
         )
 }
@@ -7726,15 +7764,20 @@ impl Render for Sidebar {
                                     .size_full(),
                                 )
                                 .when(no_search_results, |this| {
-                                    this.child(self.render_no_results())
+                                    this.child(self.render_no_results(cx))
                                 })
                                 .when_some(sticky_header, |this, header| this.child(header))
-                                .custom_scrollbars(
-                                    Scrollbars::new(ScrollAxes::Vertical)
-                                        .tracked_scroll_handle(&self.list_state),
-                                    window,
-                                    cx,
-                                ),
+                                .when_some(sidebar_scrollbar_mode(cx), |this, mode| {
+                                    this.child(
+                                        div().absolute().inset_0().child(
+                                            Scrollbar::new(&self.list_state)
+                                                .id("threads-scrollbar")
+                                                .axis(ScrollbarAxis::Vertical)
+                                                .mode(mode)
+                                                .viewport_from_layout(),
+                                        ),
+                                    )
+                                }),
                         )
                     }
                 }),
@@ -7755,6 +7798,26 @@ impl Render for Sidebar {
                     this.child(self.render_cross_channel_import_onboarding(verbose, cx))
                 })
             })
+    }
+}
+
+fn sidebar_scrollbar_mode(cx: &App) -> Option<ScrollbarMode> {
+    use ui::scrollbars::{ScrollbarAutoHide, ShowScrollbar};
+
+    match editor::EditorSettings::get_global(cx).scrollbar.show {
+        ShowScrollbar::Never => None,
+        ShowScrollbar::Always => Some(ScrollbarMode::Always),
+        ShowScrollbar::Auto => Some(ScrollbarMode::Scrolling),
+        ShowScrollbar::System => Some(
+            if cx
+                .try_global::<ScrollbarAutoHide>()
+                .is_some_and(ScrollbarAutoHide::should_hide)
+            {
+                ScrollbarMode::Scrolling
+            } else {
+                ScrollbarMode::Always
+            },
+        ),
     }
 }
 
