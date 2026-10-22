@@ -48,6 +48,7 @@ use gpui_kit::component::{
     separator::Separator,
     shimmer::ShimmerText,
     switch::Switch as KitSwitch,
+    tag::Tag,
 };
 use heapless::Vec as ArrayVec;
 use itertools::Itertools;
@@ -4262,9 +4263,17 @@ impl ThreadView {
         };
         let permissions = thread.read(cx).permissions();
         let details = self.sandbox_details(&thread, permissions, cx);
+        let offer_auto_review =
+            permissions == AgentPermissions::AutoReview || thread.read(cx).sandboxing_available(cx);
         let this = cx.weak_entity();
         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            permissions_menu(menu, permissions, details.as_ref(), &this)
+            permissions_menu(
+                menu,
+                permissions,
+                offer_auto_review,
+                details.as_ref(),
+                &this,
+            )
         });
         self.show_permissions_menu(menu, window, cx);
     }
@@ -4307,57 +4316,71 @@ impl ThreadView {
         let Some(thread) = self.as_native_thread(cx) else {
             return;
         };
-        if permissions == AgentPermissions::FullAccess
-            && thread.read(cx).permissions() != AgentPermissions::FullAccess
-            && !full_access_warning_dismissed(cx)
-        {
-            self.confirm_full_access(window, cx);
-            return;
+        let current = thread.read(cx).permissions();
+        if permissions != current {
+            if permissions == AgentPermissions::FullAccess && !full_access_warning_dismissed(cx) {
+                self.confirm_full_access(window, cx);
+                return;
+            }
+            if permissions == AgentPermissions::AutoReview && !auto_review_warning_acknowledged(cx)
+            {
+                self.confirm_auto_review(window, cx);
+                return;
+            }
         }
         thread.update(cx, |thread, cx| thread.set_permissions(permissions, cx));
     }
 
+    fn apply_permissions(this: &WeakEntity<Self>, permissions: AgentPermissions, cx: &mut App) {
+        this.update(cx, |this, cx| {
+            if let Some(thread) = this.as_native_thread(cx) {
+                thread.update(cx, |thread, cx| thread.set_permissions(permissions, cx));
+            }
+        })
+        .log_err();
+    }
+
     fn confirm_full_access(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.weak_entity();
-        let allow_full_access = move |cx: &mut App| {
-            this.update(cx, |this, cx| {
-                if let Some(thread) = this.as_native_thread(cx) {
-                    thread.update(cx, |thread, cx| {
-                        thread.set_permissions(AgentPermissions::FullAccess, cx)
-                    });
-                }
-            })
-            .log_err();
-        };
-        let allow_and_dont_ask = allow_full_access.clone();
         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            menu.item(
-                PopupMenuItem::element(|_, cx| {
-                    v_flex()
-                        .w(PERMISSIONS_MENU_TEXT_WIDTH)
-                        .py_1()
-                        .gap_0p5()
-                        .child(
-                            div()
-                                .text_color(KitTheme::global(cx).popover_foreground)
-                                .child("Give This Thread Full Access?"),
-                        )
-                        .child(div().text_xs().child(
-                            "Its terminal commands will run without a sandbox and without \
-                                 asking first, so they can change anything you can.",
-                        ))
-                })
-                .disabled(true),
-            )
+            let allow_and_dont_ask = this.clone();
+            menu.item(permissions_confirmation(
+                "Give This Thread Full Access?",
+                "Its terminal commands will run without a sandbox and without asking first, so \
+                 they can change anything you can.",
+            ))
             .separator()
             .item(
-                danger_menu_item("Allow Full Access")
-                    .on_click(move |_, _, cx| allow_full_access(cx)),
+                danger_menu_item("Allow Full Access").on_click(move |_, _, cx| {
+                    Self::apply_permissions(&this, AgentPermissions::FullAccess, cx)
+                }),
             )
             .item(
                 danger_menu_item("Allow and Don't Ask Again").on_click(move |_, _, cx| {
-                    allow_and_dont_ask(cx);
+                    Self::apply_permissions(&allow_and_dont_ask, AgentPermissions::FullAccess, cx);
                     set_full_access_warning_dismissed(cx);
+                }),
+            )
+        });
+        self.show_permissions_menu(menu, window, cx);
+    }
+
+    /// Asked only the first time, since auto review keeps the sandbox and asks
+    /// the user whenever the review doesn't allow a request.
+    fn confirm_auto_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.weak_entity();
+        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+            menu.item(permissions_confirmation(
+                "Turn On Auto Review?",
+                "When the agent asks to write to specific paths outside the sandbox, a model \
+                 reviews the request first and may allow it without asking you. Auto review is \
+                 experimental, and the model can get it wrong.",
+            ))
+            .separator()
+            .item(
+                PopupMenuItem::new("Turn On Auto Review").on_click(move |_, _, cx| {
+                    Self::apply_permissions(&this, AgentPermissions::AutoReview, cx);
+                    set_auto_review_warning_acknowledged(cx);
                 }),
             )
         });
@@ -4378,7 +4401,9 @@ impl ThreadView {
                 AgentPermissions::ReadOnly => {
                     "This project can't be sandboxed, so terminal commands are refused."
                 }
-                AgentPermissions::Workspace | AgentPermissions::FullAccess => {
+                AgentPermissions::Workspace
+                | AgentPermissions::AutoReview
+                | AgentPermissions::FullAccess => {
                     "This project can't be sandboxed, so each terminal command asks first."
                 }
             }));
@@ -5246,19 +5271,33 @@ enum SandboxDetails {
 fn permissions_menu(
     mut menu: PopupMenu,
     current: AgentPermissions,
+    offer_auto_review: bool,
     details: Option<&SandboxDetails>,
     this: &WeakEntity<ThreadView>,
 ) -> PopupMenu {
     menu = menu.check_side(Side::Right).min_w(px(240.));
-    for permissions in [
+    let choices = [
         AgentPermissions::ReadOnly,
         AgentPermissions::Workspace,
         AgentPermissions::FullAccess,
-    ] {
+    ]
+    .into_iter()
+    .chain(offer_auto_review.then_some(AgentPermissions::AutoReview));
+    for permissions in choices {
         let this = this.clone();
+        let label = <&'static str>::from(permissions);
+        let item = if permissions == AgentPermissions::AutoReview {
+            PopupMenuItem::element(move |_, _| {
+                h_flex()
+                    .gap_1p5()
+                    .child(label)
+                    .child(Tag::secondary().with_size(KitSize::XSmall).child("EXP"))
+            })
+        } else {
+            PopupMenuItem::new(label)
+        };
         menu = menu.item(
-            PopupMenuItem::new(<&'static str>::from(permissions))
-                .checked(permissions == current)
+            item.checked(permissions == current)
                 .on_click(move |_, window, cx| {
                     this.update(cx, |this, cx| {
                         this.select_permissions(permissions, window, cx)
@@ -5333,6 +5372,22 @@ fn permissions_note(note: &'static str) -> PopupMenuItem {
             .py_1()
             .text_xs()
             .child(note)
+    })
+    .disabled(true)
+}
+
+fn permissions_confirmation(title: &'static str, body: &'static str) -> PopupMenuItem {
+    PopupMenuItem::element(move |_, cx| {
+        v_flex()
+            .w(PERMISSIONS_MENU_TEXT_WIDTH)
+            .py_1()
+            .gap_0p5()
+            .child(
+                div()
+                    .text_color(KitTheme::global(cx).popover_foreground)
+                    .child(title),
+            )
+            .child(div().text_xs().child(body))
     })
     .disabled(true)
 }
@@ -6173,6 +6228,7 @@ impl ThreadView {
         if !has_write
             && !details.unsandboxed
             && details.reason.is_empty()
+            && details.auto_review.is_none()
             && !has_windows_fs_warning
         {
             return Empty.into_any_element();
@@ -6303,6 +6359,19 @@ impl ThreadView {
                 .child(Label::new(details.reason.clone()).size(LabelSize::Small))
         });
 
+        let auto_review_section = details.auto_review.clone().map(|auto_review| {
+            v_flex()
+                .px_2()
+                .py_1()
+                .gap_0p5()
+                .child(
+                    Label::new("Auto Review Didn't Allow This")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                )
+                .child(Label::new(auto_review).size(LabelSize::Small))
+        });
+
         // The command stays in the tool-call title above; here we show what the
         // command is asking for (paths) and the agent's reason.
         v_flex()
@@ -6322,6 +6391,7 @@ impl ThreadView {
             .children(write_section)
             .children(unsandboxed_section)
             .children(reason_section)
+            .children(auto_review_section)
             .when(!has_windows_fs_warning, |this| {
                 // The Windows-drive warning banner carries its own docs link, so
                 // skip the default one that every other sandbox prompt appends.
@@ -10090,6 +10160,7 @@ mod tests {
 
 const FAST_MODE_WARNING_NAMESPACE: &str = "fast-mode-warning-dismissed";
 const FULL_ACCESS_WARNING_KEY: &str = "full-access-warning-dismissed";
+const AUTO_REVIEW_WARNING_KEY: &str = "auto-review-warning-acknowledged";
 
 fn fast_mode_warning_id(
     provider_id: &LanguageModelProviderId,
@@ -10139,6 +10210,24 @@ fn set_full_access_warning_dismissed(cx: &mut App) {
     let kvp = KeyValueStore::global(cx);
     cx.background_spawn(async move {
         kvp.write_kvp(FULL_ACCESS_WARNING_KEY.to_string(), "1".to_string())
+            .await
+            .log_err();
+    })
+    .detach();
+}
+
+fn auto_review_warning_acknowledged(cx: &App) -> bool {
+    KeyValueStore::global(cx)
+        .read_kvp(AUTO_REVIEW_WARNING_KEY)
+        .log_err()
+        .flatten()
+        .is_some()
+}
+
+fn set_auto_review_warning_acknowledged(cx: &mut App) {
+    let kvp = KeyValueStore::global(cx);
+    cx.background_spawn(async move {
+        kvp.write_kvp(AUTO_REVIEW_WARNING_KEY.to_string(), "1".to_string())
             .await
             .log_err();
     })

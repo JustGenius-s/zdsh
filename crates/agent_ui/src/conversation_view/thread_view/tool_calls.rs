@@ -1506,6 +1506,16 @@ impl ThreadView {
                     ),
             )
         })
+        .when_some(tool_call.auto_review_allowed.clone(), |row, reason| {
+            row.meta(
+                div()
+                    .id(SharedString::from(child_id("auto-review-allowed")))
+                    .tooltip(move |_window, cx| {
+                        Tooltip::with_meta("Allowed by Auto Review", None, reason.clone(), cx)
+                    })
+                    .child(kit_icon(IconName::Sparkle).with_size(KitSize::XSmall)),
+            )
+        })
         .when_some(tool_call.sandbox_not_applied.as_ref(), |row, reason| {
             let TerminalSandboxWarning {
                 title,

@@ -223,6 +223,10 @@ pub struct SandboxAuthorizationDetails {
     /// shown to the user (attributed to the agent) in the approval prompt.
     #[serde(default)]
     pub reason: String,
+    /// Why an auto review of this request didn't allow it, when one ran
+    /// before the user was asked.
+    #[serde(default)]
+    pub auto_review: Option<String>,
 }
 
 pub fn meta_with_sandbox_authorization(details: SandboxAuthorizationDetails) -> acp_v2::Meta {
@@ -303,6 +307,21 @@ pub fn sandbox_not_applied_from_meta(
     meta.as_ref()
         .and_then(|m| m.get(SANDBOX_NOT_APPLIED_META_KEY))
         .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+/// Meta key recording that an auto review allowed this tool call's request
+/// for more access, instead of the user. The value is the review's reason.
+pub const AUTO_REVIEW_ALLOWED_META_KEY: &str = "auto_review_allowed";
+
+pub fn meta_with_auto_review_allowed(reason: &str) -> acp_v2::Meta {
+    acp_v2::Meta::from_iter([(AUTO_REVIEW_ALLOWED_META_KEY.into(), reason.into())])
+}
+
+pub fn auto_review_allowed_from_meta(meta: &Option<acp_v2::Meta>) -> Option<SharedString> {
+    meta.as_ref()
+        .and_then(|m| m.get(AUTO_REVIEW_ALLOWED_META_KEY))
+        .and_then(|v| v.as_str())
+        .map(|reason| SharedString::from(reason.to_string()))
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1107,6 +1126,9 @@ pub struct ToolCall {
     /// sandboxing was active (see [`SANDBOX_NOT_APPLIED_META_KEY`]). `None` when
     /// the command was sandboxed normally (or sandboxing was off).
     pub sandbox_not_applied: Option<SandboxNotAppliedReason>,
+    /// The reason an auto review gave for allowing this tool call's request
+    /// for more access (see [`AUTO_REVIEW_ALLOWED_META_KEY`]).
+    pub auto_review_allowed: Option<SharedString>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1355,6 +1377,7 @@ impl ToolCall {
         let sandbox_fallback_authorization_details =
             sandbox_fallback_authorization_details_from_meta(&meta);
         let sandbox_not_applied = sandbox_not_applied_from_meta(&meta);
+        let auto_review_allowed = auto_review_allowed_from_meta(&meta);
         let label = Self::new_label(
             title.as_ref().filter(|title| !title.trim().is_empty()),
             tool_name.as_ref(),
@@ -1385,6 +1408,7 @@ impl ToolCall {
             sandbox_authorization_details,
             sandbox_fallback_authorization_details,
             sandbox_not_applied,
+            auto_review_allowed,
         };
         result.update_raw_output_content(&language_registry, cx);
         Ok(result)
@@ -1538,6 +1562,9 @@ impl ToolCall {
                 if let Some(value) = sandbox_not_applied_from_meta(&meta) {
                     self.sandbox_not_applied = Some(value);
                 }
+                if let Some(value) = auto_review_allowed_from_meta(&meta) {
+                    self.auto_review_allowed = Some(value);
+                }
                 if meta.is_some() {
                     self.meta = meta;
                 }
@@ -1552,6 +1579,7 @@ impl ToolCall {
                     self.sandbox_fallback_authorization_details =
                         sandbox_fallback_authorization_details_from_meta(&self.meta);
                     self.sandbox_not_applied = sandbox_not_applied_from_meta(&self.meta);
+                    self.auto_review_allowed = auto_review_allowed_from_meta(&self.meta);
                 }
                 if name_changed || meta_changed {
                     self.tool_name = self

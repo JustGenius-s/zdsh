@@ -5344,6 +5344,7 @@ async fn setup(cx: &mut TestAppContext, model: TestModel) -> ThreadTest {
                             StreamingJsonErrorContextTool::NAME: true,
                             StreamingFailingEchoTool::NAME: true,
                             FileModifyingTool::NAME: true,
+                            WriteAccessTool::NAME: true,
                             TerminalTool::NAME: true,
                         }
                     }
@@ -9220,6 +9221,243 @@ async fn test_permissions_change_is_announced_before_the_next_request(cx: &mut T
     let messages = send("Message 4", cx).await;
     assert_eq!(notices(&messages), notice);
     assert_eq!(messages.last().map(String::as_str), Some("Message 4"));
+}
+
+/// Starts a turn in an auto review thread in which the model calls
+/// `WriteAccessTool` with `input`.
+fn request_write_access(
+    test: &ThreadTest,
+    input: serde_json::Value,
+    cx: &mut TestAppContext,
+) -> UnboundedReceiver<Result<ThreadEvent>> {
+    let events = test
+        .thread
+        .update(cx, |thread, cx| {
+            thread.set_permissions(AgentPermissions::AutoReview, cx);
+            thread.add_tool(WriteAccessTool);
+            thread.send(
+                ClientUserMessageId::new(),
+                ["Put the build output in /tmp/build"],
+                cx,
+            )
+        })
+        .unwrap();
+    cx.run_until_parked();
+    test.fake.send_last_event(
+        &test.model,
+        LanguageModelCompletionEvent::Text("I'll write the build output there.".into()),
+    );
+    test.fake.send_last_event(
+        &test.model,
+        LanguageModelCompletionEvent::ToolUse(LanguageModelToolUse {
+            id: "tool_id_1".into(),
+            name: WriteAccessTool::NAME.into(),
+            raw_input: input.to_string(),
+            input: language_model::LanguageModelToolUseInput::Json(input),
+            is_input_complete: true,
+            thought_signature: None,
+        }),
+    );
+    test.fake.end_last(&test.model);
+    cx.run_until_parked();
+    events
+}
+
+fn pending_auto_review(test: &ThreadTest) -> Option<LanguageModelRequest> {
+    test.fake
+        .pending_completions()
+        .into_iter()
+        .find(|request| request.intent == Some(CompletionIntent::AutoReview))
+}
+
+fn answer_auto_review(test: &ThreadTest, reply: &str, cx: &mut TestAppContext) -> String {
+    let review = pending_auto_review(test).expect("the request should be reviewed");
+    test.fake.send_text(&test.model, &review, reply);
+    test.fake.end_stream(&test.model, &review);
+    cx.run_until_parked();
+    review
+        .messages
+        .iter()
+        .map(|message| message.string_contents())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn write_access_input() -> serde_json::Value {
+    json!({
+        "write_paths": ["/tmp/build"],
+        "reason": "Store the build output",
+    })
+}
+
+#[gpui::test]
+async fn test_auto_review_allows_a_write_path_request_without_asking(cx: &mut TestAppContext) {
+    let test = setup(cx, TestModel::Fake).await;
+    let mut events = request_write_access(&test, write_access_input(), cx);
+    let review = answer_auto_review(
+        &test,
+        r#"{"risk": "medium", "decision": "allow", "reason": "The user asked for /tmp/build."}"#,
+        cx,
+    );
+
+    // The reviewer sees what the user wrote and the request, but not the agent's own text.
+    assert!(review.contains("Put the build output in /tmp/build"));
+    assert!(review.contains("Store the build output"));
+    assert!(review.contains("/tmp/build"));
+    assert!(!review.contains("I'll write the build output there."));
+
+    let mut asked = false;
+    let mut allowed_reason = None;
+    while let Ok(event) = events.try_recv() {
+        match event {
+            Ok(ThreadEvent::ToolCallAuthorization(_)) => asked = true,
+            Ok(ThreadEvent::ToolCallUpdate(acp_thread::ToolCallUpdate::V2(update))) => {
+                if let Some(reason) =
+                    acp_thread::auto_review_allowed_from_meta(&update.meta.value().cloned())
+                {
+                    allowed_reason = Some(reason);
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(!asked, "an allowed request shouldn't ask the user");
+    assert_eq!(
+        allowed_reason.as_deref(),
+        Some("The user asked for /tmp/build.")
+    );
+
+    // The tool ran, and the review allowed only this request: nothing was granted.
+    let completion = test.fake.pending_completions().pop().unwrap();
+    let result = completion
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .find_map(|content| match content {
+            language_model::MessageContent::ToolResult(result) => Some(result.clone()),
+            _ => None,
+        })
+        .expect("the tool call should have produced a result");
+    assert!(!result.is_error, "{result:?}");
+    let saved = test
+        .thread
+        .read_with(cx, |thread, cx| thread.to_db(cx))
+        .await;
+    assert_eq!(saved.sandbox_grants, crate::DbSandboxGrants::default());
+    assert_eq!(
+        saved
+            .auto_reviews
+            .get(&language_model::LanguageModelToolUseId::from("tool_id_1")),
+        Some(&"The user asked for /tmp/build.".to_string())
+    );
+}
+
+#[gpui::test]
+async fn test_auto_review_asks_the_user_when_it_doesnt_allow(cx: &mut TestAppContext) {
+    for (reply, shown_reason) in [
+        (
+            r#"{"risk": "high", "decision": "deny", "reason": "It writes outside the project."}"#,
+            "It writes outside the project.",
+        ),
+        ("Sure, go ahead.", "The auto review's reply wasn't valid"),
+    ] {
+        let test = setup(cx, TestModel::Fake).await;
+        let mut events = request_write_access(&test, write_access_input(), cx);
+        answer_auto_review(&test, reply, cx);
+
+        let authorization = next_tool_call_authorization(&mut events).await;
+        let details = acp_thread::sandbox_authorization_details_from_meta(
+            &authorization.tool_call.meta.value().cloned(),
+        )
+        .expect("the prompt should describe the request");
+        let auto_review = details.auto_review.unwrap_or_default();
+        assert!(auto_review.contains(shown_reason), "{auto_review}");
+    }
+}
+
+#[gpui::test]
+async fn test_auto_review_leaves_broad_requests_to_the_user(cx: &mut TestAppContext) {
+    let test = setup(cx, TestModel::Fake).await;
+    let mut events = request_write_access(
+        &test,
+        json!({
+            "write_paths": [],
+            "allow_fs_write_all": true,
+            "reason": "Write anywhere",
+        }),
+        cx,
+    );
+
+    assert!(pending_auto_review(&test).is_none());
+    let authorization = next_tool_call_authorization(&mut events).await;
+    let details = acp_thread::sandbox_authorization_details_from_meta(
+        &authorization.tool_call.meta.value().cloned(),
+    )
+    .expect("the prompt should describe the request");
+    assert_eq!(details.auto_review, None);
+}
+
+#[gpui::test]
+async fn test_switching_permissions_during_an_auto_review(cx: &mut TestAppContext) {
+    // Switching to workspace hands the request to the user.
+    let test = setup(cx, TestModel::Fake).await;
+    let mut events = request_write_access(&test, write_access_input(), cx);
+    assert!(pending_auto_review(&test).is_some());
+    test.thread.update(cx, |thread, cx| {
+        thread.set_permissions(AgentPermissions::Workspace, cx)
+    });
+    cx.run_until_parked();
+    let authorization = next_tool_call_authorization(&mut events).await;
+    let details = acp_thread::sandbox_authorization_details_from_meta(
+        &authorization.tool_call.meta.value().cloned(),
+    )
+    .expect("the prompt should describe the request");
+    assert_eq!(details.auto_review, None);
+
+    // Switching to read-only denies it without asking.
+    let test = setup(cx, TestModel::Fake).await;
+    let mut events = request_write_access(&test, write_access_input(), cx);
+    assert!(pending_auto_review(&test).is_some());
+    test.thread.update(cx, |thread, cx| {
+        thread.set_permissions(AgentPermissions::ReadOnly, cx)
+    });
+    cx.run_until_parked();
+    let mut asked = false;
+    while let Ok(event) = events.try_recv() {
+        asked |= matches!(event, Ok(ThreadEvent::ToolCallAuthorization(_)));
+    }
+    assert!(!asked, "read-only permissions shouldn't ask the user");
+    let completion = test.fake.pending_completions().pop().unwrap();
+    let result = completion
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .find_map(|content| match content {
+            language_model::MessageContent::ToolResult(result) => Some(result.clone()),
+            _ => None,
+        })
+        .expect("the tool call should have produced a result");
+    assert!(result.is_error, "{result:?}");
+}
+
+#[gpui::test]
+async fn test_auto_review_times_out_to_the_user(cx: &mut TestAppContext) {
+    let test = setup(cx, TestModel::Fake).await;
+    let mut events = request_write_access(&test, write_access_input(), cx);
+    assert!(pending_auto_review(&test).is_some());
+    cx.executor()
+        .advance_clock(crate::auto_review::AUTO_REVIEW_TIMEOUT);
+    cx.run_until_parked();
+
+    let authorization = next_tool_call_authorization(&mut events).await;
+    let details = acp_thread::sandbox_authorization_details_from_meta(
+        &authorization.tool_call.meta.value().cloned(),
+    )
+    .expect("the prompt should describe the request");
+    assert_eq!(
+        details.auto_review.as_deref(),
+        Some("The auto review timed out.")
+    );
 }
 
 /// Runs `FileModifyingTool` once in a thread with `permissions`, returning its

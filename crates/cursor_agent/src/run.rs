@@ -137,6 +137,7 @@ fn is_conversation_turn(request: &LanguageModelRequest) -> bool {
             CompletionIntent::ThreadSummarization
                 | CompletionIntent::ThreadContextSummarization
                 | CompletionIntent::GenerateGitCommitMessage
+                | CompletionIntent::AutoReview
         )
     )
 }

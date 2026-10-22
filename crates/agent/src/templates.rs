@@ -462,6 +462,11 @@ mod tests {
         assert!(workspace.contains("You can request elevated permissions"));
         assert!(workspace.contains("These sandbox settings follow this thread's permissions"));
 
+        let auto_review = render(AgentPermissions::AutoReview, true);
+        assert!(auto_review.contains("You can request elevated permissions"));
+        assert!(auto_review.contains("first checked by an automatic reviewer"));
+        assert!(!workspace.contains("automatic reviewer"));
+
         // Full access exposes the unsandboxed `terminal`, so there's no sandbox to describe.
         let full_access = render(AgentPermissions::FullAccess, false);
         assert!(!full_access.contains("## Read-only Permissions"));

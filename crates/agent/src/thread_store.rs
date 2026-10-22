@@ -172,6 +172,7 @@ mod tests {
             ui_scroll_position: None,
             sandboxed_terminal_temp_dir: None,
             sandbox_grants: Default::default(),
+            auto_reviews: Default::default(),
         }
     }
 

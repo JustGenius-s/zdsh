@@ -46,7 +46,9 @@ impl From<AgentPermissions> for SandboxMode {
     fn from(permissions: AgentPermissions) -> Self {
         match permissions {
             AgentPermissions::ReadOnly => SandboxMode::ReadOnly,
-            AgentPermissions::Workspace => SandboxMode::WorkspaceWrite,
+            AgentPermissions::Workspace | AgentPermissions::AutoReview => {
+                SandboxMode::WorkspaceWrite
+            }
             AgentPermissions::FullAccess => SandboxMode::FullAccess,
         }
     }
@@ -58,6 +60,9 @@ impl From<AgentPermissions> for SandboxMode {
 pub enum ApprovalPolicy {
     /// Ask the user.
     Ask,
+    /// Have a model review requests to write to specific paths, and ask the
+    /// user about everything else, or when the review doesn't allow one.
+    Auto,
     /// Never ask: every such request is denied without a prompt.
     Never,
 }
@@ -66,6 +71,7 @@ impl From<AgentPermissions> for ApprovalPolicy {
     fn from(permissions: AgentPermissions) -> Self {
         match permissions {
             AgentPermissions::Workspace => ApprovalPolicy::Ask,
+            AgentPermissions::AutoReview => ApprovalPolicy::Auto,
             AgentPermissions::ReadOnly | AgentPermissions::FullAccess => ApprovalPolicy::Never,
         }
     }

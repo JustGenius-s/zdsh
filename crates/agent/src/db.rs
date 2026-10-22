@@ -8,7 +8,7 @@ use collections::{HashMap, IndexMap};
 use futures::{FutureExt, future::Shared};
 use gpui::{BackgroundExecutor, Global, Task};
 use indoc::indoc;
-use language_model::Speed;
+use language_model::{LanguageModelToolUseId, Speed};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sqlez::{
@@ -90,6 +90,10 @@ pub struct DbThread {
     /// [`crate::sandboxing::ThreadSandboxGrants`].
     #[serde(default)]
     pub sandbox_grants: DbSandboxGrants,
+    /// The requests for more access that an auto review allowed, by tool call,
+    /// with the review's reason.
+    #[serde(default)]
+    pub auto_reviews: HashMap<LanguageModelToolUseId, String>,
 }
 
 /// Serialized form of the sandbox permissions the user granted "for the rest of
@@ -167,6 +171,7 @@ impl SharedThread {
             ui_scroll_position: None,
             sandboxed_terminal_temp_dir: None,
             sandbox_grants: DbSandboxGrants::default(),
+            auto_reviews: HashMap::default(),
         }
     }
 
@@ -354,6 +359,7 @@ impl DbThread {
             ui_scroll_position: None,
             sandboxed_terminal_temp_dir: None,
             sandbox_grants: DbSandboxGrants::default(),
+            auto_reviews: HashMap::default(),
         })
     }
 }
@@ -942,6 +948,7 @@ mod tests {
             ui_scroll_position: None,
             sandboxed_terminal_temp_dir: None,
             sandbox_grants: DbSandboxGrants::default(),
+            auto_reviews: HashMap::default(),
         }
     }
 

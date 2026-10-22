@@ -997,6 +997,7 @@ fn update_active_language_model_from_settings(cx: &mut App) {
         .as_ref()
         .map(to_selected_model);
     let compaction = settings.compaction_model.as_ref().map(to_selected_model);
+    let auto_review = settings.auto_review_model.as_ref().map(to_selected_model);
     let inline_alternatives = settings
         .inline_alternatives
         .iter()
@@ -1009,6 +1010,7 @@ fn update_active_language_model_from_settings(cx: &mut App) {
         registry.select_commit_message_model(commit_message.as_ref(), cx);
         registry.select_thread_summary_model(thread_summary.as_ref(), cx);
         registry.select_compaction_model(compaction.as_ref(), cx);
+        registry.select_auto_review_model(auto_review.as_ref(), cx);
         registry.select_inline_alternative_models(inline_alternatives, cx);
         registry.set_should_use_fallback(should_use_fallback);
     });
@@ -1055,6 +1057,7 @@ mod tests {
             commit_message_instructions: None,
             thread_summary_model: None,
             compaction_model: None,
+            auto_review_model: None,
             inline_alternatives: vec![],
             favorite_models: vec![],
             hidden_models: vec![],

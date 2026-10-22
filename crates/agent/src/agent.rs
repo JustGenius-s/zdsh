@@ -1,3 +1,4 @@
+mod auto_review;
 mod db;
 mod legacy_thread;
 mod native_agent_server;

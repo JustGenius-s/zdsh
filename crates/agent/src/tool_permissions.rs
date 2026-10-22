@@ -604,6 +604,7 @@ mod tests {
             commit_message_instructions: None,
             thread_summary_model: None,
             compaction_model: None,
+            auto_review_model: None,
             inline_alternatives: vec![],
             favorite_models: vec![],
             hidden_models: vec![],

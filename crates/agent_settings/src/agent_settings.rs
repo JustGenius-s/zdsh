@@ -118,6 +118,7 @@ pub struct AgentSettings {
     pub commit_message_instructions: Option<String>,
     pub thread_summary_model: Option<LanguageModelSelection>,
     pub compaction_model: Option<LanguageModelSelection>,
+    pub auto_review_model: Option<LanguageModelSelection>,
     pub inline_alternatives: Vec<LanguageModelSelection>,
     pub favorite_models: Vec<LanguageModelSelection>,
     pub hidden_models: Vec<LanguageModelSelection>,
@@ -633,6 +634,7 @@ impl Settings for AgentSettings {
             commit_message_instructions: agent.commit_message_instructions,
             thread_summary_model: agent.thread_summary_model,
             compaction_model: agent.compaction_model,
+            auto_review_model: agent.auto_review_model,
             inline_alternatives: agent.inline_alternatives.unwrap_or_default(),
             favorite_models: agent.favorite_models,
             hidden_models: agent.hidden_models,
@@ -671,7 +673,11 @@ impl Settings for AgentSettings {
             message_editor_min_lines: agent.message_editor_min_lines.unwrap(),
             show_turn_stats: agent.show_turn_stats.unwrap(),
             show_merge_conflict_indicator: agent.show_merge_conflict_indicator.unwrap(),
-            default_permissions: agent.default_permissions.unwrap_or_default(),
+            // Auto review is only ever chosen for a single thread.
+            default_permissions: match agent.default_permissions.unwrap_or_default() {
+                AgentPermissions::AutoReview => AgentPermissions::Workspace,
+                permissions => permissions,
+            },
             tool_permissions: compile_tool_permissions(agent.tool_permissions),
             sandbox_permissions: compile_sandbox_permissions(agent.sandbox_permissions),
         }

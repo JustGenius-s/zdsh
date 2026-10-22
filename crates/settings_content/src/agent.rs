@@ -316,6 +316,10 @@ pub struct AgentSettingsContent {
     /// If the configured model is unavailable (provider not registered, model
     /// not found), the thread's current model is used instead.
     pub compaction_model: Option<LanguageModelSelection>,
+    /// Model that reviews a thread's requests for more access when the thread's
+    /// permissions are set to auto review. Falls back to the thread's currently
+    /// selected model when not specified or unavailable.
+    pub auto_review_model: Option<LanguageModelSelection>,
     /// Additional models with which to generate alternatives when performing inline assists.
     pub inline_alternatives: Option<Vec<LanguageModelSelection>>,
     /// The default profile to use in the Agent.
@@ -1121,8 +1125,6 @@ pub struct ToolRegexRule {
     Deserialize,
     JsonSchema,
     MergeFrom,
-    strum::VariantArray,
-    strum::VariantNames,
     strum::IntoStaticStr,
 )]
 #[serde(rename_all = "snake_case")]
@@ -1143,6 +1145,21 @@ pub enum AgentPermissions {
     /// Terminal commands run without a sandbox, and nothing asks for approval.
     #[strum(serialize = "Full access")]
     FullAccess,
+    /// Like workspace, but a model reviews requests to write to specific paths
+    /// outside the sandbox before the user is asked. Experimental, and only
+    /// chosen per thread: it can't be the default for new threads.
+    #[schemars(skip)]
+    #[strum(serialize = "Auto review")]
+    AutoReview,
+}
+
+/// The choices for `default_permissions`, which leave out auto review.
+impl strum::VariantArray for AgentPermissions {
+    const VARIANTS: &'static [Self] = &[Self::ReadOnly, Self::Workspace, Self::FullAccess];
+}
+
+impl strum::VariantNames for AgentPermissions {
+    const VARIANTS: &'static [&'static str] = &["Read-only", "Workspace", "Full access"];
 }
 
 #[derive(
@@ -1219,6 +1236,7 @@ mod tests {
             ("read_only", AgentPermissions::ReadOnly),
             ("workspace", AgentPermissions::Workspace),
             ("full_access", AgentPermissions::FullAccess),
+            ("auto_review", AgentPermissions::AutoReview),
         ] {
             assert_eq!(
                 serde_json::from_value::<AgentPermissions>(serde_json::json!(name))
@@ -1230,6 +1248,17 @@ mod tests {
                 serde_json::json!(name)
             );
         }
+    }
+
+    #[test]
+    fn default_permissions_choices_leave_out_auto_review() {
+        let choices = <AgentPermissions as strum::VariantArray>::VARIANTS;
+        let names = choices
+            .iter()
+            .map(|permissions| <&'static str>::from(*permissions))
+            .collect::<Vec<_>>();
+        assert_eq!(names, <AgentPermissions as strum::VariantNames>::VARIANTS);
+        assert!(!choices.contains(&AgentPermissions::AutoReview));
     }
 
     #[test]

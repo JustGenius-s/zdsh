@@ -54,6 +54,7 @@ pub struct LanguageModelRegistry {
     commit_message_model: Option<LanguageModel>,
     thread_summary_model: Option<LanguageModel>,
     compaction_model: Option<LanguageModel>,
+    auto_review_model: Option<LanguageModel>,
     providers: BTreeMap<LanguageModelProviderId, Arc<dyn LanguageModelProvider>>,
     inline_alternatives: Vec<LanguageModel>,
     /// Set of installed extension IDs that provide language models.
@@ -337,6 +338,14 @@ impl LanguageModelRegistry {
         self.set_compaction_model(configured_model, cx);
     }
 
+    pub fn select_auto_review_model(
+        &mut self,
+        model: Option<&SelectedModel>,
+        cx: &mut Context<Self>,
+    ) {
+        self.auto_review_model = model.and_then(|model| self.select_model(model, cx));
+    }
+
     /// Selects and sets the inline alternatives for language models based on
     /// provider name and id.
     pub fn select_inline_alternative_models(
@@ -514,6 +523,18 @@ impl LanguageModelRegistry {
         }
 
         self.compaction_model.clone()
+    }
+
+    /// Returns the configured auto review model without falling back through
+    /// `default_fast_model`/`default_model`. Callers fall back to the thread's
+    /// primary model themselves.
+    pub fn auto_review_model(&self) -> Option<LanguageModel> {
+        #[cfg(debug_assertions)]
+        if std::env::var("ZED_SIMULATE_NO_LLM_PROVIDER").is_ok() {
+            return None;
+        }
+
+        self.auto_review_model.clone()
     }
 
     /// The models to use for inline assists. Returns the union of the active

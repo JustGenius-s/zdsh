@@ -545,3 +545,60 @@ impl AgentTool for FileModifyingTool {
         })
     }
 }
+
+/// A tool that asks the sandbox for write access, so tests can drive how the
+/// request is approved.
+#[derive(JsonSchema, Serialize, Deserialize)]
+pub struct WriteAccessToolInput {
+    pub write_paths: Vec<String>,
+    #[serde(default)]
+    pub allow_fs_write_all: bool,
+    pub reason: String,
+}
+
+pub struct WriteAccessTool;
+
+impl AgentTool for WriteAccessTool {
+    type Input = WriteAccessToolInput;
+    type Output = String;
+
+    const NAME: &'static str = "write_access";
+
+    fn kind() -> acp::ToolKind {
+        acp::ToolKind::Execute
+    }
+
+    fn initial_title(
+        &self,
+        _input: Result<Self::Input, serde_json::Value>,
+        _cx: &mut App,
+    ) -> SharedString {
+        "Write files".into()
+    }
+
+    fn run(
+        self: Arc<Self>,
+        input: ToolInput<Self::Input>,
+        event_stream: ToolCallEventStream,
+        cx: &mut App,
+    ) -> Task<Result<String, String>> {
+        cx.spawn(async move |cx| {
+            let input = input.recv().await.map_err(|e| e.to_string())?;
+            let request = crate::sandboxing::SandboxRequest {
+                allow_fs_write_all: input.allow_fs_write_all,
+                unsandboxed: false,
+                write_paths: input
+                    .write_paths
+                    .iter()
+                    .map(|path| {
+                        settings::GrantedWritePath::from_requested(std::path::PathBuf::from(path))
+                    })
+                    .collect(),
+            };
+            cx.update(|cx| event_stream.authorize_sandbox(request, input.reason, cx))
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok("Wrote files".to_string())
+        })
+    }
+}

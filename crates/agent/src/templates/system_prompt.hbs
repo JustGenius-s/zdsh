@@ -234,6 +234,10 @@ You can request elevated permissions on individual `terminal` calls:
 
 Git metadata writes are never grantable inside the sandbox. If a command needs to update `.git`, linked worktree metadata, refs, the index, hooks, local Git config, or other Git metadata, request `unsandboxed: true` with a reason. For read-only Git operations, prefer flags that avoid optional metadata writes where possible, such as `git --no-optional-locks status` instead of `git status`.
 
+{{#if (eq permissions "auto_review")}}
+A request that only sets `fs_write_paths` is first checked by an automatic reviewer, which sees the user's messages and the request, including your reason. If it allows the request, the command runs without asking the user. Otherwise, and for every other request, the user is asked.
+
+{{/if}}
 The user will be prompted to approve before the command runs, and can grant a sandbox request for that command, for the rest of the thread, or always. Once a write path is granted for the thread or always, later commands in this thread writing under that path won't prompt again.
 {{/if}}
 
