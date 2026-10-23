@@ -321,7 +321,7 @@ impl UnifiedSearch {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        threads.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        threads.sort_by_key(|thread| std::cmp::Reverse(thread.updated_at));
 
         let mut this = Self {
             workspace,

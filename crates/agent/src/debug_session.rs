@@ -243,7 +243,7 @@ impl DebugSession {
                                 .append(true)
                                 .open(&log_path)?;
                             ensure!(
-                                file.metadata()?.len() + encoded.len() as u64 + 1 <= MAX_LOG_BYTES,
+                                file.metadata()?.len() + (encoded.len() as u64) < MAX_LOG_BYTES,
                                 "Debug log is full; clear it before reproducing again"
                             );
                             file.write_all(&encoded)?;

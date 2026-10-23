@@ -2740,6 +2740,8 @@ fn run_multi_workspace_sidebar_visual_tests(
                             sandboxed_terminal_temp_dir: None,
                             sandbox_grants: Default::default(),
                             auto_reviews: Default::default(),
+                            background_tasks: Vec::new(),
+                            background_notifications_paused: false,
                         },
                         path_list,
                         cx,
