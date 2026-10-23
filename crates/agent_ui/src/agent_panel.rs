@@ -3343,6 +3343,14 @@ impl AgentPanel {
         }
     }
 
+    pub fn thread_id_for_item(&self, item: &dyn ItemHandle) -> Option<ThreadId> {
+        self.conversation_items
+            .iter()
+            .find_map(|(thread_id, conversation)| {
+                (conversation.entity_id() == item.item_id()).then_some(*thread_id)
+            })
+    }
+
     /// Drops a thread — retained or the active ephemeral draft — from
     /// the panel and deletes its metadata row. Used by the sidebar when
     /// the user dismisses a parked draft.

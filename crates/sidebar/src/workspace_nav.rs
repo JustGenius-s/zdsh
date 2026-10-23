@@ -102,13 +102,8 @@ enum ThreadOrder {
 struct FileRow {
     path: ProjectPath,
     item: Option<Box<dyn ItemHandle>>,
-    end: FileRowEnd,
-}
-
-enum FileRowEnd {
-    None,
-    DiffStats(DiffStats),
-    Status(&'static str, Color),
+    diff_stats: Option<DiffStats>,
+    status: Option<(&'static str, Color)>,
 }
 
 impl WorkspaceNav {
@@ -679,6 +674,13 @@ impl WorkspaceNav {
 
     fn render_threads(&self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) -> AnyElement {
         let key = workspace.read(cx).project_group_key(cx);
+        let active_thread_id = workspace.read(cx).active_item(cx).and_then(|item| {
+            workspace
+                .read(cx)
+                .panel::<AgentPanel>(cx)?
+                .read(cx)
+                .thread_id_for_item(item.as_ref())
+        });
         let mut threads = self
             .threads
             .as_ref()
@@ -724,7 +726,7 @@ impl WorkspaceNav {
                     div().truncate().child(thread.title),
                 )
                 .when_some(end, |row, end| row.end(end))
-                .selected(thread.is_active)
+                .selected(active_thread_id == Some(thread.thread_id))
                 .on_click(move |_, window, cx| {
                     if let Some(thread_list) = &thread_list {
                         thread_list.update(cx, |thread_list, cx| {
@@ -804,7 +806,7 @@ impl WorkspaceNav {
                     let stats = DiffStats::single_file(diff.read(cx));
                     match thread_changes.iter_mut().find(|row| row.path == path) {
                         Some(FileRow {
-                            end: FileRowEnd::DiffStats(existing),
+                            diff_stats: Some(existing),
                             ..
                         }) => {
                             existing.lines_added += stats.lines_added;
@@ -814,7 +816,8 @@ impl WorkspaceNav {
                         None => thread_changes.push(FileRow {
                             path,
                             item: None,
-                            end: FileRowEnd::DiffStats(stats),
+                            diff_stats: Some(stats),
+                            status: None,
                         }),
                     }
                 }
@@ -846,7 +849,11 @@ impl WorkspaceNav {
                 git_changes.push(FileRow {
                     path,
                     item: None,
-                    end: FileRowEnd::Status(letter, color),
+                    diff_stats: entry.diff_stat.map(|stats| DiffStats {
+                        lines_added: stats.added,
+                        lines_removed: stats.deleted,
+                    }),
+                    status: Some((letter, color)),
                 });
             }
         }
@@ -870,7 +877,8 @@ impl WorkspaceNav {
                 open_files.push(FileRow {
                     path,
                     item: Some(item.boxed_clone()),
-                    end: FileRowEnd::None,
+                    diff_stats: None,
+                    status: None,
                 });
             }
         }
@@ -879,9 +887,15 @@ impl WorkspaceNav {
 
     /// `id_prefix` tells apart the rows of a file listed more than once, such as one that is
     /// both open and changed.
-    fn render_file_row(&self, id_prefix: &str, row: FileRow, cx: &App) -> impl IntoElement {
-        let colors = cx.theme().colors();
+    fn render_file_row(
+        &self,
+        id_prefix: &str,
+        row: FileRow,
+        active_path: Option<&ProjectPath>,
+        cx: &App,
+    ) -> impl IntoElement {
         let status = cx.theme().status();
+        let selected = active_path == Some(&row.path);
         let name: SharedString = row
             .path
             .path
@@ -890,13 +904,12 @@ impl WorkspaceNav {
             .to_string()
             .into();
         let full_path: SharedString = row.path.path.as_unix_str().to_string().into();
-        let end = match row.end {
-            FileRowEnd::None => None,
-            FileRowEnd::DiffStats(stats) => Some(
-                h_flex()
-                    .gap(rems_from_px(4_f32))
-                    .ui_text(UiTextSize::Caption, UiTextTone::Muted, cx)
-                    .child(
+        let end = (row.diff_stats.is_some() || row.status.is_some()).then(|| {
+            h_flex()
+                .gap(rems_from_px(4_f32))
+                .ui_text(UiTextSize::Caption, UiTextTone::Muted, cx)
+                .when_some(row.diff_stats, |end, stats| {
+                    end.child(
                         div()
                             .text_color(status.created)
                             .child(format!("+{}", stats.lines_added)),
@@ -906,16 +919,11 @@ impl WorkspaceNav {
                             .text_color(status.deleted)
                             .child(format!("−{}", stats.lines_removed)),
                     )
-                    .into_any_element(),
-            ),
-            FileRowEnd::Status(letter, color) => Some(
-                div()
-                    .ui_text(UiTextSize::Caption, UiTextTone::Muted, cx)
-                    .text_color(color.color(cx))
-                    .child(letter)
-                    .into_any_element(),
-            ),
-        };
+                })
+                .when_some(row.status, |end, (letter, color)| {
+                    end.child(div().text_color(color.color(cx)).child(letter))
+                })
+        });
         let path = row.path.clone();
         let item = row.item;
         let workspace = self.workspace.clone();
@@ -925,9 +933,10 @@ impl WorkspaceNav {
                 row.path.worktree_id.to_usize(),
                 row.path.path.as_unix_str()
             )),
-            file_icon(row.path.path.as_std_path(), cx).text_color(colors.icon_muted),
+            file_icon(row.path.path.as_std_path(), cx),
             div().truncate().child(name),
         )
+        .selected(selected)
         .when_some(end, |row, end| row.end(end))
         .tooltip(move |window, cx| KitTooltip::new(full_path.clone()).build(window, cx))
         .on_click(move |_, window, cx| {
@@ -946,6 +955,11 @@ impl WorkspaceNav {
 
     fn render_files(&self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) -> AnyElement {
         let open_files = self.open_files(workspace, cx);
+        let active_path = workspace
+            .read(cx)
+            .active_item(cx)
+            .filter(|item| item.tab_category(cx) == TabCategory::File)
+            .and_then(|item| item.project_path(cx));
         let weak_workspace = self.workspace.clone();
         let buttons = vec![
             glyph_button("project-tree", IconName::ListTodoSubtask)
@@ -987,9 +1001,9 @@ impl WorkspaceNav {
                         group.child(self.render_placeholder("nav-no-files", "No open files", cx))
                     })
                     .children(
-                        open_files
-                            .into_iter()
-                            .map(|row| self.render_file_row("nav-file", row, cx)),
+                        open_files.into_iter().map(|row| {
+                            self.render_file_row("nav-file", row, active_path.as_ref(), cx)
+                        }),
                     )
             })
             .into_any_element()
@@ -997,6 +1011,11 @@ impl WorkspaceNav {
 
     fn render_changes(&self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) -> AnyElement {
         let (thread_changes, git_changes, git_change_count) = self.changed_files(workspace, cx);
+        let active_path = workspace
+            .read(cx)
+            .active_item(cx)
+            .filter(|item| item.tab_category(cx) == TabCategory::File)
+            .and_then(|item| item.project_path(cx));
         let colors = cx.theme().colors();
         let hidden_git_changes = git_change_count.saturating_sub(git_changes.len());
 
@@ -1005,7 +1024,7 @@ impl WorkspaceNav {
             .mt(rems_from_px(GROUP_GAP))
             .child(self.render_section_label(
                 Section::Changes,
-                IconName::DiffSingle,
+                IconName::DiffMultiple,
                 "Changes",
                 Vec::new(),
                 cx,
@@ -1018,16 +1037,12 @@ impl WorkspaceNav {
                             group.child(self.render_placeholder("nav-no-changes", "No changes", cx))
                         },
                     )
-                    .children(
-                        thread_changes
-                            .into_iter()
-                            .map(|row| self.render_file_row("nav-thread-change", row, cx)),
-                    )
-                    .children(
-                        git_changes
-                            .into_iter()
-                            .map(|row| self.render_file_row("nav-git-change", row, cx)),
-                    )
+                    .children(thread_changes.into_iter().map(|row| {
+                        self.render_file_row("nav-thread-change", row, active_path.as_ref(), cx)
+                    }))
+                    .children(git_changes.into_iter().map(|row| {
+                        self.render_file_row("nav-git-change", row, active_path.as_ref(), cx)
+                    }))
                     .when(hidden_git_changes > 0, |group| {
                         group.child(
                             SidebarRow::new(

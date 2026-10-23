@@ -81,7 +81,11 @@ The shared sidebar row implementation is `crates/sidebar/src/sidebar_row.rs`. Re
 
 Keep layout dimensions separate from typography. Icons use the existing `gpui_icons` helpers and their optical sizing; a 20px slot does not mean a 20px drawing. Preserve the same leading column for group rows and their content unless the content is actually nested.
 
-Selected rows use the theme's selected background; hovering a selected row keeps that background. Keyboard focus remains visible. Reserve space for trailing metadata and actions, and let only the title shrink. Muted metadata remains muted when its row is selected. Keep complete titles and paths available through the existing tooltip or editing flow.
+Navigation selection follows the active tab in the active pane, including changes made through tabs, keyboard navigation, and pane focus. Resolve a thread from its conversation tab and a file from its project path; do not use a panel's last selected thread as the active-tab state. If a file appears in both Files and Changes, both rows represent that active file.
+
+File icons come from `FileIcons` through the shared sidebar helper. Embedded assets use an icon element; extension themes return disk paths, which must load as images so SVG colors and raster formats are preserved. Do not send external theme paths to the embedded asset loader.
+
+Selected rows use the theme's selected background; hovering a selected row keeps that background. Keyboard focus remains visible. Reserve space for trailing metadata and actions, and let only the title shrink. Muted metadata remains muted when its row is selected. Changes rows show available added and removed line counts in the theme's created and deleted colors, alongside Git status. Missing statistics must not be represented as zero changes. Keep complete titles and paths available through the existing tooltip or editing flow.
 
 Current sidebar labels use single-line ellipsis. Cursor's agent-title fade is a separate overflow behavior, not a typography setting; migrate it through a shared component when implemented. Do not imitate a transparency mask by painting a flat background-colored gradient over translucent application chrome.
 

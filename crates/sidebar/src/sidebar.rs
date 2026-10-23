@@ -397,10 +397,10 @@ impl ThreadEntry {
 /// A thread of one project group, for a workspace's own sidebar.
 pub(crate) struct ProjectThread {
     pub entry_index: usize,
+    pub thread_id: agent_ui::ThreadId,
     pub title: SharedString,
     pub status: StatusDot,
     pub updated: Option<String>,
-    pub is_active: bool,
 }
 
 #[derive(Clone)]
@@ -6678,14 +6678,11 @@ impl Sidebar {
                 };
                 Some(ProjectThread {
                     entry_index: header_index + 1 + offset,
+                    thread_id: thread.metadata.thread_id,
                     title: thread.metadata.display_title(),
                     status,
                     updated: (thread.draft != Some(DraftKind::Empty))
                         .then(|| relative_time(Self::thread_display_time(&thread.metadata))),
-                    is_active: self
-                        .active_entry
-                        .as_ref()
-                        .is_some_and(|active| active.matches_entry(entry)),
                 })
             })
             .collect()

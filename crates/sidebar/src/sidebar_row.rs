@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use file_icons::FileIcons;
@@ -12,6 +12,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
 };
+use gpui_kit::img;
 use icons::IconName;
 use theme::{ActiveTheme, UiTextSize, UiTextTone, UiTypography};
 use ui::rems_from_px;
@@ -319,12 +320,25 @@ pub(crate) fn sidebar_icon(icon: IconName) -> Icon {
 }
 
 /// The icon theme's icon for the file at `path`, at the sidebar's icon size.
-#[track_caller]
-pub(crate) fn file_icon(path: &Path, cx: &App) -> Icon {
+pub(crate) fn file_icon(path: &Path, cx: &App) -> AnyElement {
     let icon_path = FileIcons::get_icon(path, cx).unwrap_or_else(|| IconName::File.path().into());
-    Icon::empty()
-        .path(icon_path)
-        .size(rems_from_px(FILE_ICON_SIZE))
+    if icon_path.starts_with("icons/")
+        || icon_path.starts_with("gpui-icons/")
+        || icon_path.starts_with("kit/")
+    {
+        KitIcon::empty()
+            .path(icon_path)
+            .size(rems_from_px(FILE_ICON_SIZE))
+            .flex_none()
+            .text_color(cx.theme().colors().icon_muted)
+            .into_any_element()
+    } else {
+        // Extension themes return disk paths and may contain multicolor SVGs or raster images.
+        img(Arc::<Path>::from(Path::new(icon_path.as_ref())))
+            .size(rems_from_px(FILE_ICON_SIZE))
+            .flex_none()
+            .into_any_element()
+    }
 }
 
 /// An icon from the set Cursor's sidebar draws with, at the sidebar's icon size.
