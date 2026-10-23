@@ -84,13 +84,13 @@ The title bar holds a pill for each project open in the window. Click a pill or 
 
 Each project has a sidebar at its left edge, 272px wide at the default UI font size:
 
-- The header shows the project's name and branch, a **Workspace Tools** menu with Diagnostics and the Debugger, and Search.
-- **Threads** lists the project's threads, newest first, with their status: a spinner while running, an orange dot and **Approve** while waiting for permission, and how long ago each was last used. Click a thread to open its tab. **+** starts a thread.
-- **Files** lists the files at hand: **Thread Changes** (files the project's threads edited, with lines added and removed), **Open** (other files open in tabs) and **Git Changes** (the repository's first changed files, with **All N Changes** for the rest). **+** creates or opens a file.
-- **Terminals** lists the terminal tabs with their command or task status. **+** opens a terminal or runs a quick action.
-- The footer shows how many files the repository has changed and opens the Changes tab (`ctrl-shift-g`).
+- The header shows the project's name with two buttons: **Customize Sidebar** and Search. **Customize Sidebar** orders threads by **Updated** or **Status**, hides their times (**Show** › **Updated**), filters them by status (**Filters** › **Status**: Needs Attention, Error, Unread, Working, Draft, Done) and marks them all as read. These choices last until the window closes.
+- **Threads** lists the project's threads, newest first, with their status: a spinner while running, an orange dot and **Approve** while waiting for permission, and how long ago each was last used. The first 8 are listed, then **More** lists the rest. Click a thread to open its tab. **+** starts a thread.
+- **Files** lists the files at hand, in this order: files the project's threads edited (with lines added and removed), other files open in tabs, and the repository's first changed files (with M, A or D, and **All N Changes** for the rest). Each row shows the file name; its tooltip shows the path. **+** creates or opens a file.
+- **Terminals** lists the terminal tabs by folder, with a spinner while a command runs and a red dot when it fails; the tooltip shows the command and its status. **+** opens a terminal or runs a quick action.
+- The footer shows the branch and how many files the repository has changed, and opens the Changes tab (`ctrl-shift-g`). The wrench beside it is the **Workspace Tools** menu with Diagnostics and the Debugger.
 
-Group titles follow Cursor's sidebar: the UI font size, aligned with the row icons, with buttons that show on hover. Sizes follow the configured UI font. The Cursor measurements are recorded in [the Threads layout research](cursor-thread-layout-research.md).
+Sections follow Cursor's group labels: only section titles have icons, and every row starts with a dot in the same column. A section title has its icon in the rows' icon column (an agent for Threads, a folder that opens and closes for Files, a bordered terminal for Terminals), which turns into a chevron while hovered (down when the section is expanded, right when folded), the title in the rows' title column at the UI font size, and buttons that show on hover. Click a section's title to fold it. An expanded section with no rows says so in muted text, like Cursor's "No agents yet". Icons come from the same icon set as Cursor's sidebar. Sizes follow the configured UI font. The Cursor measurements are recorded in [the Threads layout research](cursor-thread-layout-research.md).
 
 The tree button beside **Files**, `cmd-shift-e`, and actions that reveal a file open the project's file tree beside the sidebar. It floats over the center and closes when a file opens or on Escape; pin it to keep it in a column of its own. **Find a File…** opens file search. The left dock no longer shows the file tree.
 

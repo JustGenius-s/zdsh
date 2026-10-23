@@ -2,14 +2,18 @@ use std::time::Duration;
 
 use action_log::DiffStats;
 use agent_ui::AgentPanel;
-use gpui::AsKeystroke as _;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Context, Entity, Focusable as _, IntoElement,
-    ParentElement, Render, SharedString, Styled, Subscription, WeakEntity, Window, deferred, div,
-    ease_out_quint, prelude::*, px,
+    MouseButton, ParentElement, Render, SharedString, Styled, Subscription, WeakEntity, Window,
+    deferred, div, ease_out_quint, prelude::*, px,
 };
-use gpui_kit::component::{Selectable as _, h_flex, kbd::Kbd, menu::DropdownMenu as _, v_flex};
-use icons::IconName;
+use gpui_icons::IconName;
+use gpui_kit::component::{
+    Selectable as _, h_flex,
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
+    tooltip::Tooltip as KitTooltip,
+    v_flex,
+};
 use project::{ProjectPath, git_store::GitStore};
 use project_panel::ProjectPanel;
 use theme::ActiveTheme;
@@ -20,20 +24,32 @@ use workspace::{ItemHandle, MultiWorkspace, Workspace, WorkspaceNavigation, item
 
 use crate::Sidebar;
 use crate::sidebar_row::{
-    GROUP_GAP, LIST_INSET, SidebarRow, StatusDot, sidebar_icon, sidebar_icon_button,
+    GROUP_GAP, LIST_INSET, ROW_MIN_HEIGHT, ROW_STACK_GAP, SidebarRow, StatusDot, glyph,
+    glyph_button,
 };
 
 /// Space before a group's title, lining it up with the icons of the rows below it.
 const GROUP_LABEL_PADDING_START: f32 = 9.;
-const GROUP_LABEL_PADDING_END: f32 = 4.;
-const GROUP_LABEL_HEIGHT: f32 = 28.;
-const FILE_GROUP_LABEL_HEIGHT: f32 = 20.;
-const HEADER_HEIGHT: f32 = 30.;
+/// Space after a group's title and buttons: the rows' border and padding, so the buttons end
+/// where the rows' content does.
+const GROUP_LABEL_PADDING_END: f32 = 7.;
+const HEADER_HEIGHT: f32 = ROW_MIN_HEIGHT;
 const NAV_WIDTH: f32 = 272.;
 const FILES_WIDTH: f32 = 264.;
 const FILES_ENTER_DURATION: Duration = Duration::from_millis(240);
 /// How many of the repository's changed files the sidebar lists before linking to all of them.
 const GIT_CHANGES_SHOWN: usize = 3;
+/// How many threads the sidebar lists before a More row, as many as Cursor's sidebar does.
+const THREADS_SHOWN: usize = 8;
+/// The statuses threads can be filtered by, in the order the Status ordering lists them.
+const THREAD_STATUSES: [(StatusDot, &str); 6] = [
+    (StatusDot::WaitingForConfirmation, "Needs Attention"),
+    (StatusDot::Error, "Error"),
+    (StatusDot::Unread, "Unread"),
+    (StatusDot::Running, "Working"),
+    (StatusDot::Draft, "Draft"),
+    (StatusDot::Read, "Done"),
+];
 
 /// The sidebar at a workspace's left edge, showing that workspace's threads, files and
 /// terminals.
@@ -47,6 +63,12 @@ pub struct WorkspaceNav {
     files: FilesState,
     /// Counts openings of the file tree, so each one replays its entrance.
     files_openings: usize,
+    collapsed_sections: Vec<Section>,
+    thread_order: ThreadOrder,
+    show_thread_times: bool,
+    /// The statuses whose threads are listed, or every status when empty.
+    status_filter: Vec<StatusDot>,
+    show_all_threads: bool,
     _threads_subscription: Option<Subscription>,
     _project_files_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
@@ -59,6 +81,20 @@ enum FilesState {
     Floating,
     /// Takes a column of its own and stays open.
     Pinned,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Threads,
+    Files,
+    Terminals,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ThreadOrder {
+    Updated,
+    /// Threads that need the user first, then by recency within each status.
+    Status,
 }
 
 struct FileRow {
@@ -109,6 +145,11 @@ impl WorkspaceNav {
             project_files: None,
             files: FilesState::Closed,
             files_openings: 0,
+            collapsed_sections: Vec::new(),
+            thread_order: ThreadOrder::Updated,
+            show_thread_times: true,
+            status_filter: Vec::new(),
+            show_all_threads: false,
             _threads_subscription: None,
             _project_files_subscription: None,
             _subscriptions: subscriptions,
@@ -253,13 +294,7 @@ impl WorkspaceNav {
                             .gap(rems_from_px(6_f32))
                             .pl(rems_from_px(GROUP_LABEL_PADDING_START))
                             .pr(rems_from_px(GROUP_LABEL_PADDING_END))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(colors.text)
-                                    .child("Files"),
-                            )
+                            .child(div().flex_none().text_color(colors.text).child("Files"))
                             .child(
                                 div()
                                     .min_w_0()
@@ -270,7 +305,7 @@ impl WorkspaceNav {
                             )
                             .child(div().flex_1())
                             .child(
-                                sidebar_icon_button("pin-project-files", IconName::Pin)
+                                glyph_button("pin-project-files", IconName::Pin)
                                     .tooltip(if pinned {
                                         "Unpin"
                                     } else {
@@ -282,7 +317,7 @@ impl WorkspaceNav {
                                     ),
                             )
                             .child(
-                                sidebar_icon_button("close-project-files", IconName::Close)
+                                glyph_button("close-project-files", IconName::X)
                                     .tooltip("Close")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.close_project_files(window, cx)
@@ -291,28 +326,24 @@ impl WorkspaceNav {
                     ),
             )
             .child(
-                div()
-                    .w_full()
-                    .px(rems_from_px(LIST_INSET))
-                    .pb(rems_from_px(6_f32))
-                    .child(
-                        SidebarRow::new(
-                            "filter-project-files",
-                            sidebar_icon(IconName::MagnifyingGlass).text_color(colors.icon_muted),
-                            div()
-                                .truncate()
-                                .text_color(colors.text_placeholder)
-                                .child("Find a File…"),
+                div().w_full().pb(rems_from_px(6_f32)).child(
+                    SidebarRow::new(
+                        "filter-project-files",
+                        glyph(IconName::MagnifyingGlass).text_color(colors.icon_muted),
+                        div()
+                            .truncate()
+                            .text_color(colors.text_placeholder)
+                            .child("Find a File…"),
+                    )
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(
+                            Box::new(zed_actions::unified_search::Toggle {
+                                tab: Some(zed_actions::unified_search::SearchTab::Files),
+                            }),
+                            cx,
                         )
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(
-                                Box::new(zed_actions::unified_search::Toggle {
-                                    tab: Some(zed_actions::unified_search::SearchTab::Files),
-                                }),
-                                cx,
-                            )
-                        }),
-                    ),
+                    }),
+                ),
             )
             .child(div().flex_1().min_h_0().child(project_files))
             .child(
@@ -376,78 +407,46 @@ impl WorkspaceNav {
         threads.read(cx).waiting_thread_count(&key) > 0
     }
 
-    fn render_header(&self, workspace: &Entity<Workspace>, cx: &App) -> impl IntoElement {
+    fn render_header(&self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) -> AnyElement {
         let key = workspace.read(cx).project_group_key(cx);
-        let accent_index = self.multi_workspace(cx).and_then(|multi_workspace| {
-            multi_workspace
-                .read(cx)
-                .project_group_keys()
-                .iter()
-                .position(|group_key| *group_key == key)
-        });
-        let accent = cx
-            .theme()
-            .accents()
-            .color_for_index(accent_index.unwrap_or_default() as u32);
-        let branch = workspace
-            .read(cx)
-            .project()
-            .read(cx)
-            .active_repository(cx)
-            .and_then(|repository| {
-                repository
-                    .read(cx)
-                    .branch
-                    .as_ref()
-                    .map(|branch| SharedString::from(branch.name().to_string()))
-            });
         let colors = cx.theme().colors();
-        let weak_workspace = self.workspace.clone();
+        let nav = cx.entity().downgrade();
+        let customized = self.thread_order != ThreadOrder::Updated
+            || !self.show_thread_times
+            || !self.status_filter.is_empty();
 
+        // Like Cursor's collection label: the base size in a muted color, its start lined up
+        // with the section icons below, and its buttons over the rows' action column.
         h_flex()
             .w_full()
             .min_h(rems_from_px(HEADER_HEIGHT))
             .px(rems_from_px(LIST_INSET))
+            .pb(rems_from_px(ROW_STACK_GAP))
             .child(
                 h_flex()
                     .w_full()
                     .min_w_0()
-                    .gap(rems_from_px(6_f32))
+                    .gap(rems_from_px(4_f32))
                     .pl(rems_from_px(GROUP_LABEL_PADDING_START))
                     .pr(rems_from_px(GROUP_LABEL_PADDING_END))
-                    .child(div().flex_none().size(px(8.)).rounded(px(2.)).bg(accent))
+                    .text_color(colors.text_muted)
                     .child(
                         div()
+                            .flex_1()
                             .min_w_0()
                             .truncate()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(colors.text)
                             .child(key.display_name(&Default::default())),
                     )
-                    .when_some(branch, |row, branch| {
-                        row.child(
-                            h_flex()
-                                .min_w_0()
-                                .gap(rems_from_px(4_f32))
-                                .text_sm()
-                                .text_color(colors.text_muted)
-                                .child(sidebar_icon(IconName::GitBranch).flex_none())
-                                .child(div().min_w_0().truncate().child(branch)),
-                        )
-                    })
-                    .child(div().flex_1())
                     .child(
-                        sidebar_icon_button("workspace-options", IconName::ChevronDown)
-                            .tooltip("Workspace Tools")
-                            .dropdown_menu(move |menu, _, cx| {
-                                let Some(workspace) = weak_workspace.upgrade() else {
-                                    return menu;
-                                };
-                                workspace.read(cx).tools_menu(menu, cx)
+                        glyph_button("customize-sidebar", IconName::ListFilter)
+                            .tooltip("Customize Sidebar")
+                            .selected(customized)
+                            .dropdown_menu(move |menu, window, cx| {
+                                Self::customize_menu(nav.clone(), menu, window, cx)
                             }),
                     )
                     .child(
-                        sidebar_icon_button("workspace-search", IconName::MagnifyingGlass)
+                        glyph_button("workspace-search", IconName::MagnifyingGlass)
                             .tooltip("Search")
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(
@@ -457,97 +456,236 @@ impl WorkspaceNav {
                             }),
                     ),
             )
+            .into_any_element()
     }
 
-    /// A group's title with its count, and buttons that show while the group is hovered.
-    fn render_group_label(
-        &self,
-        id: &'static str,
-        title: &'static str,
-        count: usize,
-        buttons: Vec<AnyElement>,
-        cx: &App,
-    ) -> impl IntoElement {
-        let colors = cx.theme().colors();
-        let group = SharedString::from(format!("workspace-nav-{id}"));
-        h_flex()
-            .id(id)
-            .group(group.clone())
-            .w_full()
-            .min_h(rems_from_px(GROUP_LABEL_HEIGHT))
-            .px(rems_from_px(LIST_INSET))
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap(rems_from_px(6_f32))
-                    .pl(rems_from_px(GROUP_LABEL_PADDING_START))
-                    .pr(rems_from_px(GROUP_LABEL_PADDING_END))
-                    .text_color(colors.text_muted)
-                    .child(title)
-                    .child(
-                        div()
-                            .text_color(colors.text_placeholder)
-                            .child(count.to_string()),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        h_flex()
-                            .invisible()
-                            .group_hover(group, |style| style.visible())
-                            .children(buttons),
-                    ),
+    /// The menu behind the header's filter button, laid out like Cursor's Customize Sidebar menu.
+    fn customize_menu(
+        nav: WeakEntity<Self>,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let Some(this) = nav.upgrade() else {
+            return menu;
+        };
+        let (thread_order, show_thread_times, status_filter) = {
+            let this = this.read(cx);
+            (
+                this.thread_order,
+                this.show_thread_times,
+                this.status_filter.clone(),
             )
+        };
+        menu.submenu("Ordering", window, cx, {
+            let nav = nav.clone();
+            move |menu, _, _| {
+                [
+                    (ThreadOrder::Updated, "Updated"),
+                    (ThreadOrder::Status, "Status"),
+                ]
+                .into_iter()
+                .fold(menu, |menu, (order, label)| {
+                    let nav = nav.clone();
+                    menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(thread_order == order)
+                            .on_click(move |_, _, cx| {
+                                nav.update(cx, |this, cx| {
+                                    this.thread_order = order;
+                                    cx.notify();
+                                })
+                                .log_err();
+                            }),
+                    )
+                })
+            }
+        })
+        .submenu("Show", window, cx, {
+            let nav = nav.clone();
+            move |menu, _, _| {
+                let nav = nav.clone();
+                menu.item(
+                    PopupMenuItem::new("Updated")
+                        .checked(show_thread_times)
+                        .on_click(move |_, _, cx| {
+                            nav.update(cx, |this, cx| {
+                                this.show_thread_times = !this.show_thread_times;
+                                cx.notify();
+                            })
+                            .log_err();
+                        }),
+                )
+            }
+        })
+        .separator()
+        .label("Filters")
+        .submenu("Status", window, cx, {
+            let nav = nav.clone();
+            move |menu, _, _| {
+                THREAD_STATUSES
+                    .into_iter()
+                    .fold(menu, |menu, (status, label)| {
+                        let nav = nav.clone();
+                        menu.item(
+                            PopupMenuItem::new(label)
+                                .checked(status_filter.contains(&status))
+                                .on_click(move |_, _, cx| {
+                                    nav.update(cx, |this, cx| {
+                                        this.toggle_status_filter(status, cx)
+                                    })
+                                    .log_err();
+                                }),
+                        )
+                    })
+            }
+        })
+        .separator()
+        .item(
+            PopupMenuItem::new("Mark All as Read").on_click(move |_, _, cx| {
+                nav.update(cx, |this, cx| this.mark_threads_read(cx))
+                    .log_err();
+            }),
+        )
     }
 
-    fn render_threads(&self, workspace: &Entity<Workspace>, cx: &App) -> impl IntoElement {
+    fn toggle_status_filter(&mut self, status: StatusDot, cx: &mut Context<Self>) {
+        if let Some(index) = self.status_filter.iter().position(|shown| *shown == status) {
+            self.status_filter.remove(index);
+        } else {
+            self.status_filter.push(status);
+        }
+        cx.notify();
+    }
+
+    fn mark_threads_read(&mut self, cx: &mut Context<Self>) {
+        let (Some(threads), Some(workspace)) = (self.threads.clone(), self.workspace.upgrade())
+        else {
+            return;
+        };
         let key = workspace.read(cx).project_group_key(cx);
-        let threads = self
+        threads.update(cx, |threads, cx| {
+            threads.mark_project_threads_read(&key, cx)
+        });
+    }
+
+    fn is_collapsed(&self, section: Section) -> bool {
+        self.collapsed_sections.contains(&section)
+    }
+
+    fn toggle_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if let Some(index) = self
+            .collapsed_sections
+            .iter()
+            .position(|collapsed| *collapsed == section)
+        {
+            self.collapsed_sections.remove(index);
+        } else {
+            self.collapsed_sections.push(section);
+        }
+        cx.notify();
+    }
+
+    /// A section's icon and title in the rows' icon and title columns, like a Cursor group
+    /// label. Clicking it folds the section; its buttons show while it is hovered.
+    fn render_section_label(
+        &self,
+        section: Section,
+        icon: IconName,
+        title: &'static str,
+        buttons: Vec<AnyElement>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let colors = cx.theme().colors();
+        let id = match section {
+            Section::Threads => "threads",
+            Section::Files => "files",
+            Section::Terminals => "terminals",
+        };
+        let group = SharedString::from(format!("workspace-nav-{id}"));
+        let chevron = if self.is_collapsed(section) {
+            IconName::ChevronRight
+        } else {
+            IconName::ChevronDown
+        };
+        SidebarRow::new(
+            SharedString::from(format!("nav-section-{id}")),
+            glyph(icon).text_color(colors.text_muted),
+            div().truncate().text_color(colors.text).child(title),
+        )
+        .leading_on_hover(glyph(chevron).text_color(colors.text_muted))
+        .group(group.clone())
+        .end(
+            h_flex()
+                .invisible()
+                .group_hover(group, |style| style.visible())
+                // A button's click shouldn't also fold the section.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .children(buttons),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| this.toggle_section(section, cx)))
+        .into_any_element()
+    }
+
+    /// What an expanded section shows when it has no rows, like Cursor's "No agents yet": muted
+    /// text in the rows' title column.
+    fn render_placeholder(&self, id: &'static str, text: &'static str, cx: &App) -> AnyElement {
+        SidebarRow::new(
+            id,
+            div(),
+            div()
+                .truncate()
+                .text_color(cx.theme().colors().text_muted)
+                .child(text),
+        )
+        .into_any_element()
+    }
+
+    fn render_threads(&self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) -> AnyElement {
+        let key = workspace.read(cx).project_group_key(cx);
+        let mut threads = self
             .threads
             .as_ref()
             .map(|threads| threads.read(cx).project_threads(&key))
             .unwrap_or_default();
+        if !self.status_filter.is_empty() {
+            threads.retain(|thread| self.status_filter.contains(&thread.status));
+        }
+        if self.thread_order == ThreadOrder::Status {
+            // The list comes most recent first, and the stable sort keeps that within a status.
+            threads.sort_by_key(|thread| {
+                THREAD_STATUSES
+                    .iter()
+                    .position(|(status, _)| *status == thread.status)
+            });
+        }
+        let hidden_threads = if self.show_all_threads {
+            0
+        } else {
+            threads.len().saturating_sub(THREADS_SHOWN)
+        };
+        threads.truncate(threads.len() - hidden_threads);
+
         let colors = cx.theme().colors();
         let warning = cx.theme().status().warning;
-        let new_thread = sidebar_icon_button("new-thread", IconName::Plus)
-            .tooltip("New Thread")
-            .on_click(|_, window, cx| {
-                window.dispatch_action(Box::new(zed_actions::agent::NewThread), cx)
-            })
-            .into_any_element();
-
-        v_flex()
-            .w_full()
-            .child(self.render_group_label(
-                "threads",
-                "Threads",
-                threads.len(),
-                vec![new_thread],
-                cx,
-            ))
-            .children(threads.into_iter().map(|thread| {
+        let show_thread_times = self.show_thread_times;
+        let rows = threads
+            .into_iter()
+            .map(|thread| {
                 let entry_index = thread.entry_index;
                 let end = if thread.status == StatusDot::WaitingForConfirmation {
                     Some(div().text_sm().text_color(warning).child("Approve"))
                 } else {
-                    thread.updated.map(|updated| {
-                        div()
-                            .text_sm()
-                            .text_color(colors.text_placeholder)
-                            .child(updated)
-                    })
+                    thread
+                        .updated
+                        .filter(|_| show_thread_times)
+                        .map(|updated| div().text_sm().text_color(colors.text_muted).child(updated))
                 };
                 let thread_list = self.threads.clone();
                 SidebarRow::new(
                     SharedString::from(format!("nav-thread-{entry_index}")),
                     thread.status,
-                    div()
-                        .truncate()
-                        .text_color(if thread.is_active {
-                            colors.text
-                        } else {
-                            colors.text_muted
-                        })
-                        .child(thread.title),
+                    div().truncate().text_color(colors.text).child(thread.title),
                 )
                 .when_some(end, |row, end| row.end(end))
                 .selected(thread.is_active)
@@ -558,7 +696,50 @@ impl WorkspaceNav {
                         });
                     }
                 })
-            }))
+            })
+            .collect::<Vec<_>>();
+        let new_thread = glyph_button("new-thread", IconName::Plus)
+            .tooltip("New Thread")
+            .on_click(|_, window, cx| {
+                window.dispatch_action(Box::new(zed_actions::agent::NewThread), cx)
+            })
+            .into_any_element();
+
+        v_flex()
+            .w_full()
+            .child(self.render_section_label(
+                Section::Threads,
+                IconName::Agent,
+                "Threads",
+                vec![new_thread],
+                cx,
+            ))
+            .when(!self.is_collapsed(Section::Threads), |section| {
+                let placeholder = if self.status_filter.is_empty() {
+                    "No threads yet"
+                } else {
+                    "No threads match the filters"
+                };
+                section
+                    .when(rows.is_empty(), |section| {
+                        section.child(self.render_placeholder("nav-no-threads", placeholder, cx))
+                    })
+                    .children(rows)
+                    .when(hidden_threads > 0, |section| {
+                        section.child(
+                            SidebarRow::new(
+                                "nav-more-threads",
+                                div(),
+                                div().truncate().text_color(colors.text_muted).child("More"),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.show_all_threads = true;
+                                cx.notify();
+                            })),
+                        )
+                    })
+            })
+            .into_any_element()
     }
 
     /// The files at hand: what this workspace's threads changed, what is open, and what git
@@ -666,13 +847,7 @@ impl WorkspaceNav {
             .unwrap_or_default()
             .to_string()
             .into();
-        let directory: SharedString = row
-            .path
-            .path
-            .parent()
-            .map(|parent| parent.as_unix_str().to_string())
-            .unwrap_or_default()
-            .into();
+        let full_path: SharedString = row.path.path.as_unix_str().to_string().into();
         let end = match row.end {
             FileRowEnd::None => None,
             FileRowEnd::DiffStats(stats) => Some(
@@ -708,21 +883,11 @@ impl WorkspaceNav {
                 row.path.worktree_id.to_usize(),
                 row.path.path.as_unix_str()
             )),
-            sidebar_icon(IconName::File).text_color(colors.icon_muted),
-            h_flex()
-                .min_w_0()
-                .gap(rems_from_px(6_f32))
-                .child(div().flex_none().text_color(colors.text_muted).child(name))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_sm()
-                        .text_color(colors.text_placeholder)
-                        .child(directory),
-                ),
+            StatusDot::Read,
+            div().truncate().text_color(colors.text).child(name),
         )
         .when_some(end, |row, end| row.end(end))
+        .tooltip(move |window, cx| KitTooltip::new(full_path.clone()).build(window, cx))
         .on_click(move |_, window, cx| {
             workspace
                 .update(cx, |workspace, cx| match &item {
@@ -737,32 +902,18 @@ impl WorkspaceNav {
         })
     }
 
-    fn render_file_group_label(&self, title: &'static str, cx: &App) -> impl IntoElement {
-        div()
-            .w_full()
-            .min_h(rems_from_px(FILE_GROUP_LABEL_HEIGHT))
-            .flex()
-            .items_center()
-            .px(rems_from_px(LIST_INSET))
-            .pl(rems_from_px(LIST_INSET + GROUP_LABEL_PADDING_START))
-            .text_xs()
-            .text_color(cx.theme().colors().text_placeholder)
-            .child(title)
-    }
-
     fn render_files(&self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) -> AnyElement {
         let (thread_changes, open_files, git_changes, git_change_count) =
             self.file_groups(workspace, cx);
-        let count = thread_changes.len() + open_files.len() + git_changes.len();
         let colors = cx.theme().colors();
         let weak_workspace = self.workspace.clone();
         let buttons = vec![
-            sidebar_icon_button("project-tree", IconName::ListTree)
+            glyph_button("project-tree", IconName::ListTodoSubtask)
                 .tooltip("Project Files")
                 .selected(self.files != FilesState::Closed)
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_project_files(window, cx)))
                 .into_any_element(),
-            sidebar_icon_button("open-file", IconName::Plus)
+            glyph_button("open-file", IconName::Plus)
                 .tooltip("Open File")
                 .dropdown_menu(move |menu, _, cx| {
                     let Some(workspace) = weak_workspace.upgrade() else {
@@ -779,54 +930,77 @@ impl WorkspaceNav {
         v_flex()
             .w_full()
             .mt(rems_from_px(GROUP_GAP))
-            .child(self.render_group_label("files", "Files", count, buttons, cx))
-            .when(!thread_changes.is_empty(), |group| {
+            .child(self.render_section_label(
+                Section::Files,
+                if self.is_collapsed(Section::Files) {
+                    IconName::Folder
+                } else {
+                    IconName::FolderOpen
+                },
+                "Files",
+                buttons,
+                cx,
+            ))
+            .when(!self.is_collapsed(Section::Files), |group| {
+                let is_empty =
+                    thread_changes.is_empty() && open_files.is_empty() && git_changes.is_empty();
                 group
-                    .child(self.render_file_group_label("Thread Changes", cx))
-                    .children(
-                        thread_changes
-                            .into_iter()
-                            .map(|row| self.render_file_row(row, cx)),
-                    )
-            })
-            .when(!open_files.is_empty(), |group| {
-                group
-                    .child(self.render_file_group_label("Open", cx))
-                    .children(
-                        open_files
-                            .into_iter()
-                            .map(|row| self.render_file_row(row, cx)),
-                    )
-            })
-            .when(!git_changes.is_empty(), |group| {
-                group
-                    .child(self.render_file_group_label("Git Changes", cx))
-                    .children(
-                        git_changes
-                            .into_iter()
-                            .map(|row| self.render_file_row(row, cx)),
-                    )
-            })
-            .when(hidden_git_changes > 0, |group| {
-                group.child(
-                    SidebarRow::new(
-                        "nav-all-changes",
-                        div(),
-                        div()
-                            .truncate()
-                            .text_color(colors.text_placeholder)
-                            .child(format!("All {git_change_count} Changes")),
-                    )
-                    .end(sidebar_icon(IconName::ChevronRight).text_color(colors.icon_muted))
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(zed_actions::git_panel::ToggleFocus), cx)
-                    }),
-                )
+                    .when(is_empty, |group| {
+                        group.child(self.render_placeholder(
+                            "nav-no-files",
+                            "No open or changed files",
+                            cx,
+                        ))
+                    })
+                    .when(!thread_changes.is_empty(), |group| {
+                        group.children(
+                            thread_changes
+                                .into_iter()
+                                .map(|row| self.render_file_row(row, cx)),
+                        )
+                    })
+                    .when(!open_files.is_empty(), |group| {
+                        group.children(
+                            open_files
+                                .into_iter()
+                                .map(|row| self.render_file_row(row, cx)),
+                        )
+                    })
+                    .when(!git_changes.is_empty(), |group| {
+                        group.children(
+                            git_changes
+                                .into_iter()
+                                .map(|row| self.render_file_row(row, cx)),
+                        )
+                    })
+                    .when(hidden_git_changes > 0, |group| {
+                        group.child(
+                            SidebarRow::new(
+                                "nav-all-changes",
+                                div(),
+                                div()
+                                    .truncate()
+                                    .text_color(colors.text_muted)
+                                    .child(format!("All {git_change_count} Changes")),
+                            )
+                            .end(glyph(IconName::ChevronRight).text_color(colors.icon_muted))
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(
+                                    Box::new(zed_actions::git_panel::ToggleFocus),
+                                    cx,
+                                )
+                            }),
+                        )
+                    })
             })
             .into_any_element()
     }
 
-    fn render_terminals(&self, workspace: &Entity<Workspace>, cx: &App) -> impl IntoElement {
+    fn render_terminals(
+        &self,
+        workspace: &Entity<Workspace>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let terminals = workspace
             .read(cx)
             .panes()
@@ -839,9 +1013,9 @@ impl WorkspaceNav {
             .read(cx)
             .active_item(cx)
             .map(|item| item.item_id());
-        let colors = cx.theme().colors();
+        let rows = self.render_terminal_rows(terminals, active_item_id, cx);
         let weak_workspace = self.workspace.clone();
-        let new_terminal = sidebar_icon_button("new-terminal", IconName::Plus)
+        let new_terminal = glyph_button("new-terminal", IconName::Plus)
             .tooltip("New Terminal")
             .dropdown_menu(move |menu, _, cx| {
                 let Some(workspace) = weak_workspace.upgrade() else {
@@ -856,41 +1030,64 @@ impl WorkspaceNav {
         v_flex()
             .w_full()
             .mt(rems_from_px(GROUP_GAP))
-            .child(self.render_group_label(
-                "terminals",
+            .child(self.render_section_label(
+                Section::Terminals,
+                IconName::TerminalRectangle,
                 "Terminals",
-                terminals.len(),
                 vec![new_terminal],
                 cx,
             ))
-            .children(terminals.into_iter().map(|item| {
+            .when(!self.is_collapsed(Section::Terminals), |section| {
+                section
+                    .when(rows.is_empty(), |section| {
+                        section.child(self.render_placeholder(
+                            "nav-no-terminals",
+                            "No terminals yet",
+                            cx,
+                        ))
+                    })
+                    .children(rows)
+            })
+            .into_any_element()
+    }
+
+    fn render_terminal_rows(
+        &self,
+        terminals: Vec<Box<dyn ItemHandle>>,
+        active_item_id: Option<gpui::EntityId>,
+        cx: &App,
+    ) -> Vec<AnyElement> {
+        let colors = cx.theme().colors();
+        terminals
+            .into_iter()
+            .map(|item| {
                 let status = item.tab_status(cx);
-                let leading = match status.as_ref().map(|(_, color)| *color) {
-                    Some(Color::Accent) => StatusDot::Running.into_any_element(),
-                    Some(Color::Success) => sidebar_icon(IconName::Check)
-                        .text_color(cx.theme().status().success)
-                        .into_any_element(),
-                    _ => sidebar_icon(IconName::Terminal)
-                        .text_color(colors.icon_muted)
-                        .into_any_element(),
+                let dot = match status.as_ref().map(|(_, color)| *color) {
+                    Some(Color::Accent) => StatusDot::Running,
+                    Some(Color::Error) => StatusDot::Error,
+                    _ => StatusDot::Read,
+                };
+                let full_title = item.tab_content_text(0, cx);
+                // Terminal titles read "folder — command"; the row keeps the folder, like a
+                // thread title, and the tooltip has the rest.
+                let title: SharedString = full_title
+                    .split(" — ")
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+                    .into();
+                let tooltip: SharedString = match status {
+                    Some((label, _)) => format!("{full_title}\n{label}").into(),
+                    None => full_title,
                 };
                 let is_active = active_item_id == Some(item.item_id());
                 let workspace = self.workspace.clone();
                 SidebarRow::new(
                     SharedString::from(format!("nav-terminal-{}", item.item_id())),
-                    leading,
-                    div()
-                        .truncate()
-                        .text_color(if is_active {
-                            colors.text
-                        } else {
-                            colors.text_muted
-                        })
-                        .child(item.tab_content_text(0, cx)),
+                    dot,
+                    div().truncate().text_color(colors.text).child(title),
                 )
-                .when_some(status, |row, (label, color)| {
-                    row.end(div().text_sm().text_color(color.color(cx)).child(label))
-                })
+                .tooltip(move |window, cx| KitTooltip::new(tooltip.clone()).build(window, cx))
                 .selected(is_active)
                 .on_click(move |_, window, cx| {
                     workspace
@@ -899,58 +1096,73 @@ impl WorkspaceNav {
                         })
                         .log_err();
                 })
-            }))
+                .into_any_element()
+            })
+            .collect()
     }
 
-    fn render_footer(
-        &self,
-        workspace: &Entity<Workspace>,
-        window: &Window,
-        cx: &App,
-    ) -> impl IntoElement {
-        let change_count = workspace
-            .read(cx)
-            .project()
-            .read(cx)
-            .active_repository(cx)
+    /// The repository's branch and changes, which open the Changes tab, and the workspace's
+    /// tools, laid out like the account row and settings button at the foot of Cursor's sidebar.
+    fn render_footer(&self, workspace: &Entity<Workspace>, cx: &App) -> impl IntoElement {
+        let repository = workspace.read(cx).project().read(cx).active_repository(cx);
+        let branch: SharedString = repository
+            .as_ref()
+            .and_then(|repository| {
+                repository
+                    .read(cx)
+                    .branch
+                    .as_ref()
+                    .map(|branch| branch.name().to_string())
+            })
+            .unwrap_or_else(|| "No Branch".to_string())
+            .into();
+        let change_count = repository
             .map(|repository| repository.read(cx).status_summary().count)
             .unwrap_or_default();
-        let label = match change_count {
-            0 => "No Changes".to_string(),
-            1 => "1 Change".to_string(),
-            count => format!("{count} Changes"),
-        };
-        let shortcut = window
-            .highest_precedence_binding_for_action(&zed_actions::git_panel::ToggleFocus)
-            .and_then(|binding| {
-                let keystroke = binding.keystrokes().first()?;
-                Some(Kbd::format(keystroke.as_keystroke()))
-            });
         let colors = cx.theme().colors();
+        let weak_workspace = self.workspace.clone();
 
-        div()
+        h_flex()
             .w_full()
             .pt(rems_from_px(6_f32))
             .pb(rems_from_px(LIST_INSET))
+            .pr(rems_from_px(LIST_INSET + GROUP_LABEL_PADDING_END))
             .border_t_1()
             .border_color(colors.border_variant)
             .child(
-                SidebarRow::new(
-                    "workspace-changes",
-                    sidebar_icon(IconName::GitBranch).text_color(colors.icon_muted),
-                    div().truncate().text_color(colors.text_muted).child(label),
-                )
-                .when_some(shortcut, |row, shortcut| {
-                    row.end(
-                        div()
-                            .text_xs()
-                            .text_color(colors.text_muted)
-                            .child(shortcut),
+                div().flex_1().min_w_0().child(
+                    SidebarRow::new(
+                        "workspace-changes",
+                        glyph(IconName::GitBranch).text_color(colors.text_muted),
+                        div().truncate().text_color(colors.text_muted).child(branch),
                     )
-                })
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(zed_actions::git_panel::ToggleFocus), cx)
-                }),
+                    .when(change_count > 0, |row| {
+                        row.end(
+                            div()
+                                .text_sm()
+                                .text_color(colors.text_muted)
+                                .child(change_count.to_string()),
+                        )
+                    })
+                    .tooltip(|window, cx| {
+                        KitTooltip::new("Changes")
+                            .action(&zed_actions::git_panel::ToggleFocus, None)
+                            .build(window, cx)
+                    })
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(zed_actions::git_panel::ToggleFocus), cx)
+                    }),
+                ),
+            )
+            .child(
+                glyph_button("workspace-tools", IconName::Wrench)
+                    .tooltip("Workspace Tools")
+                    .dropdown_menu(move |menu, _, cx| {
+                        let Some(workspace) = weak_workspace.upgrade() else {
+                            return menu;
+                        };
+                        workspace.read(cx).tools_menu(menu, cx)
+                    }),
             )
     }
 }
@@ -985,7 +1197,7 @@ impl Render for WorkspaceNav {
                     .child(self.render_files(&workspace, cx))
                     .child(self.render_terminals(&workspace, cx)),
             )
-            .child(self.render_footer(&workspace, window, cx));
+            .child(self.render_footer(&workspace, cx));
 
         h_flex()
             .h_full()

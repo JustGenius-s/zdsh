@@ -6687,6 +6687,31 @@ impl Sidebar {
             .collect()
     }
 
+    /// Clears the unread dots of the project group's threads.
+    pub(crate) fn mark_project_threads_read(
+        &mut self,
+        key: &ProjectGroupKey,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(header_index) = self.contents.entries.iter().position(
+            |entry| matches!(entry, ListEntry::ProjectHeader { key: header_key, .. } if header_key == key),
+        ) else {
+            return;
+        };
+        let thread_ids = self.contents.entries[header_index + 1..]
+            .iter()
+            .take_while(|entry| !matches!(entry, ListEntry::ProjectHeader { .. }))
+            .filter_map(|entry| match entry {
+                ListEntry::Thread(thread) => Some(thread.metadata.thread_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for thread_id in &thread_ids {
+            self.contents.notified_threads.remove(thread_id);
+        }
+        cx.notify();
+    }
+
     /// How many of the project group's threads wait for the user to confirm a tool call.
     pub(crate) fn waiting_thread_count(&self, key: &ProjectGroupKey) -> usize {
         self.contents

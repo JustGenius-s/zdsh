@@ -108,6 +108,44 @@ Token 取自 `molten/dist/renderer/assets/boot-BVZrksvb.css`：spacing 以 4px �
 
 截图中侧栏顶部的「Workspaces」标题和筛选/新建按钮是分组标题加操作按钮的组合，按上表分组标题数值处理。侧栏宽度、头像 `xl` 尺寸没有在静态 CSS 中找到固定值，需要运行时测量；zdsh 侧栏按设计稿取 272px。
 
+## 分组图标、筛选菜单与排序
+
+2026-10-23 补充，供侧栏样式对齐使用。同一安装包、同一 SHA-256，REA 6.4.0 `analyze-javascript-application`，11 个片段全部解析，无解析失败、无完整性矛盾。
+
+| 证据 | REA Evidence ID | 范围 |
+| --- | --- | --- |
+| G | `ev_eaa9073a64003b8f3ee23c0826b39f926975fbafa8353337a51b910f8f3afc3b` | 分组图标 `OAx`/`oEy`、悬停操作 `nEy`、分组 `UAx`、Customize Sidebar 菜单 `mxx`/`hxx`/`cpn` 及选项常量 |
+
+| 片段 | 范围 | 作用 |
+| --- | --- | --- |
+| `mxx` | 46137170–46149296 | Customize Sidebar 菜单 |
+| `hxx` | 46134794–46135314 | 菜单触发按钮（`list-filter`，size md，icon base，tooltip「Customize Sidebar」） |
+| `OAx` / `oEy` | 46100892–46101431 | 分组图标 |
+| `nEy` | 46099924–46100204 | 分组悬停操作容器 |
+| `UAx` | 46102812–46122961 | 分组与会话行 |
+| 选项常量 | 46133071–46133405、46134484–46134736 | Grouping / Ordering / Show 选项 |
+| 分组默认值 | 25918761–25918836 | 折叠图标、「More」上限 |
+| 图标尺寸 | 46099430–46099498 | `NAx` |
+
+| 部分 | 安装包中的值或行为 |
+| --- | --- |
+| 分组图标 | 默认 `folder`，展开时换成 `folder-open`；tertiary 色；尺寸 `--ui-sidebar-action-icon-size`，默认 `--cursor-spacing-3-25`（13px）；放在 `--ui-sidebar-action-box`（默认 height-sm 24px）的居中槽里 |
+| 悬停操作 | 默认 opacity 0、不接收指针；分组悬停或菜单展开（`aria-expanded=true`）时显示 |
+| 「More」 | 每组先列 8 项（`CDt=8`），其余由「More」展开 |
+| 菜单结构 | 第一节 Grouping、Ordering、Show；第二节标题「Filters」，含 Status、PR、Environment、Source、Archived，带 Reset；第三节 Mark All as Read |
+| Grouping | Repository、Workspace、Updated、Status、Environment、Source |
+| Ordering | 会话：Updated、Status；分组：Updated、Manual |
+| Show | Updated（时间）、Environment、PR，以及 Workspace、Branch、Machine、Source |
+| Status 筛选 | Needs Attention、Error、Unread、Working、Draft、Done |
+
+截图中分组图标在行首、与会话行的状态点同列，名称与会话标题同列；静态代码中统一分组标题开关会把图标放到其他位置，以截图为准。图标渲染实际约 14px，可能来自 `--ui-sidebar-action-icon-size` 覆盖，zdsh 取 14px 与行图标一致。
+
+zdsh 的 `gpui_icons` 用 24 单位网格画图标，再放进 30 单位的显示 view box（`display_view_box` 为 −3, −3, 30, 30），图形约占 23 单位，可见大小约为盒子的 0.77 倍。要显示 Cursor 截图中约 14.5px 的图标，盒子取 19px；6px 的状态点盒子取 8px。
+
+说明：本节和上一节的数值是直接读安装包 JS 和 CSS 得到的；REA 只用于确认这些片段原样截取、全部可解析，并记录来源和哈希，它的分析结果本身不包含样式数值。
+
+zdsh 采用：Threads/Files/Terminals 三个区各有图标（Threads 用 `agent`，悬停时换成展开 `chevron-down` / 折叠 `chevron-right`，Files 用 `folder`/`folder-open`，Terminals 用 `terminal-rectangle`），点击标题折叠；去掉标题后的计数；会话、文件、终端标题统一用正文色，时间用 muted 色；头部名称改为 muted 普通字重，并加入 Customize Sidebar 菜单。菜单只保留 zdsh 有数据的项：Ordering（Updated、Status）、Show › Updated、Filters › Status、Mark All as Read；PR、Environment、Source、Archived、Grouping 不适用于单个工作区的侧栏，未加入。选择不持久化。
+
 ## 验证
 
 `cargo check --locked -p zed --bin zed`、修改文件的 rustfmt 检查及 `git diff --check` 通过。只运行格式与编译检查，不补测试、不自行启动应用。窄面板、不同 UI 字号、长标题以及归档恢复的视觉交互由用户验证。

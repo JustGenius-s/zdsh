@@ -16,14 +16,19 @@ use ui::rems_from_px;
 pub(crate) const LIST_INSET: f32 = 8.;
 /// The space below an expanded group, before the next one.
 pub(crate) const GROUP_GAP: f32 = 16.;
+/// The space between rows.
+pub(crate) const ROW_STACK_GAP: f32 = 2.;
 
 // Rem-based metrics scale with the configured UI font size.
-const ROW_MIN_HEIGHT: f32 = 30.;
+pub(crate) const ROW_MIN_HEIGHT: f32 = 32.;
 const ROW_PADDING_X: f32 = 6.;
 const ROW_GAP: f32 = 6.;
 const ROW_RADIUS: f32 = 8.;
 const ICON_BOX: f32 = 20.;
-const STATUS_DOT: f32 = 6.;
+// Icons are drawn on a 24-unit grid inside a 30-unit view box, so their box is about 1.3 times
+// the size they show at: 19 shows Cursor's 14.5, and 8 shows a 6px dot.
+const STATUS_DOT: f32 = 8.;
+const GLYPH_SIZE: f32 = 19.;
 
 /// A row of the threads sidebar: an icon, a title, and something at the end, such as how long
 /// ago the thread was updated or buttons that act on it.
@@ -133,76 +138,80 @@ impl RenderOnce for SidebarRow {
         let observe_hover = hover_state.is_some() || self.on_hover.is_some();
         let colors = cx.theme().colors();
 
-        div().w_full().px(rems_from_px(LIST_INSET)).pb_0p5().child(
-            h_flex()
-                .id(self.id)
-                .group(group)
-                .relative()
-                .w_full()
-                .min_w_0()
-                .min_h(rems_from_px(ROW_MIN_HEIGHT))
-                .px(rems_from_px(ROW_PADDING_X))
-                .gap(rems_from_px(ROW_GAP))
-                .rounded(rems_from_px(ROW_RADIUS))
-                .border_1()
-                .border_color(if self.focused {
-                    colors.panel_focused_border
-                } else {
-                    gpui::transparent_black()
-                })
-                .when(self.selected, |this| this.bg(colors.ghost_element_selected))
-                .when(clickable, |this| {
-                    this.cursor_pointer()
-                        .hover(|style| {
-                            style.bg(if self.selected {
-                                colors.ghost_element_selected
-                            } else {
-                                colors.ghost_element_hover
-                            })
-                        })
-                        .active(|style| {
-                            style.bg(if self.selected {
-                                colors.ghost_element_selected
-                            } else {
-                                colors.ghost_element_active
-                            })
-                        })
-                })
-                .child(
-                    div()
-                        .size(rems_from_px(ICON_BOX))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(leading),
-                )
-                .child(
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .child(self.title),
-                )
-                .children(self.end.map(|end| div().flex_none().child(end)))
-                .when(observe_hover, |this| {
-                    this.on_hover(move |hovered, window, cx| {
-                        if let Some(state) = &hover_state {
-                            state.update(cx, |state, cx| {
-                                if *state != *hovered {
-                                    *state = *hovered;
-                                    cx.notify();
-                                }
-                            });
-                        }
-                        if let Some(on_hover) = &self.on_hover {
-                            on_hover(hovered, window, cx);
-                        }
+        div()
+            .w_full()
+            .px(rems_from_px(LIST_INSET))
+            .pb(rems_from_px(ROW_STACK_GAP))
+            .child(
+                h_flex()
+                    .id(self.id)
+                    .group(group)
+                    .relative()
+                    .w_full()
+                    .min_w_0()
+                    .min_h(rems_from_px(ROW_MIN_HEIGHT))
+                    .px(rems_from_px(ROW_PADDING_X))
+                    .gap(rems_from_px(ROW_GAP))
+                    .rounded(rems_from_px(ROW_RADIUS))
+                    .border_1()
+                    .border_color(if self.focused {
+                        colors.panel_focused_border
+                    } else {
+                        gpui::transparent_black()
                     })
-                })
-                .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip))
-                .when_some(self.on_click, |this, on_click| this.on_click(on_click)),
-        )
+                    .when(self.selected, |this| this.bg(colors.ghost_element_selected))
+                    .when(clickable, |this| {
+                        this.cursor_pointer()
+                            .hover(|style| {
+                                style.bg(if self.selected {
+                                    colors.ghost_element_selected
+                                } else {
+                                    colors.ghost_element_hover
+                                })
+                            })
+                            .active(|style| {
+                                style.bg(if self.selected {
+                                    colors.ghost_element_selected
+                                } else {
+                                    colors.ghost_element_active
+                                })
+                            })
+                    })
+                    .child(
+                        div()
+                            .size(rems_from_px(ICON_BOX))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(leading),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .child(self.title),
+                    )
+                    .children(self.end.map(|end| div().flex_none().child(end)))
+                    .when(observe_hover, |this| {
+                        this.on_hover(move |hovered, window, cx| {
+                            if let Some(state) = &hover_state {
+                                state.update(cx, |state, cx| {
+                                    if *state != *hovered {
+                                        *state = *hovered;
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                            if let Some(on_hover) = &self.on_hover {
+                                on_hover(hovered, window, cx);
+                            }
+                        })
+                    })
+                    .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip))
+                    .when_some(self.on_click, |this, on_click| this.on_click(on_click)),
+            )
     }
 }
 
@@ -249,7 +258,7 @@ impl RenderOnce for StatusDot {
             StatusDot::Read => (
                 gpui_icons::IconName::Circle,
                 gpui_icons::Variant::Filled,
-                colors.text.opacity(0.16),
+                colors.text.opacity(0.24),
             ),
         };
         Icon::empty()
@@ -257,7 +266,7 @@ impl RenderOnce for StatusDot {
             .path(name.path_with_variant(variant))
             .text_color(color)
             .size(rems_from_px(if self == StatusDot::Running {
-                14.
+                GLYPH_SIZE
             } else {
                 STATUS_DOT
             }))
@@ -268,6 +277,21 @@ impl RenderOnce for StatusDot {
 #[track_caller]
 pub(crate) fn sidebar_icon(icon: IconName) -> Icon {
     Icon::empty().path(icon.path()).size(rems(0.875))
+}
+
+/// An icon from the set Cursor's sidebar draws with, at the sidebar's icon size.
+#[track_caller]
+pub(crate) fn glyph(name: gpui_icons::IconName) -> Icon {
+    Icon::new(name).size(rems_from_px(GLYPH_SIZE))
+}
+
+pub(crate) fn glyph_button(id: impl Into<ElementId>, name: gpui_icons::IconName) -> Button {
+    Button::new(id)
+        .ghost()
+        .small()
+        .size_6()
+        .p_0()
+        .child(glyph(name).id("button-icon"))
 }
 
 pub(crate) fn sidebar_icon_button(id: impl Into<ElementId>, icon: IconName) -> Button {
