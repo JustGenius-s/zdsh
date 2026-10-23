@@ -394,6 +394,15 @@ impl ThreadEntry {
     }
 }
 
+/// A thread of one project group, for a workspace's own sidebar.
+pub(crate) struct ProjectThread {
+    pub entry_index: usize,
+    pub title: SharedString,
+    pub status: StatusDot,
+    pub updated: Option<String>,
+    pub is_active: bool,
+}
+
 #[derive(Clone)]
 enum ListEntry {
     ProjectHeader {
@@ -1515,8 +1524,9 @@ impl Sidebar {
 
             let label = group_key.display_name(&path_detail_map);
 
-            let is_collapsed = self.is_group_collapsed(group_key, cx);
-            let should_load_threads = !is_collapsed;
+            // Each workspace's own sidebar lists its threads, whether or not the group is
+            // collapsed here.
+            let should_load_threads = true;
 
             let is_active = active_workspace
                 .as_ref()
@@ -1823,10 +1833,6 @@ impl Sidebar {
                 is_active,
                 has_threads,
             });
-
-            if is_collapsed {
-                continue;
-            }
 
             Self::push_entries_by_display_time(
                 &mut entries,
@@ -6635,6 +6641,96 @@ impl Sidebar {
         }
         self.selection = None;
         self.active_entry = None;
+    }
+
+    /// The threads of the project group `key`, in display order.
+    pub(crate) fn project_threads(&self, key: &ProjectGroupKey) -> Vec<ProjectThread> {
+        let Some(header_index) = self.contents.entries.iter().position(
+            |entry| matches!(entry, ListEntry::ProjectHeader { key: header_key, .. } if header_key == key),
+        ) else {
+            return Vec::new();
+        };
+        self.contents.entries[header_index + 1..]
+            .iter()
+            .enumerate()
+            .take_while(|(_, entry)| !matches!(entry, ListEntry::ProjectHeader { .. }))
+            .filter_map(|(offset, entry)| {
+                let ListEntry::Thread(thread) = entry else {
+                    return None;
+                };
+                let is_notified = self.contents.is_thread_notified(&thread.metadata.thread_id);
+                let status = if thread.draft.is_some() {
+                    StatusDot::Draft
+                } else {
+                    match thread.status {
+                        AgentThreadStatus::Running => StatusDot::Running,
+                        AgentThreadStatus::WaitingForConfirmation => {
+                            StatusDot::WaitingForConfirmation
+                        }
+                        AgentThreadStatus::Error => StatusDot::Error,
+                        AgentThreadStatus::Completed if is_notified => StatusDot::Unread,
+                        AgentThreadStatus::Completed => StatusDot::Read,
+                    }
+                };
+                Some(ProjectThread {
+                    entry_index: header_index + 1 + offset,
+                    title: thread.metadata.display_title(),
+                    status,
+                    updated: (thread.draft != Some(DraftKind::Empty))
+                        .then(|| relative_time(Self::thread_display_time(&thread.metadata))),
+                    is_active: self
+                        .active_entry
+                        .as_ref()
+                        .is_some_and(|active| active.matches_entry(entry)),
+                })
+            })
+            .collect()
+    }
+
+    /// How many of the project group's threads wait for the user to confirm a tool call.
+    pub(crate) fn waiting_thread_count(&self, key: &ProjectGroupKey) -> usize {
+        self.contents
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                ListEntry::ProjectHeader {
+                    key: header_key,
+                    waiting_thread_count,
+                    ..
+                } if header_key == key => Some(*waiting_thread_count),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Opens a thread returned by [`Self::project_threads`].
+    pub(crate) fn activate_project_thread(
+        &mut self,
+        entry_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ListEntry::Thread(thread)) = self.contents.entries.get(entry_index).cloned() else {
+            return;
+        };
+        self.selection = None;
+        match &thread.workspace {
+            ThreadEntryWorkspace::Open(workspace) => {
+                self.activate_thread(thread.metadata.clone(), workspace, false, window, cx);
+            }
+            ThreadEntryWorkspace::Closed {
+                folder_paths,
+                project_group_key,
+            } => {
+                self.open_workspace_and_activate_thread(
+                    thread.metadata.clone(),
+                    folder_paths.clone(),
+                    project_group_key,
+                    window,
+                    cx,
+                );
+            }
+        }
     }
 
     fn active_project_group_key(&self, cx: &App) -> Option<ProjectGroupKey> {
