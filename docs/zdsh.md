@@ -78,7 +78,9 @@ A session-local collector accepts JSON events on a loopback address. Its configu
 
 The right sidebar keeps **Agent**, **Terminal**, **File**, and **Action** categories available. With no tabs it becomes an icon rail; category menus create the corresponding tabs. In the expanded sidebar, category menu indicators appear on hover. Agent tabs show connection, generation, approval, and error status; terminal tabs show command or task execution status. File tabs use their file icons, respecting icon settings and falling back to a category icon when needed.
 
-The Threads panel provides history, search, and archive actions. It has no New Thread, New Terminal, or project-switch dropdown controls. Use the right category menus to create tabs and the file panel header to switch projects or worktrees.
+The Threads panel uses compact, single-line rows with aligned project and status icons. Full titles and worktree details remain available on hover; timestamps share their space with hover and keyboard actions. Its filter menu opens History, shows archived threads, and imports threads. History uses the same row layout, grouped by Today, Yesterday, Last 7 Days, Last 30 Days, and Older. The Archived checkbox switches between unarchived and archived records; Search opens the existing Agents search.
+
+The panel has no New Thread, New Terminal, project-switch dropdown, or workspace-creation controls. Its empty state does not offer Open Project or Clone Repository. Use the right category menus to create tabs and the file panel header to switch projects or worktrees. Layout sizes follow the configured UI font. The static Cursor comparison and its limits are recorded in [the Threads layout research](cursor-thread-layout-research.md).
 
 The file panel's project and worktree dropdowns use GPUI Kit search lists, and its context menu uses the Kit popup menu. Project selection includes other projects already open in the window. Worktree search retains creation, switching, opening in another window, removal from the window, and deletion with confirmation. Indentation guides stay hidden until an entry is selected.
 

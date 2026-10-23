@@ -1,0 +1,84 @@
+# Cursor Threads / History 布局研究
+
+研究日期：2026-10-23。目标为本机 Cursor 3.27.6 安装包。本轮范围是 Threads 面板与历史列表的样式、布局和归档筛选，不引入创建 workspace 功能。
+
+## 证据与边界
+
+通过 REA 6.4.0 `analyze-javascript-application` 分析精确截取的惰性 JavaScript 片段，结合安装包 CSS 核对样式。没有启动 Cursor 或 zdsh，没有执行目标代码；动态功能开关、最终计算样式和实际交互仍需运行时验证。
+
+原始文件：`/Applications/Cursor.app/Contents/Resources/app/out/vs/workbench/workbench.glass.main.js`。
+
+SHA-256：`08c3f6ca873f1f28d0e886e3538684bd32a7ac61529d223db14069ef7b693c85`。
+
+| 证据 | REA Evidence ID | 范围 |
+| --- | --- | --- |
+| S | `ev_0f16f65f7b460f1f95b2a833e971ad88d127ed4e91b16377a724e1b92c26715c` | 侧栏根组件、分组、Sidebar 原语及样式；11 个片段，全部解析成功 |
+| H | `ev_d5abbe29c7aeb9f1485af769a3f14b2f736f2440a978e7df6acb932692d111cc` | 历史、搜索 Palette、归档菜单；22 个片段，全部解析成功 |
+| F | `ev_7916969c69fac424060fea1a72217f9d2e5b9761418ad24a8a690dc8b9e473e8` | 日期分组、归档状态、菜单常量等补充调用链；15 个片段，全部解析成功 |
+
+完整 Evidence 和逐片段字节范围、摘要保存在本次本地调查目录 `/tmp/zdsh-threads-ui-20261023/`。片段仅追加分号和换行以形成分析载体，未改写目标表达式；外部全局绑定仍未解析。该临时目录不是仓库内永久归档。
+
+S 的关键原始字节范围（结束位置不包含在内）：
+
+| 组件 | 范围 | 作用 |
+| --- | --- | --- |
+| `APx` | 46217918–46257681 | 当前 Glass 侧栏根组件，分组与列表渲染调用 |
+| `UAx` | 46102812–46122961 | 工作区/仓库分组及会话行组合 |
+| `mTy` | 46045268–46047991 | 集合标题及分组布局 |
+| `Sidebar.stylex.js` | 12452013–12470368 | 通用行、图标、操作和文字样式 |
+| `Sidebar.js` | 12491053–12516571 | Sidebar 组件及状态绑定 |
+| `i4` | 45954429–45957385 | Glass 对通用 Sidebar 样式的覆盖 |
+
+CSS 来源为 `workbench.glass.main.css` 与 `molten/dist/renderer/assets/boot-BVZrksvb.css`。CSS 是普通静态资源核对，不将其描述为运行时测量。
+
+## 当前 Glass 侧栏
+
+S 中实际侧栏调用会根据分组方式和 `glass_sidebar_unified_group_headers` 开关，选择 section 或 group 布局。因此安装包同时存在两种分组标题，不可单凭旧组件名称推断当前用户启用了哪一种。
+
+可确认的公共布局与 Glass 覆盖：
+
+| 部分 | 安装包中的值或行为 |
+| --- | --- |
+| 列表外边距 | `--ui-sidebar-inset` → 8px |
+| 行内水平边距 | Glass `--ui-sidebar-item-inset` → 6px |
+| 行内容间距 | 6px |
+| 行间距 | Glass `--ui-sidebar-row-stack-gap` → 2px |
+| 分组间距 | Glass `--ui-sidebar-group-gap` → 16px |
+| 圆角 | `cursor-radius-lg` → 8px |
+| 图标槽 / 图标 | 20px / 14px |
+| 操作按钮槽 | 24px |
+| 行高度 | 最小 28px；默认上下各 5px，20px 图标槽可把普通行撑到 30px |
+| 文字 | base token 默认 13px、行高 18px；普通字重。部分环境可覆盖 token |
+| 分组文字 | Glass 覆盖为 base 字号，不是小号粗体 |
+| 选中 | `cursor-bg-tertiary`；选中行 hover 沿用选中底色 |
+| 未选中 hover | `cursor-bg-quaternary` |
+| 操作区 | 相对时间与 hover/键盘操作共用右侧空间 |
+
+普通分组内容的会话图标与组标题图标共用列起点；独立 NestedRows 原语另有 10px 缩进，不能将它自动加到所有会话行。
+
+## 历史、搜索和归档
+
+H/F 区分了当前 Glass 和仍随包发布的旧紧凑历史弹层。
+
+- 当前 Glass 的归档入口是侧栏 Filters 菜单的 **Archived** 勾选项，沿用原列表。普通过滤排除归档项，勾选后筛出归档项；固定/强制保留项还有独立例外逻辑。
+- 搜索使用通用 Palette 的 Agents 模式，包含搜索输入、可横向滚动的筛选 Tabs 和普通结果行。
+- Agents 空查询按本地日期分成 **Today / Yesterday / Last 7 Days / Last 30 Days / Older**，只渲染非空分组。
+- 结果行包含前导状态图标、单行省略标题、可选同行命中摘要和右侧相对时间，不是多行卡片。操作在 hover 或键盘聚焦时显示。
+- 旧紧凑历史弹层为 252px 宽，采用 11px 字体、11px 操作图标，以及独立的 Archived 展开组。这些值只适用于旧弹层，不能套到当前侧栏正文。
+
+归档筛选谓词还用精确原始源码片段 `archive-filter-predicate.js` 交叉检查；该片段是普通源码读取，不属于 H/F 的 REA 图。
+
+## zdsh 对齐范围
+
+- Threads 的项目标题改为普通字重和 UI 字号；会话与终端行共用图标列，移除逐行额外缩进。
+- 统一紧凑单行布局、2px 行间距、16px 分组间距、8px 圆角和 14px 前导图标。尺寸用 rem 随 zdsh 的 UI font 缩放，保留用户字号，不强制 Cursor 的 13px。
+- 标题收缩、省略；右侧时间和操作使用固定槽，hover 与键盘选择都可以访问操作。已选中行 hover 不再覆盖选中底色。
+- 历史列表移除项目、分支的额外文字行，完整标题、路径、分支和归档状态保留在 tooltip 中；采用上述五个日期组。
+- 历史的分段筛选改为 Kit Filters 菜单中的 Archived 勾选项；未勾选显示未归档，勾选仅显示归档。导入入口也在菜单中。
+- 历史页去掉 New Thread 按钮，Search 接入现有 Agents 搜索。Threads 空态去掉 Open Project / Clone Repository 按钮，不新增 Create Workspace。
+
+zdsh 保留已有的项目分组与 History 返回导航，以及历史记录的排序时间来源、会话恢复、归档/删除和运行状态逻辑；没有照搬 Cursor 的云端项目、分组设置全集或搜索索引。历史重开时内部恢复工作区的能力仍保留，这与提供创建 workspace 的产品入口不同。
+
+## 验证
+
+`cargo check --locked -p zed --bin zed`、修改文件的 rustfmt 检查及 `git diff --check` 通过。只运行格式与编译检查，不补测试、不自行启动应用。窄面板、不同 UI 字号、长标题以及归档恢复的视觉交互由用户验证。

@@ -30,18 +30,19 @@ use feature_flags::{
     AgentThreadWorktreeLabel, AgentThreadWorktreeLabelFlag, FeatureFlag, FeatureFlagAppExt as _,
 };
 use gpui::{
-    Action as _, Animation, AnimationExt as _, AnyElement, App, ClickEvent, Context, DismissEvent,
-    Entity, EntityId, FocusHandle, Focusable, KeyContext, ListState, Modifiers, MouseButton,
-    Pixels, Render, SharedString, Task, TaskExt, WeakEntity, Window, list, prelude::*,
-    pulsating_between, px, rems,
+    Animation, AnimationExt as _, AnyElement, App, ClickEvent, Context, DismissEvent, Entity,
+    EntityId, FocusHandle, Focusable, KeyContext, ListState, Modifiers, MouseButton, Pixels,
+    Render, SharedString, Task, TaskExt, WeakEntity, Window, list, prelude::*, pulsating_between,
+    px, rems,
 };
 use gpui_kit::{
     base::{Scrollbar, ScrollbarAxis, ScrollbarMode, StyledExt as _},
     component::{
         Sizable as _,
-        button::{Button as KitButton, ButtonVariants as _},
+        button::Button as KitButton,
         h_flex,
         label::Label as KitLabel,
+        menu::{DropdownMenu as _, PopupMenuItem},
         spinner::Spinner,
         tooltip::Tooltip as KitTooltip,
         v_flex,
@@ -78,7 +79,7 @@ use util::ResultExt as _;
 use util::path_list::PathList;
 use workspace::{
     MoveProjectDown, MoveProjectUp, MultiWorkspace, MultiWorkspaceEvent, MultiWorkspaceWindow,
-    NextProject, NextThread, Open, OpenMode, PreviousProject, PreviousThread, ProjectGroupKey,
+    NextProject, NextThread, OpenMode, PreviousProject, PreviousThread, ProjectGroupKey,
     RemovalIntent, SaveIntent, Sidebar as WorkspaceSidebar, SidebarSide, Toast, Workspace,
     notifications::NotificationId,
 };
@@ -2053,16 +2054,10 @@ impl Sidebar {
         // is_selected means the keyboard selector is here.
         let is_selected = is_focused && self.selection == Some(ix);
 
-        // An open group ends with its last row, or with the header's "No threads yet" line.
         let next_is_row = matches!(
             self.contents.entries.get(ix + 1),
             Some(ListEntry::Thread(_) | ListEntry::Terminal(_))
         );
-        let ends_open_group = !next_is_row
-            && match entry {
-                ListEntry::ProjectHeader { key, .. } => !self.is_group_collapsed(key, cx),
-                ListEntry::Thread(_) | ListEntry::Terminal(_) => true,
-            };
 
         let is_active = self
             .active_entry
@@ -2104,7 +2099,7 @@ impl Sidebar {
             }
         };
 
-        if ends_open_group {
+        if !next_is_row {
             v_flex()
                 .w_full()
                 .pb(rems_from_px(GROUP_GAP))
@@ -2173,11 +2168,7 @@ impl Sidebar {
 
         let label = if highlight_positions.is_empty() {
             KitLabel::new(label.clone())
-                .font_semibold()
-                .text_sm()
-                .when(!is_active, |this| {
-                    this.text_color(cx.theme().colors().text_muted)
-                })
+                .text_color(cx.theme().colors().text_muted)
                 .truncate()
                 .into_any_element()
         } else {
@@ -5705,7 +5696,6 @@ impl Sidebar {
         let timestamp =
             (!is_empty_draft).then(|| relative_time(Self::thread_display_time(&thread.metadata)));
 
-        // A linked worktree's name, or else its branch, follows the title.
         let worktree_label = apply_worktree_label_mode(
             thread.worktrees.clone(),
             cx.flag_value::<AgentThreadWorktreeLabelFlag>(),
@@ -5750,7 +5740,11 @@ impl Sidebar {
                 )
                 .into_any_element(),
             None if thread.highlight_positions.is_empty() => KitLabel::new(title.clone())
-                .text_color(color.text)
+                .text_color(if is_active {
+                    color.text
+                } else {
+                    color.text_muted
+                })
                 .truncate()
                 .into_any_element(),
             None => HighlightedLabel::new(title.clone(), thread.highlight_positions.to_vec())
@@ -5758,23 +5752,9 @@ impl Sidebar {
                 .truncate()
                 .into_any_element(),
         };
-        let title_row = v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_0p5()
-            .child(div().min_w_0().w_full().child(title_label))
-            .when_some(worktree_label, |this, worktree_label| {
-                this.child(
-                    h_flex()
-                        .min_w_0()
-                        .gap_1()
-                        .text_color(color.text_muted)
-                        .child(sidebar_icon(IconName::GitBranch).size(rems(0.75)))
-                        .child(KitLabel::new(worktree_label).text_xs().truncate()),
-                )
-            });
+        let title_row = div().w_full().min_w_0().child(title_label);
 
-        let actions = (is_hovered && !is_renaming).then(|| {
+        let actions = ((is_hovered || is_focused) && !is_renaming).then(|| {
             let rename_button = sidebar_icon_button(("rename-thread", ix), IconName::Pencil)
                 .tooltip_with_action(
                     "Rename Thread",
@@ -5858,7 +5838,7 @@ impl Sidebar {
         let end = actions.or_else(|| {
             timestamp.map(|timestamp| {
                 KitLabel::new(timestamp)
-                    .text_xs()
+                    .text_sm()
                     .text_color(color.text_placeholder)
                     .into_any_element()
             })
@@ -5869,9 +5849,15 @@ impl Sidebar {
             AgentThreadStatus::WaitingForConfirmation => Some("Waiting for Confirmation"),
             AgentThreadStatus::Running | AgentThreadStatus::Completed => None,
         };
+        let mut tooltip = title.to_string();
+        if let Some(worktree_label) = worktree_label {
+            tooltip.push_str(&format!("\nWorktree: {worktree_label}"));
+        }
+        if let Some(status) = status_tooltip {
+            tooltip.push_str(&format!("\n{status}"));
+        }
 
         let thread_item = SidebarRow::new(id, status_dot, title_row)
-            .nested()
             .end(h_flex().w(rems(3.5)).justify_end().children(end))
             .selected(is_selected)
             .focused(is_focused)
@@ -5883,9 +5869,7 @@ impl Sidebar {
                 }
                 cx.notify();
             }))
-            .when_some(status_tooltip, |row, text| {
-                row.tooltip(move |window, cx| KitTooltip::new(text).build(window, cx))
-            })
+            .tooltip(move |window, cx| KitTooltip::new(tooltip.clone()).build(window, cx))
             .on_click({
                 let thread_workspace = thread_workspace.clone();
                 cx.listener(move |this, _, window, cx| {
@@ -6087,7 +6071,11 @@ impl Sidebar {
         let title_label = match rename_title_editor {
             Some(title_editor) => title_editor,
             None if highlight_positions.is_empty() => KitLabel::new(title)
-                .text_color(color.text)
+                .text_color(if is_active {
+                    color.text
+                } else {
+                    color.text_muted
+                })
                 .truncate()
                 .into_any_element(),
             None => HighlightedLabel::new(title, highlight_positions)
@@ -6096,7 +6084,7 @@ impl Sidebar {
                 .into_any_element(),
         };
 
-        let end = if is_hovered && !is_renaming {
+        let end = if (is_hovered || is_focused) && !is_renaming {
             sidebar_icon_button("close-terminal", IconName::Close)
                 .text_color(color.text_muted)
                 .tooltip_with_action(
@@ -6111,13 +6099,12 @@ impl Sidebar {
                 .into_any_element()
         } else {
             KitLabel::new(timestamp)
-                .text_xs()
+                .text_sm()
                 .text_color(color.text_placeholder)
                 .into_any_element()
         };
 
         let terminal_item = SidebarRow::new(id, leading, div().min_w_0().child(title_label))
-            .nested()
             .end(h_flex().w(rems(3.5)).justify_end().child(end))
             .selected(is_active)
             .focused(is_focused)
@@ -6174,15 +6161,19 @@ impl Sidebar {
     }
 
     fn render_collection_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar = cx.weak_entity();
         h_flex()
             .flex_none()
             .w_full()
             .px_3()
-            .py_2()
-            .min_h(rems(2.5))
+            .h(rems(2.5))
             .justify_between()
             .gap_2()
-            .child(KitLabel::new("Threads").font_semibold().truncate())
+            .child(
+                KitLabel::new("Threads")
+                    .text_color(cx.theme().colors().text_muted)
+                    .truncate(),
+            )
             .child(
                 h_flex()
                     .flex_none()
@@ -6197,14 +6188,62 @@ impl Sidebar {
                             .on_click(|_, window, cx| open_thread_search(window, cx)),
                     )
                     .child(
-                        sidebar_icon_button("thread-history", IconName::Archive)
-                            .tooltip_with_action(
-                                "Thread History",
-                                &ToggleThreadHistory,
-                                Some("ThreadsSidebar"),
-                            )
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.show_archive(window, cx)),
+                        sidebar_icon_button("thread-list-options", IconName::Filter)
+                            .tooltip("Thread History and Filters")
+                            .dropdown_menu_with_anchor(
+                                gpui::Anchor::TopRight,
+                                move |menu, _, _| {
+                                    let history_sidebar = sidebar.clone();
+                                    let archived_sidebar = sidebar.clone();
+                                    let import_sidebar = sidebar.clone();
+                                    menu.min_w(px(220.))
+                                        .max_w(px(420.))
+                                        .item(PopupMenuItem::new("History").on_click(
+                                            move |_, window, cx| {
+                                                history_sidebar
+                                                    .update(cx, |this, cx| {
+                                                        this.show_archive(window, cx)
+                                                    })
+                                                    .log_err();
+                                            },
+                                        ))
+                                        .separator()
+                                        .item(
+                                            PopupMenuItem::new("Archived").checked(false).on_click(
+                                                move |_, window, cx| {
+                                                    archived_sidebar
+                                                        .update(cx, |this, cx| {
+                                                            this.show_archive(window, cx);
+                                                            if let SidebarView::Archive(archive) =
+                                                                &this.view
+                                                            {
+                                                                archive.update(
+                                                                    cx,
+                                                                    |archive, cx| {
+                                                                        archive.show_archived(cx)
+                                                                    },
+                                                                );
+                                                            }
+                                                        })
+                                                        .log_err();
+                                                },
+                                            ),
+                                        )
+                                        .separator()
+                                        .item(PopupMenuItem::new("Import Threads").on_click(
+                                            move |_, window, cx| {
+                                                import_sidebar
+                                                    .update(cx, |this, cx| {
+                                                        this.show_thread_import_modal(
+                                                            "thread_history",
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    })
+                                                    .log_err();
+                                            },
+                                        ))
+                                },
                             ),
                     ),
             )
@@ -6766,65 +6805,19 @@ impl Sidebar {
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
-            .size_full()
+            .w_full()
+            .flex_1()
+            .min_h_0()
             .p_4()
-            .gap_4()
+            .gap_2()
             .items_center()
             .justify_center()
             .child(
                 sidebar_icon(IconName::Thread)
-                    .size(rems(2.))
+                    .size(rems(1.5))
                     .text_color(cx.theme().colors().text_muted),
             )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(KitLabel::new("Your threads, organized").font_semibold())
-                    .child(
-                        KitLabel::new("Open a project to start an agent thread or terminal.")
-                            .text_sm()
-                            .text_center()
-                            .text_color(cx.theme().colors().text_muted),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(
-                        KitButton::new("sidebar-open-project")
-                            .primary()
-                            .small()
-                            .w_full()
-                            .label("Open Project")
-                            .icon(sidebar_icon(IconName::FolderOpen))
-                            .on_click(|_, window, cx| {
-                                let side = match AgentSettings::get_global(cx).sidebar_side() {
-                                    SidebarSide::Left => "left",
-                                    SidebarSide::Right => "right",
-                                };
-                                telemetry::event!("Sidebar Add Project Clicked", side = side);
-                                window.dispatch_action(
-                                    Open {
-                                        create_new_window: Some(false),
-                                    }
-                                    .boxed_clone(),
-                                    cx,
-                                );
-                            }),
-                    )
-                    .child(
-                        KitButton::new("sidebar-clone-repository")
-                            .ghost()
-                            .small()
-                            .w_full()
-                            .label("Clone Repository")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(git::Clone.boxed_clone(), cx)
-                            }),
-                    ),
-            )
+            .child(KitLabel::new("No threads yet").text_color(cx.theme().colors().text_muted))
     }
 
     fn active_workspace(&self, cx: &App) -> Option<Entity<Workspace>> {
@@ -7039,12 +7032,7 @@ impl Sidebar {
                 ThreadsArchiveViewEvent::Import => {
                     this.show_thread_import_modal("thread_history", window, cx);
                 }
-                ThreadsArchiveViewEvent::NewThread => {
-                    this.show_thread_list(window, cx);
-                    if let Some(workspace) = this.active_workspace(cx) {
-                        this.create_new_thread(&workspace, window, cx);
-                    }
-                }
+                ThreadsArchiveViewEvent::Search => open_thread_search(window, cx),
             },
         );
 
@@ -7279,7 +7267,8 @@ impl Render for Sidebar {
             .map(|this| match &self.view {
                 SidebarView::ThreadList => this.map(|this| {
                     if no_open_projects {
-                        this.child(self.render_empty_state(cx))
+                        this.child(self.render_collection_header(cx))
+                            .child(self.render_empty_state(cx))
                     } else {
                         this.child(self.render_collection_header(cx)).child(
                             v_flex()

@@ -11,7 +11,7 @@ use crate::{Agent, ArchiveSelectedThread, DEFAULT_THREAD_TITLE, RemoveSelectedTh
 
 use agent::ThreadStore;
 use agent_client_protocol::schema::v2 as acp;
-use chrono::{DateTime, Datelike as _, Local, NaiveDate, TimeDelta, Utc};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 use collections::HashMap;
 use fs::Fs;
 use fuzzy::{StringMatch, StringMatchCandidate};
@@ -23,14 +23,14 @@ use gpui::{
 use gpui_kit::{
     base::{Scrollbar, ScrollbarAxis, ScrollbarMode, StyledExt as _},
     component::{
-        Disableable as _, Icon as KitIcon, Sizable as _,
+        Disableable as _, Icon as KitIcon, Selectable as _, Sizable as _,
         button::{Button as KitButton, ButtonVariants as _},
         h_flex,
         label::Label as KitLabel,
         list::ListItem as KitListItem,
+        menu::{DropdownMenu as _, PopupMenuItem},
         separator::Separator,
         spinner::Spinner,
-        tab::{Tab as KitTab, TabBar},
         tooltip::Tooltip as KitTooltip,
         v_flex,
     },
@@ -57,7 +57,7 @@ use zed_actions::editor::{MoveDown, MoveUp};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ThreadFilter {
     #[default]
-    All,
+    Unarchived,
     ArchivedOnly,
 }
 
@@ -74,36 +74,28 @@ enum ArchiveListItem {
 enum TimeBucket {
     Today,
     Yesterday,
-    ThisWeek,
-    PastWeek,
+    LastSevenDays,
+    LastThirtyDays,
     Older,
 }
 
 impl TimeBucket {
     fn from_dates(reference: NaiveDate, date: NaiveDate) -> Self {
-        if date == reference {
-            return TimeBucket::Today;
+        match reference.signed_duration_since(date).num_days() {
+            days if days <= 0 => TimeBucket::Today,
+            1 => TimeBucket::Yesterday,
+            2..=6 => TimeBucket::LastSevenDays,
+            7..=29 => TimeBucket::LastThirtyDays,
+            _ => TimeBucket::Older,
         }
-        if date == reference - TimeDelta::days(1) {
-            return TimeBucket::Yesterday;
-        }
-        let week = date.iso_week();
-        if reference.iso_week() == week {
-            return TimeBucket::ThisWeek;
-        }
-        let last_week = (reference - TimeDelta::days(7)).iso_week();
-        if week == last_week {
-            return TimeBucket::PastWeek;
-        }
-        TimeBucket::Older
     }
 
     fn label(&self) -> &'static str {
         match self {
             TimeBucket::Today => "Today",
             TimeBucket::Yesterday => "Yesterday",
-            TimeBucket::ThisWeek => "This Week",
-            TimeBucket::PastWeek => "Past Week",
+            TimeBucket::LastSevenDays => "Last 7 Days",
+            TimeBucket::LastThirtyDays => "Last 30 Days",
             TimeBucket::Older => "Older",
         }
     }
@@ -140,7 +132,7 @@ pub enum ThreadsArchiveViewEvent {
     Activate { thread: ThreadMetadata },
     CancelRestore { thread_id: ThreadId },
     Import,
-    NewThread,
+    Search,
 }
 
 impl EventEmitter<ThreadsArchiveViewEvent> for ThreadsArchiveView {}
@@ -204,7 +196,7 @@ impl ThreadsArchiveView {
             archived_thread_ids: HashSet::default(),
             archived_branch_names: HashMap::default(),
             _load_branch_names_task: Task::ready(()),
-            thread_filter: ThreadFilter::All,
+            thread_filter: ThreadFilter::Unarchived,
         };
 
         this.update_items(cx);
@@ -237,7 +229,7 @@ impl ThreadsArchiveView {
         let sessions = store
             .entries()
             .filter(|t| match thread_filter {
-                ThreadFilter::All => true,
+                ThreadFilter::Unarchived => !t.archived,
                 ThreadFilter::ArchivedOnly => t.archived,
             })
             .sorted_by_cached_key(|t| t.created_at.unwrap_or(t.updated_at))
@@ -517,18 +509,14 @@ impl ThreadsArchiveView {
         match item {
             ArchiveListItem::BucketSeparator(bucket) => h_flex()
                 .w_full()
-                .px_4()
-                .pt_3()
-                .pb_1()
-                .gap_2()
+                .px(rems(0.875))
+                .pt(rems(if ix == 0 { 0.25 } else { 1. }))
+                .pb(rems(0.375))
                 .child(
                     KitLabel::new(bucket.label())
-                        .text_xs()
-                        .font_semibold()
-                        .text_color(colors.text_muted)
-                        .flex_none(),
+                        .text_sm()
+                        .text_color(colors.text_muted),
                 )
-                .child(Separator::horizontal().flex_1())
                 .into_any_element(),
             ArchiveListItem::Entry {
                 thread,
@@ -560,7 +548,7 @@ impl ThreadsArchiveView {
                     if let Some(path) = external_icon {
                         gpui::svg()
                             .external_path(path)
-                            .size(rems(1.))
+                            .size(rems(0.875))
                             .text_color(icon_color)
                             .into_any_element()
                     } else {
@@ -579,30 +567,31 @@ impl ThreadsArchiveView {
                 let title_label = if highlight_positions.is_empty() {
                     KitLabel::new(title.clone())
                         .truncate()
-                        .text_color(if is_archived {
-                            colors.text_muted
-                        } else {
+                        .text_color(if is_focused {
                             colors.text
+                        } else {
+                            colors.text_muted
                         })
                         .into_any_element()
                 } else {
                     HighlightedLabel::new(title.clone(), highlight_positions.clone())
+                        .color(if is_focused {
+                            Color::Default
+                        } else {
+                            Color::Muted
+                        })
                         .truncate()
                         .into_any_element()
                 };
                 let project_paths = thread.folder_paths().paths_owned();
-                let project_label = project_paths
-                    .iter()
-                    .map(|path| {
-                        path.file_name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| path.compact().to_string_lossy().into_owned())
-                    })
-                    .join(", ");
-                let project_tooltip = project_paths
-                    .iter()
-                    .map(|path| path.compact().to_string_lossy().into_owned())
-                    .join("\n");
+                let project_tooltip = if project_paths.is_empty() {
+                    "No project".to_string()
+                } else {
+                    project_paths
+                        .iter()
+                        .map(|path| path.compact().to_string_lossy().into_owned())
+                        .join("\n")
+                };
                 let branch_names: HashMap<PathBuf, SharedString> = self
                     .archived_branch_names
                     .get(&thread.thread_id)
@@ -615,17 +604,6 @@ impl ThreadsArchiveView {
                     .unwrap_or_default();
                 let worktrees =
                     worktree_info_from_thread_paths(&thread.worktree_paths, &branch_names);
-                let worktree_labels = worktrees
-                    .iter()
-                    .filter(|worktree| worktree.kind == ui::WorktreeKind::Linked)
-                    .filter_map(|worktree| {
-                        worktree
-                            .worktree_name
-                            .as_ref()
-                            .or(worktree.branch_name.as_ref())
-                    })
-                    .map(SharedString::as_str)
-                    .join(", ");
                 let worktree_tooltip = worktrees
                     .iter()
                     .map(|worktree| {
@@ -636,6 +614,14 @@ impl ThreadsArchiveView {
                         }
                     })
                     .join("\n");
+
+                let mut tooltip = format!("{title}\n{project_tooltip}");
+                if !worktree_tooltip.is_empty() {
+                    tooltip.push_str(&format!("\n{worktree_tooltip}"));
+                }
+                if is_archived {
+                    tooltip.push_str("\nArchived");
+                }
 
                 let actions = if is_restoring {
                     history_icon_button("cancel-restore", IconName::Close)
@@ -651,7 +637,7 @@ impl ThreadsArchiveView {
                         .into_any_element()
                 } else if is_archived {
                     h_flex()
-                        .gap_1()
+                        .gap_0p5()
                         .child(
                             history_icon_button("restore-thread", IconName::RotateCcw)
                                 .tooltip("Restore Thread")
@@ -707,7 +693,7 @@ impl ThreadsArchiveView {
                 div()
                     .w_full()
                     .px_2()
-                    .py_0p5()
+                    .py(rems(0.0625))
                     .child(
                         KitListItem::new(SharedString::from(format!(
                             "archive-entry-{:?}",
@@ -717,20 +703,19 @@ impl ThreadsArchiveView {
                         .group(group.clone())
                         .w_full()
                         .min_w_0()
-                        .px_2()
-                        .py_2()
-                        .gap_2()
-                        .rounded_lg()
+                        .min_h(rems(1.875))
+                        .px(rems(0.375))
+                        .py(rems(0.125))
+                        .rounded(rems(0.5))
                         .selected(is_focused)
                         .child(
                             h_flex()
                                 .w_full()
                                 .min_w_0()
-                                .gap_2()
-                                .items_start()
+                                .gap_1p5()
                                 .child(
                                     div()
-                                        .w_5()
+                                        .size_5()
                                         .flex_none()
                                         .items_center()
                                         .justify_center()
@@ -738,131 +723,49 @@ impl ThreadsArchiveView {
                                         .child(icon),
                                 )
                                 .child(
-                                    v_flex()
+                                    div()
                                         .flex_1()
                                         .min_w_0()
-                                        .gap_1()
-                                        .child(title_label)
-                                        .child(
-                                            h_flex()
-                                                .w_full()
-                                                .min_w_0()
-                                                .gap_1p5()
-                                                .child(
-                                                    history_icon(IconName::Folder)
-                                                        .size(rems(0.75))
-                                                        .text_color(colors.text_muted),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .id("history-project-paths")
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .child(
-                                                            KitLabel::new(
-                                                                if project_label.is_empty() {
-                                                                    "No project".to_string()
-                                                                } else {
-                                                                    project_label
-                                                                },
-                                                            )
-                                                            .text_xs()
-                                                            .truncate()
-                                                            .text_color(colors.text_muted),
-                                                        )
-                                                        .when(
-                                                            !project_tooltip.is_empty(),
-                                                            |this| {
-                                                                this.tooltip(move |window, cx| {
-                                                                    KitTooltip::new(
-                                                                        project_tooltip.clone(),
-                                                                    )
-                                                                    .build(window, cx)
-                                                                })
-                                                            },
-                                                        ),
-                                                ),
-                                        )
-                                        .when(!worktree_labels.is_empty(), |this| {
-                                            this.child(
-                                                h_flex()
-                                                    .id("history-worktrees")
-                                                    .min_w_0()
-                                                    .gap_1p5()
-                                                    .child(
-                                                        history_icon(IconName::GitBranch)
-                                                            .size(rems(0.75))
-                                                            .text_color(colors.text_muted),
-                                                    )
-                                                    .child(
-                                                        KitLabel::new(worktree_labels)
-                                                            .text_xs()
-                                                            .truncate()
-                                                            .text_color(colors.text_muted),
-                                                    )
-                                                    .tooltip(move |window, cx| {
-                                                        KitTooltip::new(worktree_tooltip.clone())
-                                                            .build(window, cx)
-                                                    }),
-                                            )
-                                        }),
+                                        .overflow_hidden()
+                                        .child(title_label),
                                 )
                                 .child(
-                                    v_flex()
+                                    h_flex()
+                                        .relative()
                                         .flex_none()
                                         .w(rems(3.5))
-                                        .gap_1()
-                                        .items_end()
+                                        .h_6()
+                                        .justify_end()
                                         .child(
-                                            h_flex()
-                                                .relative()
-                                                .w_full()
-                                                .h_6()
-                                                .justify_end()
+                                            div()
+                                                .id("history-timestamp")
+                                                .when(is_focused || is_restoring, |this| {
+                                                    this.invisible()
+                                                })
+                                                .group_hover(group.clone(), |this| this.invisible())
                                                 .child(
-                                                    div()
-                                                        .id("history-timestamp")
-                                                        .when(is_focused || is_restoring, |this| {
-                                                            this.invisible()
-                                                        })
-                                                        .group_hover(group.clone(), |this| {
-                                                            this.invisible()
-                                                        })
-                                                        .child(
-                                                            KitLabel::new(timestamp)
-                                                                .text_xs()
-                                                                .text_color(
-                                                                    colors.text_placeholder,
-                                                                ),
-                                                        ),
-                                                )
-                                                .child(
-                                                    h_flex()
-                                                        .id("history-actions")
-                                                        .absolute()
-                                                        .inset_0()
-                                                        .justify_end()
-                                                        .when(
-                                                            !is_focused && !is_restoring,
-                                                            |this| {
-                                                                this.invisible()
-                                                                    .group_hover(group, |this| {
-                                                                        this.visible()
-                                                                    })
-                                                            },
-                                                        )
-                                                        .child(actions),
+                                                    KitLabel::new(timestamp)
+                                                        .text_sm()
+                                                        .text_color(colors.text_placeholder),
                                                 ),
                                         )
-                                        .when(is_archived, |this| {
-                                            this.child(
-                                                KitLabel::new("Archived")
-                                                    .text_xs()
-                                                    .text_color(colors.text_placeholder),
-                                            )
-                                        }),
+                                        .child(
+                                            h_flex()
+                                                .id("history-actions")
+                                                .absolute()
+                                                .inset_0()
+                                                .justify_end()
+                                                .when(!is_focused && !is_restoring, |this| {
+                                                    this.invisible()
+                                                        .group_hover(group, |this| this.visible())
+                                                })
+                                                .child(actions),
+                                        ),
                                 ),
                         )
+                        .tooltip(move |window, cx| {
+                            KitTooltip::new(tooltip.clone()).build(window, cx)
+                        })
                         .when(!is_restoring, |this| {
                             this.on_click({
                                 let thread = thread.clone();
@@ -950,83 +853,93 @@ impl ThreadsArchiveView {
         .detach_and_log_err(cx);
     }
 
+    pub fn show_archived(&mut self, cx: &mut Context<Self>) {
+        self.set_filter(ThreadFilter::ArchivedOnly, cx);
+    }
+
+    fn set_filter(&mut self, filter: ThreadFilter, cx: &mut Context<Self>) {
+        if self.thread_filter == filter {
+            return;
+        }
+        self.thread_filter = filter;
+        self.update_items(cx);
+        self.reload_branch_names_if_threads_changed(cx);
+        if !self.items.is_empty() {
+            self.list_state.scroll_to_reveal_item(0);
+        }
+    }
+
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let archive_view = cx.weak_entity();
+        let show_archived = self.thread_filter == ThreadFilter::ArchivedOnly;
+
         h_flex()
             .w_full()
             .flex_none()
-            .min_h(rems(2.))
+            .h(rems(2.5))
             .px_3()
-            .pt_2()
-            .pb_2()
-            .gap_2()
+            .gap_1p5()
             .child(
                 history_icon_button("back-to-threads", IconName::ArrowLeft)
                     .tooltip("Back to Threads")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(ThreadsArchiveViewEvent::Close))),
             )
-            .child(KitLabel::new("History").font_semibold().truncate().flex_1())
             .child(
-                h_flex()
-                    .flex_none()
-                    .gap_1p5()
-                    .child(
-                        history_icon_button("thread-import", IconName::Download)
-                            .tooltip("Import Threads")
-                            .on_click(
-                                cx.listener(|_, _, _, cx| cx.emit(ThreadsArchiveViewEvent::Import)),
-                            ),
-                    )
-                    .child(
-                        history_icon_button("new-thread", IconName::Plus)
-                            .tooltip("New Thread")
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(ThreadsArchiveViewEvent::NewThread)
-                            })),
-                    ),
+                KitLabel::new("History")
+                    .text_color(cx.theme().colors().text_muted)
+                    .truncate()
+                    .flex_1(),
             )
-    }
-
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let store = ThreadMetadataStore::global(cx).read(cx);
-        let all_count = store.entries().count();
-        let archived_count = store.archived_entries().count();
-
-        div().w_full().flex_none().px_3().pb_2().child(
-            TabBar::new("history-filter")
-                .segmented()
-                .small()
-                .w_full()
-                .selected_index(match self.thread_filter {
-                    ThreadFilter::All => 0,
-                    ThreadFilter::ArchivedOnly => 1,
-                })
-                .child(KitTab::new().label(format!("All · {all_count}")).flex_1())
-                .child(
-                    KitTab::new()
-                        .label(format!("Archived · {archived_count}"))
-                        .flex_1(),
-                )
-                .on_click(cx.listener(|this, index: &usize, _, cx| {
-                    let filter = if *index == 0 {
-                        ThreadFilter::All
-                    } else {
-                        ThreadFilter::ArchivedOnly
-                    };
-                    if this.thread_filter != filter {
-                        this.thread_filter = filter;
-                        this.update_items(cx);
-                        this.reload_branch_names_if_threads_changed(cx);
-                        if !this.items.is_empty() {
-                            this.list_state.scroll_to_reveal_item(0);
-                        }
-                    }
-                })),
-        )
+            .child(
+                history_icon_button("search-threads", IconName::MagnifyingGlass)
+                    .tooltip("Search Threads")
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(ThreadsArchiveViewEvent::Search))),
+            )
+            .child(
+                history_icon_button("history-options", IconName::Filter)
+                    .selected(show_archived)
+                    .tooltip("History Options")
+                    .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
+                        let archive_view_for_filter = archive_view.clone();
+                        let archive_view_for_import = archive_view.clone();
+                        menu.min_w(px(220.))
+                            .max_w(px(420.))
+                            .label("Filters")
+                            .item(
+                                PopupMenuItem::new("Archived")
+                                    .checked(show_archived)
+                                    .on_click(move |_, _, cx| {
+                                        archive_view_for_filter
+                                            .update(cx, |this, cx| {
+                                                this.set_filter(
+                                                    if show_archived {
+                                                        ThreadFilter::Unarchived
+                                                    } else {
+                                                        ThreadFilter::ArchivedOnly
+                                                    },
+                                                    cx,
+                                                );
+                                            })
+                                            .log_err();
+                                    }),
+                            )
+                            .separator()
+                            .item(
+                                PopupMenuItem::new("Import Threads").on_click(move |_, _, cx| {
+                                    archive_view_for_import
+                                        .update(cx, |_, cx| {
+                                            cx.emit(ThreadsArchiveViewEvent::Import)
+                                        })
+                                        .log_err();
+                                }),
+                            )
+                    }),
+            )
     }
 }
 
 fn history_icon(icon: IconName) -> KitIcon {
-    KitIcon::empty().path(icon.path()).size(rems(1.))
+    KitIcon::empty().path(icon.path()).size(rems(0.875))
 }
 
 fn history_icon_button(id: impl Into<ElementId>, icon: IconName) -> KitButton {
@@ -1035,7 +948,7 @@ fn history_icon_button(id: impl Into<ElementId>, icon: IconName) -> KitButton {
         .small()
         .size_6()
         .p_0()
-        .child(history_icon(icon).size(rems(1.125)))
+        .child(history_icon(icon))
 }
 
 fn history_scrollbar_mode(cx: &App) -> Option<ScrollbarMode> {
@@ -1092,7 +1005,7 @@ impl Render for ThreadsArchiveView {
         let is_empty = self.items.is_empty();
         let content = if is_empty {
             let (message, description) = match self.thread_filter {
-                ThreadFilter::All => ("No history yet", "Your threads will appear here."),
+                ThreadFilter::Unarchived => ("No active threads", "Your threads will appear here."),
                 ThreadFilter::ArchivedOnly => (
                     "No archived threads",
                     "Archived threads can be restored here.",
@@ -1162,7 +1075,6 @@ impl Render for ThreadsArchiveView {
             .min_w_0()
             .min_h_0()
             .child(self.render_header(cx))
-            .child(self.render_toolbar(cx))
             .child(content)
     }
 }

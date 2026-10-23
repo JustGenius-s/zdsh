@@ -42,12 +42,13 @@ Shipped behavior is [docs/zdsh.md](docs/zdsh.md).
   - [x] 文件 Diff 样式优化
 
 - [x] Thread Panel 和历史记录优化
-  - [ ] 样式布局对齐 Cursor，不要 “创建 workspace”功能
+  - [x] 样式布局对齐 Cursor，不要 “创建 workspace”功能
   - [x] 去掉 New Thread 按钮和 New Terminal 按钮
   - [x] 去掉下拉菜单，不允许在 Thread Panel 切换项目
 
 - [ ] 全局优化
   - [ ] 以 cursor 为准重新创建图标合集，迁移 morphicons 算法
+  - [ ] 优化全局选中文本的样式，现在这个配色太古老
 
 ## Next
 
@@ -62,7 +63,6 @@ Shipped behavior is [docs/zdsh.md](docs/zdsh.md).
 - [ ] 工具性能优化
 - [ ] 支持 Agent Trace
 - [ ] Worktree 功能优化
-- [ ] 完善更新图标合集
 - [ ] 支持自定义命令和Hooks
 - [ ] SSH 远程开发优化
 - [ ] 支持子 Agent 和父 Agent 的实时通信

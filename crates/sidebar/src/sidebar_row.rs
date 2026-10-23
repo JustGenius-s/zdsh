@@ -15,11 +15,11 @@ use ui::{VisibleOnHover as _, rems_from_px};
 /// How far rows sit in from the sidebar's edges.
 pub(crate) const LIST_INSET: f32 = 8.;
 /// The space below an expanded group, before the next one.
-pub(crate) const GROUP_GAP: f32 = 12.;
+pub(crate) const GROUP_GAP: f32 = 16.;
 
 // Rem-based metrics scale with the configured UI font size.
-const ROW_MIN_HEIGHT: f32 = 32.;
-const ROW_PADDING_X: f32 = 8.;
+const ROW_MIN_HEIGHT: f32 = 30.;
+const ROW_PADDING_X: f32 = 6.;
 const ROW_GAP: f32 = 6.;
 const ROW_RADIUS: f32 = 8.;
 const ICON_BOX: f32 = 20.;
@@ -37,7 +37,6 @@ pub(crate) struct SidebarRow {
     end: Option<AnyElement>,
     selected: bool,
     focused: bool,
-    nested: bool,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     on_hover: Option<Box<dyn Fn(&bool, &mut Window, &mut App)>>,
     tooltip: Option<Box<dyn Fn(&mut Window, &mut App) -> AnyView>>,
@@ -59,7 +58,6 @@ impl SidebarRow {
             end: None,
             selected: false,
             focused: false,
-            nested: false,
             on_click: None,
             on_hover: None,
             tooltip: None,
@@ -85,11 +83,6 @@ impl SidebarRow {
 
     pub(crate) fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
-        self
-    }
-
-    pub(crate) fn nested(mut self) -> Self {
-        self.nested = true;
         self
     }
 
@@ -159,7 +152,7 @@ impl RenderOnce for SidebarRow {
             None => self.leading,
         };
 
-        div().w_full().px(rems_from_px(LIST_INSET)).child(
+        div().w_full().px(rems_from_px(LIST_INSET)).pb_0p5().child(
             h_flex()
                 .id(self.id)
                 .group(group)
@@ -167,9 +160,6 @@ impl RenderOnce for SidebarRow {
                 .w_full()
                 .min_w_0()
                 .min_h(rems_from_px(ROW_MIN_HEIGHT))
-                .when(self.nested, |this| {
-                    this.min_h(rems(2.25)).py_1().ml_2().w_auto()
-                })
                 .px(rems_from_px(ROW_PADDING_X))
                 .gap(rems_from_px(ROW_GAP))
                 .rounded(rems_from_px(ROW_RADIUS))
@@ -182,8 +172,20 @@ impl RenderOnce for SidebarRow {
                 .when(self.selected, |this| this.bg(colors.ghost_element_selected))
                 .when(clickable, |this| {
                     this.cursor_pointer()
-                        .hover(|style| style.bg(colors.ghost_element_hover))
-                        .active(|style| style.bg(colors.ghost_element_active))
+                        .hover(|style| {
+                            style.bg(if self.selected {
+                                colors.ghost_element_selected
+                            } else {
+                                colors.ghost_element_hover
+                            })
+                        })
+                        .active(|style| {
+                            style.bg(if self.selected {
+                                colors.ghost_element_selected
+                            } else {
+                                colors.ghost_element_active
+                            })
+                        })
                 })
                 .child(
                     div()
@@ -244,7 +246,7 @@ impl RenderOnce for StatusDot {
 }
 
 pub(crate) fn sidebar_icon(icon: IconName) -> Icon {
-    Icon::empty().path(icon.path()).size(rems(1.))
+    Icon::empty().path(icon.path()).size(rems(0.875))
 }
 
 pub(crate) fn sidebar_icon_button(id: impl Into<ElementId>, icon: IconName) -> Button {
