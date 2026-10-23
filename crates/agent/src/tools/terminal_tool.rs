@@ -36,7 +36,7 @@ const COMMAND_OUTPUT_LIMIT: u64 = 16 * 1024;
 ///
 /// Do not pipe output to `head`, `tail`, or similar output-filtering commands just to reduce what you receive. Instead, use `head_lines` and/or `tail_lines`; this keeps the terminal output visible to the user in real time while limiting only the final output sent back to you. When both are specified, the first `head_lines` lines are returned, then a blank line, then the last `tail_lines` lines. Avoid requesting too many lines, or the response may waste tokens or exceed the context window.
 ///
-/// Do not use this tool for commands that run indefinitely, such as servers (like `npm run start`, `npm run dev`, `python -m http.server`, etc) or file watchers that don't terminate on their own.
+/// For servers, watchers, or other long commands, set `is_background=true` or `block_until_ms=0`. A new Terminal tab shows the process; completion is delivered automatically to this conversation. Use `background_task` to inspect or stop the task, rather than repeatedly polling.
 ///
 /// For potentially long-running commands, prefer specifying `timeout_ms` to bound runtime and prevent indefinite hangs.
 ///
@@ -61,6 +61,14 @@ pub struct TerminalToolInput {
     pub cd: String,
     /// Optional maximum runtime (in milliseconds). If exceeded, the running terminal task is killed.
     pub timeout_ms: Option<u64>,
+    /// Milliseconds to wait in the foreground before returning a background task ID.
+    /// Defaults to 30000. Set 0 for servers/watchers or other immediate background work.
+    /// Unlike timeout_ms, reaching this deadline does not stop the command.
+    #[serde(default)]
+    pub block_until_ms: Option<u64>,
+    /// Start immediately in a new background Terminal tab. Completion notifies this conversation.
+    #[serde(default)]
+    pub is_background: bool,
     /// Return only the first N lines of terminal output to the model after the command finishes. Do not pipe output to `head`; use this parameter instead so the user can still see live output. Avoid requesting too many lines, or the response may waste tokens or exceed the context window.
     #[serde(default)]
     pub head_lines: Option<usize>,
@@ -81,7 +89,7 @@ pub struct TerminalToolInput {
 ///
 /// Do not pipe output to `head`, `tail`, or similar output-filtering commands just to reduce what you receive. Instead, use `head_lines` and/or `tail_lines`; this keeps the terminal output visible to the user in real time while limiting only the final output sent back to you. When both are specified, the first `head_lines` lines are returned, then a blank line, then the last `tail_lines` lines. Avoid requesting too many lines, or the response may waste tokens or exceed the context window.
 ///
-/// Do not use this tool for commands that run indefinitely, such as servers (like `npm run start`, `npm run dev`, `python -m http.server`, etc) or file watchers that don't terminate on their own.
+/// For servers, watchers, or other long commands, set `is_background=true` or `block_until_ms=0`. A new Terminal tab shows the process; completion is delivered automatically to this conversation. Use `background_task` to inspect or stop the task, rather than repeatedly polling.
 ///
 /// For potentially long-running commands, prefer specifying `timeout_ms` to bound runtime and prevent indefinite hangs.
 ///
@@ -106,6 +114,14 @@ pub struct SandboxedTerminalToolInput {
     pub cd: String,
     /// Optional maximum runtime (in milliseconds). If exceeded, the running terminal task is killed.
     pub timeout_ms: Option<u64>,
+    /// Milliseconds to wait in the foreground before returning a background task ID.
+    /// Defaults to 30000. Set 0 for servers/watchers or other immediate background work.
+    /// Unlike timeout_ms, reaching this deadline does not stop the command.
+    #[serde(default)]
+    pub block_until_ms: Option<u64>,
+    /// Start immediately in a new background Terminal tab. Completion notifies this conversation.
+    #[serde(default)]
+    pub is_background: bool,
     /// Return only the first N lines of terminal output to the model after the command finishes. Do not pipe output to `head`; use this parameter instead so the user can still see live output. Avoid requesting too many lines, or the response may waste tokens or exceed the context window.
     #[serde(default)]
     pub head_lines: Option<usize>,
@@ -194,6 +210,9 @@ struct TerminalToolRequest {
     command: String,
     cd: String,
     timeout_ms: Option<u64>,
+    block_until_ms: Option<u64>,
+    is_background: bool,
+    title: Option<String>,
     selection: TerminalOutputSelection,
     sandbox: Option<TerminalSandboxInput>,
 }
@@ -204,6 +223,9 @@ impl From<TerminalToolInput> for TerminalToolRequest {
             command: input.command,
             cd: input.cd,
             timeout_ms: input.timeout_ms,
+            block_until_ms: input.block_until_ms,
+            is_background: input.is_background,
+            title: input.description,
             selection: TerminalOutputSelection {
                 head_lines: input.head_lines,
                 tail_lines: input.tail_lines,
@@ -219,6 +241,9 @@ impl From<SandboxedTerminalToolInput> for TerminalToolRequest {
             command: input.command,
             cd: input.cd,
             timeout_ms: input.timeout_ms,
+            block_until_ms: input.block_until_ms,
+            is_background: input.is_background,
+            title: input.description,
             selection: TerminalOutputSelection {
                 head_lines: input.head_lines,
                 tail_lines: input.tail_lines,
@@ -391,6 +416,12 @@ async fn run_terminal_tool(
     event_stream: ToolCallEventStream,
     cx: &mut AsyncApp,
 ) -> Result<String, String> {
+    let background_supported = environment.supports_background_tasks(cx);
+    if (input.is_background || input.block_until_ms == Some(0)) && !background_supported {
+        return Err(
+            "This agent session has no workspace Terminal tab host for background tasks".into(),
+        );
+    }
     let selection = input.selection;
     let sandbox_input = input.sandbox.clone().unwrap_or_default();
 
@@ -928,40 +959,100 @@ async fn run_terminal_tool(
     });
 
     let timeout = input.timeout_ms.map(Duration::from_millis);
+    let started_at = terminal
+        .acp_terminal()
+        .map(|terminal| terminal.read_with(cx, |terminal, _| terminal.started_at()))
+        .unwrap_or_else(std::time::Instant::now);
+    let background_wait = if input.is_background {
+        0
+    } else {
+        input.block_until_ms.unwrap_or(30_000)
+    };
+    let can_background = background_supported && terminal.acp_terminal().is_some();
+    let requested_background = terminal.background_requested(cx);
+    let handoff_executor = cx.background_executor().clone();
+    let timeout_executor = cx.background_executor().clone();
+    let handoff = async move {
+        if !can_background {
+            futures::future::pending::<()>().await;
+        }
+        let requested = async {
+            if let Some(requested) = requested_background {
+                requested.await;
+            } else {
+                futures::future::pending::<()>().await;
+            }
+        };
+        futures::select_biased! {
+            _ = requested.fuse() => {},
+            _ = handoff_executor.timer(Duration::from_millis(background_wait)).fuse() => {},
+        }
+    };
+    let hard_timeout = async move {
+        if let Some(timeout) = timeout {
+            timeout_executor
+                .timer(timeout.saturating_sub(started_at.elapsed()))
+                .await;
+        } else {
+            futures::future::pending::<()>().await;
+        }
+    };
 
     let mut timed_out = false;
     let mut user_stopped_via_signal = false;
     let wait_for_exit = terminal.wait_for_exit(cx).map_err(|e| e.to_string())?;
 
-    match timeout {
-        Some(timeout) => {
-            let timeout_task = cx.background_executor().timer(timeout);
-
-            futures::select! {
-                _ = wait_for_exit.clone().fuse() => {},
-                _ = timeout_task.fuse() => {
+    let background =
+        if can_background && background_wait == 0 && !event_stream.was_cancelled_by_user() {
+            true
+        } else {
+            futures::select_biased! {
+                _ = event_stream.cancelled_by_user().fuse() => {
+                    user_stopped_via_signal = true;
+                    terminal.kill(cx).map_err(|error| error.to_string())?;
+                    wait_for_exit.clone().await;
+                    false
+                },
+                _ = wait_for_exit.clone().fuse() => false,
+                _ = hard_timeout.fuse() => {
                     timed_out = true;
-                    terminal.kill(cx).map_err(|e| e.to_string())?;
-                    wait_for_exit.await;
-                }
-                _ = event_stream.cancelled_by_user().fuse() => {
-                    user_stopped_via_signal = true;
-                    terminal.kill(cx).map_err(|e| e.to_string())?;
-                    wait_for_exit.await;
-                }
+                    terminal.kill(cx).map_err(|error| error.to_string())?;
+                    wait_for_exit.clone().await;
+                    false
+                },
+                _ = handoff.fuse() => true,
             }
-        }
-        None => {
-            futures::select! {
-                _ = wait_for_exit.clone().fuse() => {},
-                _ = event_stream.cancelled_by_user().fuse() => {
-                    user_stopped_via_signal = true;
-                    terminal.kill(cx).map_err(|e| e.to_string())?;
-                    wait_for_exit.await;
-                }
+        };
+    if background {
+        let result = environment
+            .start_background_task(
+                terminal.clone(),
+                crate::BackgroundTaskRequest {
+                    title: input.title.clone().unwrap_or_else(|| input.command.clone()),
+                    command: input.command.clone(),
+                    cwd: input.cd.clone(),
+                    tool_call_id: event_stream.background_tool_call_id(),
+                    started_at,
+                    timeout,
+                },
+                cx,
+            )
+            .await;
+        return match result {
+            Ok(result) => Ok(match sandbox_note {
+                Some(note) => format!("{note}\n\n{result}"),
+                None => result,
+            }),
+            Err(error) => {
+                terminal.kill(cx).map_err(|kill_error| {
+                    format!("{error:#}; failed to stop command: {kill_error}")
+                })?;
+                Err(format!(
+                    "Could not move command to a background Terminal tab: {error:#}"
+                ))
             }
-        }
-    };
+        };
+    }
 
     let user_stopped_via_signal = user_stopped_via_signal || event_stream.was_cancelled_by_user();
     let user_stopped_via_terminal = terminal.was_stopped_by_user(cx).unwrap_or(false);

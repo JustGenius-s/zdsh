@@ -275,6 +275,7 @@ pub enum Message {
     Compaction(CompactionInfo),
     PermissionsChanged(PermissionsChange),
     DebugModeReminder(DebugModeReminder),
+    BackgroundTaskCompletion(Vec<crate::BackgroundTaskRecord>),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -411,6 +412,12 @@ impl Message {
                 reasoning_details: None,
             }],
             Message::PermissionsChanged(change) => vec![change.to_request()],
+            Message::BackgroundTaskCompletion(tasks) => vec![LanguageModelRequestMessage {
+                role: Role::User,
+                content: vec![crate::background_task::completion_prompt(tasks).into()],
+                cache: false,
+                reasoning_details: None,
+            }],
             Message::DebugModeReminder(reminder) => vec![LanguageModelRequestMessage {
                 role: Role::User,
                 content: vec![reminder.content.to_string().into()],
@@ -434,6 +441,14 @@ impl Message {
             Message::PermissionsChanged(change) => {
                 format!("[permissions changed to {}]\n", change.label())
             }
+            Message::BackgroundTaskCompletion(tasks) => format!(
+                "[background tasks completed: {}]\n",
+                tasks
+                    .iter()
+                    .map(|task| task.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Message::DebugModeReminder(_) => String::new(),
         }
     }
@@ -444,6 +459,7 @@ impl Message {
             | Message::Resume
             | Message::Compaction(_)
             | Message::PermissionsChanged(_)
+            | Message::BackgroundTaskCompletion(_)
             | Message::DebugModeReminder(_) => Role::User,
             Message::Agent(_) => Role::Assistant,
         }
@@ -946,6 +962,12 @@ pub enum AgentMessageContent {
 }
 
 pub trait TerminalHandle {
+    fn acp_terminal(&self) -> Option<Entity<acp_thread::Terminal>> {
+        None
+    }
+    fn background_requested(&self, _cx: &AsyncApp) -> Option<Shared<Task<()>>> {
+        None
+    }
     fn id(&self, cx: &AsyncApp) -> Result<acp_v2::TerminalId>;
     fn current_output(&self, cx: &AsyncApp) -> Result<ProcessOutput>;
     fn wait_for_exit(&self, cx: &AsyncApp) -> Result<Shared<Task<acp_v2::TerminalExitStatus>>>;
@@ -964,6 +986,31 @@ pub trait SubagentHandle {
 }
 
 pub trait ThreadEnvironment {
+    fn supports_background_tasks(&self, _cx: &AsyncApp) -> bool {
+        false
+    }
+    fn start_background_task(
+        &self,
+        _terminal: Rc<dyn TerminalHandle>,
+        _request: crate::BackgroundTaskRequest,
+        _cx: &mut AsyncApp,
+    ) -> Task<Result<String>> {
+        Task::ready(Err(anyhow!(
+            "Background tasks are unavailable in this environment"
+        )))
+    }
+
+    fn background_tasks(
+        &self,
+        _id: Option<String>,
+        _stop: bool,
+        _cx: &mut AsyncApp,
+    ) -> Task<Result<String>> {
+        Task::ready(Err(anyhow!(
+            "Background tasks are unavailable in this environment"
+        )))
+    }
+
     fn create_terminal(
         &self,
         command: String,
@@ -1559,6 +1606,8 @@ pub struct Thread {
     /// The requests for more access that an auto review allowed, by tool call,
     /// with the review's reason. Saved so the tool cards keep showing them.
     auto_reviews: HashMap<LanguageModelToolUseId, String>,
+    pub(crate) background_tasks: Vec<crate::BackgroundTaskRecord>,
+    pub(crate) background_notifications_paused: bool,
 }
 
 impl Thread {
@@ -1713,6 +1762,8 @@ impl Thread {
             announced_permissions: None,
             parent_thread: None,
             auto_reviews: HashMap::default(),
+            background_tasks: Vec::new(),
+            background_notifications_paused: false,
         }
     }
 
@@ -1822,6 +1873,7 @@ impl Thread {
                 }
                 Message::Resume
                 | Message::PermissionsChanged(_)
+                | Message::BackgroundTaskCompletion(_)
                 | Message::DebugModeReminder(_) => {}
                 Message::Compaction(info) => {
                     let compaction_id = acp_thread::ContextCompactionId(
@@ -2064,6 +2116,8 @@ impl Thread {
         let (prompt_capabilities_tx, prompt_capabilities_rx) =
             watch::channel(Self::prompt_capabilities(model.as_model()));
 
+        let background_tasks =
+            crate::background_task::restore_tasks(db_thread.background_tasks, &id);
         let action_log = cx.new(|_| ActionLog::new(project.clone()));
         let usage_predates_compaction = compacted_after_latest_reported_usage(
             &db_thread.messages,
@@ -2130,6 +2184,8 @@ impl Thread {
             announced_permissions,
             parent_thread: None,
             auto_reviews: db_thread.auto_reviews,
+            background_tasks,
+            background_notifications_paused: db_thread.background_notifications_paused,
         }
     }
 
@@ -2243,6 +2299,8 @@ impl Thread {
             sandboxed_terminal_temp_dir: self.sandboxed_terminal_temp_dir.clone(),
             sandbox_grants: self.sandbox_grants.borrow().to_db(),
             auto_reviews: self.auto_reviews.clone(),
+            background_tasks: self.background_tasks.clone(),
+            background_notifications_paused: self.background_notifications_paused,
         };
 
         cx.background_spawn(async move {
@@ -2524,6 +2582,9 @@ impl Thread {
         ));
         // Register terminal tool variants; `enabled_tools` exposes the one
         // matching the current sandbox state to the model as `terminal`.
+        self.add_tool(crate::background_task::BackgroundTaskTool::new(
+            environment.clone(),
+        ));
         self.add_tool(TerminalTool::new(self.project.clone(), environment.clone()));
         self.add_tool(SandboxedTerminalTool::new(
             self.project.clone(),
@@ -2903,6 +2964,7 @@ impl Thread {
                 | Message::Resume
                 | Message::Compaction(_)
                 | Message::PermissionsChanged(_)
+                | Message::BackgroundTaskCompletion(_)
                 | Message::DebugModeReminder(_) => {}
             }
         }
@@ -3127,6 +3189,44 @@ impl Thread {
         };
         LanguageModelRegistry::global(cx)
             .update(cx, |registry, cx| registry.select_model(&selected, cx))
+    }
+
+    pub(crate) fn waiting_for_debug_reproduction(&self) -> bool {
+        self.profile().as_str() == agent_settings::builtin_profiles::DEBUG
+            && self
+                .messages
+                .iter()
+                .rev()
+                .take_while(|message| !matches!(message.as_ref(), Message::User(_)))
+                .any(|message| {
+                    let Message::Agent(message) = message.as_ref() else {
+                        return false;
+                    };
+                    message.content.iter().any(|content| match content {
+                        AgentMessageContent::Text(text) => {
+                            crate::debug_session::reproduction_steps(text)
+                                .is_some_and(|steps| !steps.content.trim().is_empty())
+                        }
+                        _ => false,
+                    })
+                })
+    }
+
+    pub(crate) fn append_background_completions(&mut self, cx: &mut Context<Self>) {
+        let mut fresh = Vec::new();
+        for task in &mut self.background_tasks {
+            if task.is_pending() {
+                if !task.context_added {
+                    task.context_added = true;
+                    fresh.push(task.clone());
+                }
+            }
+        }
+        if !fresh.is_empty() {
+            self.messages
+                .push(Arc::new(Message::BackgroundTaskCompletion(fresh)));
+        }
+        cx.notify();
     }
 
     pub fn resume(
@@ -4127,9 +4227,14 @@ impl Thread {
             let mut tool_result = tool_result;
             this.apply_tool_result_policy(owning_message_ix, in_pending_message, &mut tool_result);
             if in_pending_message {
+                crate::background_task::acknowledge_read_results(
+                    &mut this.background_tasks,
+                    &tool_result,
+                );
                 this.pending_message()
                     .tool_results
                     .insert(tool_result.tool_use_id.clone(), tool_result);
+                cx.notify();
                 return;
             }
             let Some(user_message_id) = user_message_id else {
@@ -5084,6 +5189,7 @@ impl Thread {
                 | Message::Resume
                 | Message::Compaction(_)
                 | Message::PermissionsChanged(_)
+                | Message::BackgroundTaskCompletion(_)
                 | Message::DebugModeReminder(_) => None,
             })
     }
@@ -5467,9 +5573,16 @@ impl Thread {
                     tool_name.as_ref()
                 };
 
-                if tool.supports_provider(&model.provider_id())
-                    && profile.is_tool_enabled(profile_tool_name)
-                {
+                let enabled = if profile_tool_name == crate::tools::BackgroundTaskTool::NAME {
+                    profile
+                        .tools
+                        .get(profile_tool_name)
+                        .copied()
+                        .unwrap_or_else(|| profile.is_tool_enabled(TerminalTool::NAME))
+                } else {
+                    profile.is_tool_enabled(profile_tool_name)
+                };
+                if tool.supports_provider(&model.provider_id()) && enabled {
                     match (tool_name.as_ref(), use_sandboxed_terminal) {
                         (TerminalTool::NAME, false) | (SandboxedTerminalTool::NAME, true) => {
                             Some((SharedString::from(TerminalTool::NAME), tool.clone()))
@@ -6179,6 +6292,7 @@ pub(crate) fn messages_to_markdown(messages: &[Arc<Message>]) -> String {
             Message::Resume
             | Message::Compaction(_)
             | Message::PermissionsChanged(_)
+            | Message::BackgroundTaskCompletion(_)
             | Message::DebugModeReminder(_) => {}
         }
         markdown.push_str(&message.to_markdown());
@@ -6941,6 +7055,9 @@ pub struct ToolCallEventStream {
 }
 
 impl ToolCallEventStream {
+    pub(crate) fn background_tool_call_id(&self) -> String {
+        self.tool_call_id.to_string()
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub fn test() -> (Self, ToolCallEventStreamReceiver) {
         let (stream, receiver, _cancellation_tx) = Self::test_with_cancellation();

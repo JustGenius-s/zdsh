@@ -1155,6 +1155,7 @@ pub struct AgentPanel {
     retained_threads: HashMap<ThreadId, Entity<ConversationView>>,
     conversation_items: HashMap<ThreadId, WeakEntity<ConversationItem>>,
     terminals: HashMap<TerminalId, AgentTerminal>,
+    background_terminals: HashMap<TerminalId, Entity<acp_thread::Terminal>>,
     pending_terminal_spawn: Option<TerminalId>,
     #[cfg(test)]
     test_terminal_spawn_gate: Option<futures::channel::oneshot::Receiver<()>>,
@@ -1554,6 +1555,7 @@ impl AgentPanel {
             retained_threads: HashMap::default(),
             conversation_items: HashMap::default(),
             terminals: HashMap::default(),
+            background_terminals: HashMap::default(),
             pending_terminal_spawn: None,
             #[cfg(test)]
             test_terminal_spawn_gate: None,
@@ -2474,6 +2476,11 @@ impl AgentPanel {
             self.pending_terminal_spawn = None;
         }
         self.dismiss_terminal_notifications(terminal_id, cx);
+        if let Some(terminal) = self.background_terminals.remove(&terminal_id) {
+            if terminal.read(cx).output().is_none() {
+                terminal.update(cx, |terminal, cx| terminal.stop_by_user(cx));
+            }
+        }
         let Some(terminal) = self.terminals.remove(&terminal_id) else {
             return;
         };
@@ -2564,6 +2571,9 @@ impl AgentPanel {
     }
 
     fn persist_terminal_metadata(&self, terminal_id: TerminalId, cx: &mut Context<Self>) {
+        if self.background_terminals.contains_key(&terminal_id) {
+            return;
+        }
         let Some(store) = TerminalThreadMetadataStore::try_global(cx) else {
             return;
         };
@@ -4871,12 +4881,20 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !cx.has_flag::<CreateThreadToolFeatureFlag>() {
-            return;
-        }
         let Some(native_connection) = conversation_view.read(cx).as_native_connection(cx) else {
             return;
         };
+        let background_host = Rc::new(AgentPanelSiblingHost::new(
+            cx.weak_entity(),
+            window.window_handle(),
+        ));
+        let project_id = self.project.entity_id();
+        native_connection.0.update(cx, |native_agent, _cx| {
+            native_agent.set_background_terminal_host(project_id, background_host);
+        });
+        if !cx.has_flag::<CreateThreadToolFeatureFlag>() {
+            return;
+        }
         let host = Rc::new(AgentPanelSiblingHost::new(
             cx.weak_entity(),
             window.window_handle(),
@@ -4954,6 +4972,60 @@ pub(crate) struct AgentPanelSiblingHost {
 impl AgentPanelSiblingHost {
     pub(crate) fn new(panel: WeakEntity<AgentPanel>, window: gpui::AnyWindowHandle) -> Self {
         Self { panel, window }
+    }
+}
+
+impl agent::BackgroundTerminalHost for AgentPanelSiblingHost {
+    fn open_background_terminal(
+        &self,
+        terminal: Entity<acp_thread::Terminal>,
+        title: String,
+        cx: &mut gpui::AsyncApp,
+    ) -> Task<Result<()>> {
+        let panel = self.panel.clone();
+        let window = self.window;
+        cx.spawn(async move |cx| {
+            cx.update_window(window, |_, window, cx| {
+                panel.update(cx, |panel, cx| {
+                    let workspace = panel.workspace.upgrade().context("Workspace was closed")?;
+                    let inner = terminal.read(cx).inner().clone();
+                    inner.update(cx, |terminal, _| terminal.retain_task_output());
+                    let working_directory = terminal.read(cx).working_dir().clone();
+                    let view = cx.new(|cx| {
+                        let mut view = TerminalView::new(
+                            inner,
+                            panel.workspace.clone(),
+                            panel.workspace_id,
+                            panel.project.downgrade(),
+                            window,
+                            cx,
+                        );
+                        view.set_show_workspace_actions(false, cx);
+                        view
+                    });
+                    let terminal_id = TerminalId::new();
+                    panel.background_terminals.insert(terminal_id, terminal);
+                    panel.insert_terminal(
+                        terminal_id,
+                        view.clone(),
+                        working_directory,
+                        Some(title.into()),
+                        None,
+                        None,
+                        false,
+                        false,
+                        AgentThreadSource::AgentPanel,
+                        window,
+                        cx,
+                    );
+                    let pane = workspace.read(cx).active_pane().clone();
+                    pane.update(cx, |pane, cx| {
+                        pane.add_item_inner(Box::new(view), false, false, false, None, window, cx);
+                    });
+                    anyhow::Ok(())
+                })?
+            })?
+        })
     }
 }
 

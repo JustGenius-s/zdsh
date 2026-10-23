@@ -1680,10 +1680,12 @@ impl ThreadView {
         } else {
             started_at.elapsed()
         };
-        let running = matches!(
-            tool_call.status(),
-            ToolCallStatus::Pending | ToolCallStatus::InProgress
-        ) && !needs_confirmation;
+        let background = terminal_data.background_task_id().is_some();
+        let running = !needs_confirmation
+            && (matches!(
+                tool_call.status(),
+                ToolCallStatus::Pending | ToolCallStatus::InProgress
+            ) || (background && output.is_none()));
 
         let terminal_id = terminal.entity_id().to_string();
         let child_id = |name: &str| format!("terminal-tool-{name}-{terminal_id}");
@@ -1731,6 +1733,8 @@ impl ThreadView {
             "Skipped"
         } else if failed {
             "Failed"
+        } else if background && running {
+            "Running in background"
         } else {
             command_verb(needs_confirmation, running)
         };
@@ -1802,6 +1806,20 @@ impl ThreadView {
                     .on_click(move |_, _, cx| cx.open_url(&docs_url)),
             )
         })
+        .when(running && terminal_data.can_run_in_background(), |row| {
+            row.meta(
+                PillButton::new(SharedString::from(child_id("background")))
+                    .size(KitSize::XSmall)
+                    .label("Run in background")
+                    .on_click({
+                        let terminal = terminal.clone();
+                        move |_, _, cx| {
+                            cx.stop_propagation();
+                            terminal.update(cx, |terminal, cx| terminal.request_background(cx));
+                        }
+                    }),
+            )
+        })
         .when(running && terminal_data.is_process_backed(), |row| {
             row.meta(
                 PillButton::new(SharedString::from(child_id("stop")))
@@ -1823,7 +1841,9 @@ impl ThreadView {
                             terminal.update(cx, |terminal, cx| {
                                 terminal.stop_by_user(cx);
                             });
-                            if AgentSettings::get_global(cx).cancel_generation_on_terminal_stop {
+                            if !background
+                                && AgentSettings::get_global(cx).cancel_generation_on_terminal_stop
+                            {
                                 this.cancel_generation(cx);
                             }
                         }

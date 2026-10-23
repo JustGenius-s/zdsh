@@ -94,6 +94,10 @@ pub struct DbThread {
     /// with the review's reason.
     #[serde(default)]
     pub auto_reviews: HashMap<LanguageModelToolUseId, String>,
+    #[serde(default)]
+    pub background_tasks: Vec<crate::BackgroundTaskRecord>,
+    #[serde(default)]
+    pub background_notifications_paused: bool,
 }
 
 /// Serialized form of the sandbox permissions the user granted "for the rest of
@@ -172,6 +176,8 @@ impl SharedThread {
             sandboxed_terminal_temp_dir: None,
             sandbox_grants: DbSandboxGrants::default(),
             auto_reviews: HashMap::default(),
+            background_tasks: Vec::new(),
+            background_notifications_paused: false,
         }
     }
 
@@ -361,6 +367,8 @@ impl DbThread {
             sandboxed_terminal_temp_dir: None,
             sandbox_grants: DbSandboxGrants::default(),
             auto_reviews: HashMap::default(),
+            background_tasks: Vec::new(),
+            background_notifications_paused: false,
         })
     }
 }
@@ -950,6 +958,8 @@ mod tests {
             sandboxed_terminal_temp_dir: None,
             sandbox_grants: DbSandboxGrants::default(),
             auto_reviews: HashMap::default(),
+            background_tasks: Vec::new(),
+            background_notifications_paused: false,
         }
     }
 

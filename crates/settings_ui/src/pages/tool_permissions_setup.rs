@@ -1338,6 +1338,8 @@ mod tests {
         //   1. Add a ToolInfo entry to TOOLS (if the tool has permission checks), or
         //   2. Add it to this list with a comment explaining why it's excluded.
         const EXCLUDED_TOOLS: &[&str] = &[
+            // Only inspects or stops processes already owned by this conversation.
+            "background_task",
             // Read-only / low-risk tools that don't call decide_permission_from_settings
             "apply_code_action",
             // Interactive prompt: always asks the user via prompt_for_decision,

@@ -1,4 +1,8 @@
 mod auto_review;
+mod background_task;
+pub use background_task::{
+    BackgroundTaskRecord, BackgroundTaskRequest, BackgroundTaskState, BackgroundTerminalHost,
+};
 mod db;
 pub mod debug_session;
 mod legacy_thread;
@@ -224,6 +228,7 @@ struct ProjectState {
 struct PendingThreadSave {
     folder_paths: PathList,
     db_thread: Task<DbThread>,
+    receipts: Vec<oneshot::Sender<Result<(), SharedString>>>,
 }
 
 /// Holds both the internal Thread and the AcpThread for a session
@@ -235,6 +240,7 @@ struct Session {
     execution: Option<NativeExecution>,
     pending_cancellation: watch::Sender<()>,
     subagents: Vec<Entity<acp_thread::AcpThread>>,
+    background: background_task::SessionBackgroundTasks,
     project_id: EntityId,
     /// Latest snapshot to persist. Overwritten in place on every save request;
     /// the single save worker drains it, coalescing bursts into one write.
@@ -553,6 +559,7 @@ pub struct NativeAgent {
     models: LanguageModels,
     /// Handler installed by the UI for `create_thread` / `list_agents_and_models` tools.
     sibling_thread_host: Option<Rc<dyn SiblingThreadHost>>,
+    background_terminal_hosts: HashMap<EntityId, Rc<dyn BackgroundTerminalHost>>,
     fs: Arc<dyn Fs>,
     _subscriptions: Vec<Subscription>,
     /// Tracks the lifecycle of global skills directory observation. We
@@ -726,6 +733,7 @@ impl NativeAgent {
                 templates,
                 models: LanguageModels::new(cx),
                 sibling_thread_host: None,
+                background_terminal_hosts: HashMap::default(),
                 fs,
                 _subscriptions: subscriptions,
                 skills_state: SkillsState::default(),
@@ -958,7 +966,8 @@ impl NativeAgent {
             cx.subscribe(
                 &thread_handle,
                 |this, thread, _: &crate::thread::CancellationRequested, cx| {
-                    this.cancel_session(thread.read(cx).id());
+                    let id = thread.read(cx).id().clone();
+                    this.cancel_session(&id, cx);
                 },
             ),
             cx.observe(&thread_handle, move |this, thread, cx| {
@@ -1014,6 +1023,7 @@ impl NativeAgent {
                 execution: None,
                 pending_cancellation: watch::channel(()).0,
                 subagents: Vec::new(),
+                background: Default::default(),
                 project_id,
                 pending_save,
                 last_streaming_save_key: None,
@@ -1025,14 +1035,27 @@ impl NativeAgent {
         );
 
         self.update_available_commands_for_project(project_id, cx);
+        let restored_session_id = acp_thread.read(cx).session_id().clone();
+        let agent = cx.weak_entity();
+        cx.defer(move |cx| {
+            agent
+                .update(cx, |agent, cx| {
+                    agent.schedule_background_delivery(&restored_session_id, cx)
+                })
+                .log_err();
+        });
 
         acp_thread
     }
 
-    fn cancel_session(&mut self, session_id: &acp_v2::SessionId) {
+    fn cancel_session(&mut self, session_id: &acp_v2::SessionId, cx: &mut Context<Self>) {
         let Some(session) = self.sessions.get_mut(session_id) else {
             return;
         };
+        session.thread.update(cx, |thread, cx| {
+            thread.background_notifications_paused = true;
+            cx.notify();
+        });
         if session.pending_cancellation.send(()).is_err() {
             log::debug!("No pending native submissions to cancel");
         }
@@ -1969,10 +1992,17 @@ impl NativeAgent {
         };
         session.last_streaming_save_key = Some(session.thread.read(cx).streaming_save_key());
         session.last_draft_prompt_revision = session.draft_prompt_revision(cx);
-        *session.pending_save.lock() = Some(PendingThreadSave {
+        let mut pending = session.pending_save.lock();
+        let receipts = pending
+            .take()
+            .map(|pending| pending.receipts)
+            .unwrap_or_default();
+        *pending = Some(PendingThreadSave {
             folder_paths,
             db_thread,
+            receipts,
         });
+        drop(pending);
         session.save_wake.send(()).log_err();
     }
 
@@ -1990,19 +2020,31 @@ impl NativeAgent {
             if let Some(PendingThreadSave {
                 folder_paths,
                 db_thread,
+                receipts,
             }) = payload
-                && let Some(database) = database_future
-                    .clone()
-                    .await
-                    .map_err(|err| anyhow!(err))
-                    .log_err()
             {
-                let db_thread = db_thread.await;
-                database
-                    .save_thread(id.clone(), db_thread, folder_paths)
-                    .await
-                    .log_err();
-                thread_store.update(cx, |store, cx| store.reload(cx));
+                let result = async {
+                    let database = database_future
+                        .clone()
+                        .await
+                        .map_err(|error| anyhow!(error))?;
+                    database
+                        .save_thread(id.clone(), db_thread.await, folder_paths)
+                        .await
+                }
+                .await
+                .map_err(|error| SharedString::from(format!("{error:#}")));
+                if result.is_ok() {
+                    thread_store.update(cx, |store, cx| store.reload(cx));
+                }
+                for receipt in receipts {
+                    if receipt.send(result.clone()).is_err() {
+                        log::debug!("Thread save observer was dropped");
+                    }
+                }
+                if let Err(error) = result {
+                    log::error!("Failed to save thread: {error}");
+                }
             }
             if closed {
                 break;
@@ -2375,6 +2417,22 @@ impl NativeAgent {
 pub struct NativeAgentConnection(pub Entity<NativeAgent>);
 
 impl NativeAgentConnection {
+    pub fn has_background_work(&self, session_id: &acp_v2::SessionId, cx: &App) -> bool {
+        self.0
+            .read(cx)
+            .sessions
+            .get(session_id)
+            .is_some_and(|session| {
+                session.background.has_work()
+                    || session
+                        .thread
+                        .read(cx)
+                        .background_tasks
+                        .iter()
+                        .any(BackgroundTaskRecord::is_pending)
+            })
+    }
+
     pub fn thread(&self, session_id: &acp_v2::SessionId, cx: &App) -> Option<Entity<Thread>> {
         self.0
             .read(cx)
@@ -2455,6 +2513,16 @@ impl NativeAgentConnection {
         content: Option<Vec<acp_v2::ContentBlock>>,
         cx: &mut App,
     ) -> (Task<Result<acp_v2::PromptResponse>>, NativeCompletion) {
+        self.submit_native_mode(session_id, content, false, cx)
+    }
+
+    fn submit_native_mode(
+        &self,
+        session_id: acp_v2::SessionId,
+        content: Option<Vec<acp_v2::ContentBlock>>,
+        background: bool,
+        cx: &mut App,
+    ) -> (Task<Result<acp_v2::PromptResponse>>, NativeCompletion) {
         let (completion_sender, completion_receiver) = oneshot::channel();
         let completion = completion_receiver.shared();
         if let Some(content) = &content
@@ -2491,6 +2559,9 @@ impl NativeAgentConnection {
                         };
                         if execution.completion.peek().is_some() {
                             return Ok(None);
+                        }
+                        if background {
+                            return Err(background_task::BackgroundDeliveryDeferred.into());
                         }
                         if let Some(sender) = execution.cancellation.take()
                             && sender
@@ -2530,6 +2601,21 @@ impl NativeAgentConnection {
                                 }),
                             ))
                         })??;
+                    if background {
+                        anyhow::ensure!(
+                            agent.read_with(cx, |agent, cx| agent
+                                .background_dispatch_ready(&session_id, cx))?,
+                            background_task::BackgroundDeliveryDeferred
+                        );
+                        thread.update(cx, |thread, cx| {
+                            thread.append_background_completions(cx);
+                        });
+                    } else {
+                        thread.update(cx, |thread, cx| {
+                            thread.background_notifications_paused = false;
+                            cx.notify();
+                        });
+                    }
                     let (message_id, preparation, retry_action) = if let Some(content) = content {
                         let message_id = ClientUserMessageId::new();
                         let retry_action = agent.read_with(cx, |agent, cx| {
@@ -2575,8 +2661,11 @@ impl NativeAgentConnection {
                             .map(|(id, _retry_action)| id.clone())
                             .or_else(|| thread.read(cx).last_user_message_id())
                             .context("No user message to retry")?;
-                        let retry_action =
-                            previous_execution.and_then(|(_id, retry_action)| retry_action);
+                        let retry_action = if background {
+                            None
+                        } else {
+                            previous_execution.and_then(|(_id, retry_action)| retry_action)
+                        };
                         thread.update(cx, |thread, cx| thread.prepare_local_turn(cx));
                         (message_id, Task::ready(()), retry_action)
                     };
@@ -2589,6 +2678,7 @@ impl NativeAgentConnection {
                         message_id.clone(),
                         retry_action.clone(),
                         preparation,
+                        background,
                         cancellation_receiver,
                         completion_sender,
                         cx,
@@ -2636,6 +2726,7 @@ impl NativeAgentConnection {
         message_id: ClientUserMessageId,
         retry_action: Option<NativeRetryAction>,
         preparation: Task<()>,
+        background: bool,
         cancellation: oneshot::Receiver<NativeCancellation>,
         completion: oneshot::Sender<std::result::Result<acp_v2::StopReason, Arc<anyhow::Error>>>,
         cx: &App,
@@ -2643,13 +2734,17 @@ impl NativeAgentConnection {
         cx.spawn(async move |cx| {
             let execution = cx.spawn({
                 let agent = agent.clone();
+                let session_id = session_id.clone();
                 async move |cx| {
                     preparation.await;
+                    if background {
+                        agent.update(cx, |agent, cx| agent.persist_background_state(&session_id, cx))?.await?;
+                    }
                     let task = cx.update(|cx| -> Result<_> {
                         let connection = NativeAgentConnection(
                             agent.upgrade().context("Native agent was released")?,
                         );
-                        Ok(connection.execute_retry_action(session_id, message_id, retry_action, cx))
+                        Ok(connection.execute_retry_action(session_id.clone(), message_id, retry_action, cx))
                     })?;
                     task.await
                 }
@@ -2732,9 +2827,14 @@ impl NativeAgentConnection {
                     Err(error)
                 }
             };
+            let pause_background = result.as_ref().map_or(true, |reason| matches!(reason, acp_v2::StopReason::Cancelled | acp_v2::StopReason::Error(_)));
+            if pause_background {
+                thread.update(cx, |thread, cx| { thread.background_notifications_paused = true; cx.notify(); });
+            }
             if completion.send(result).is_err() {
                 log::debug!("Native completion observer was dropped");
             }
+            agent.update(cx, |agent, cx| agent.schedule_background_delivery(&session_id, cx)).log_err();
         })
     }
 
@@ -3377,8 +3477,8 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
 
     fn cancel(&self, session_id: &acp_v2::SessionId, cx: &mut App) -> Result<()> {
         log::info!("Cancelling on session: {}", session_id);
-        self.0.update(cx, |agent, _cx| {
-            agent.cancel_session(session_id);
+        self.0.update(cx, |agent, cx| {
+            agent.cancel_session(session_id, cx);
         });
         Ok(())
     }
@@ -3418,7 +3518,11 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
 
     fn session_list(&self, cx: &mut App) -> Option<Rc<dyn AgentSessionList>> {
         let thread_store = self.0.read(cx).thread_store.clone();
-        Some(Rc::new(NativeAgentSessionList::new(thread_store, cx)) as _)
+        Some(Rc::new(NativeAgentSessionList::new(
+            thread_store,
+            self.0.downgrade(),
+            cx,
+        )) as _)
     }
 
     fn telemetry(&self) -> Option<Rc<dyn acp_thread::AgentTelemetry>> {
@@ -3541,6 +3645,7 @@ impl acp_thread::AgentTelemetry for NativeAgentConnection {
 }
 
 pub struct NativeAgentSessionList {
+    agent: WeakEntity<NativeAgent>,
     thread_store: Entity<ThreadStore>,
     updates_tx: async_channel::Sender<acp_thread::SessionListUpdate>,
     updates_rx: async_channel::Receiver<acp_thread::SessionListUpdate>,
@@ -3548,7 +3653,11 @@ pub struct NativeAgentSessionList {
 }
 
 impl NativeAgentSessionList {
-    fn new(thread_store: Entity<ThreadStore>, cx: &mut App) -> Self {
+    fn new(
+        thread_store: Entity<ThreadStore>,
+        agent: WeakEntity<NativeAgent>,
+        cx: &mut App,
+    ) -> Self {
         let (tx, rx) = async_channel::unbounded();
         let this_tx = tx.clone();
         let subscription = cx.observe(&thread_store, move |_, _| {
@@ -3557,6 +3666,7 @@ impl NativeAgentSessionList {
                 .ok();
         });
         Self {
+            agent,
             thread_store,
             updates_tx: tx,
             updates_rx: rx,
@@ -3589,13 +3699,28 @@ impl AgentSessionList for NativeAgentSessionList {
     }
 
     fn delete_session(&self, session_id: &acp_v2::SessionId, cx: &mut App) -> Task<Result<()>> {
-        self.thread_store
-            .update(cx, |store, cx| store.delete_thread(session_id.clone(), cx))
+        let preparation = self.agent.update(cx, |agent, cx| {
+            agent.prepare_background_session_deletion(Some(session_id), cx)
+        });
+        let store = self.thread_store.clone();
+        let session_id = session_id.clone();
+        cx.spawn(async move |cx| {
+            preparation?.await?;
+            store
+                .update(cx, |store, cx| store.delete_thread(session_id, cx))
+                .await
+        })
     }
 
     fn delete_sessions(&self, cx: &mut App) -> Task<Result<()>> {
-        self.thread_store
-            .update(cx, |store, cx| store.delete_threads(cx))
+        let preparation = self.agent.update(cx, |agent, cx| {
+            agent.prepare_background_session_deletion(None, cx)
+        });
+        let store = self.thread_store.clone();
+        cx.spawn(async move |cx| {
+            preparation?.await?;
+            store.update(cx, |store, cx| store.delete_threads(cx)).await
+        })
     }
 
     fn watch(
@@ -3789,6 +3914,39 @@ impl NativeThreadEnvironment {
 }
 
 impl ThreadEnvironment for NativeThreadEnvironment {
+    fn supports_background_tasks(&self, cx: &AsyncApp) -> bool {
+        let owner = self
+            .thread
+            .read_with(cx, |thread, _cx| {
+                (thread.id().clone(), thread.project().entity_id())
+            })
+            .ok();
+        self.agent
+            .read_with(cx, |agent, _| {
+                owner.is_some_and(|(session_id, project_id)| {
+                    agent.sessions.contains_key(&session_id)
+                        && agent.background_terminal_hosts.contains_key(&project_id)
+                })
+            })
+            .unwrap_or(false)
+    }
+    fn start_background_task(
+        &self,
+        terminal: Rc<dyn TerminalHandle>,
+        request: BackgroundTaskRequest,
+        cx: &mut AsyncApp,
+    ) -> Task<Result<String>> {
+        self.start_background_terminal(terminal, request, cx)
+    }
+    fn background_tasks(
+        &self,
+        id: Option<String>,
+        stop: bool,
+        cx: &mut AsyncApp,
+    ) -> Task<Result<String>> {
+        self.inspect_background_tasks(id, stop, cx)
+    }
+
     fn create_terminal(
         &self,
         command: String,
@@ -3874,6 +4032,7 @@ impl ThreadEnvironment for NativeThreadEnvironment {
         let acp_thread = self.acp_thread.clone();
         cx.spawn(async move |cx| {
             let terminal = task?.await?;
+            terminal.update(cx, |terminal, cx| terminal.enable_background(cx));
 
             let (drop_tx, drop_rx) = oneshot::channel();
             let terminal_id = terminal.read_with(cx, |terminal, _cx| terminal.id().clone());
@@ -4102,6 +4261,14 @@ pub struct AcpTerminalHandle {
 }
 
 impl TerminalHandle for AcpTerminalHandle {
+    fn acp_terminal(&self) -> Option<Entity<acp_thread::Terminal>> {
+        Some(self.terminal.clone())
+    }
+    fn background_requested(&self, cx: &AsyncApp) -> Option<Shared<Task<()>>> {
+        self.terminal
+            .read_with(cx, |terminal, _| terminal.background_requested())
+    }
+
     fn id(&self, cx: &AsyncApp) -> Result<acp_v2::TerminalId> {
         Ok(self.terminal.read_with(cx, |term, _cx| term.id().clone()))
     }
@@ -4112,9 +4279,13 @@ impl TerminalHandle for AcpTerminalHandle {
     }
 
     fn current_output(&self, cx: &AsyncApp) -> Result<ProcessOutput> {
-        Ok(self
-            .terminal
-            .read_with(cx, |term, cx| term.current_output(cx)))
+        Ok(self.terminal.read_with(cx, |term, cx| {
+            if term.background_task_id().is_some() {
+                term.background_output(cx)
+            } else {
+                term.current_output(cx)
+            }
+        }))
     }
 
     fn kill(&self, cx: &AsyncApp) -> Result<()> {

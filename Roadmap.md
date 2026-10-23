@@ -26,9 +26,9 @@ Shipped behavior is [docs/zdsh.md](docs/zdsh.md).
   - [x] 支持 Ask Question 工具
   - [x] 命令审批工具优化
   - [x] 支持 Composer 预测，Tab 自动接收，https://learn.chatgpt.com/docs/features/composer-predictions
-  - [ ] Markdown 拓展，支持可视化 Markdown 编辑器
   - [ ] 研究 Cursor 提示词和工具提示词，分析模型在 Cursor 中能输出高质量总结的原因，进行对齐（部分已对齐）
-  - [ ] 支持 Background Task. Background Task 会新建终端 Tab 执行. 任务完成之后通知 Agent
+  - [x] 支持 Background Task. Background Task 会新建终端 Tab 执行. 任务完成之后通知 Agent（[REA 与实现记录](docs/cursor-background-task-research.md)：前台转后台、原会话完成队列、查询/停止、状态保存及重启中断恢复）
+  - [ ] 修复 Agent 输出换行后标点符号在第一个字符的问题，中文比较突出
 
 - [x] 右侧边栏优化
   - [x] 分类项的菜单默认隐藏，鼠标悬浮后展示
@@ -41,13 +41,16 @@ Shipped behavior is [docs/zdsh.md](docs/zdsh.md).
   - [x] 支持单文件 Diff 视图
   - [x] 文件 Diff 样式优化
 
-- [x] Thread Panel 优化
+- [x] Thread Panel 和历史记录优化
+  - [ ] 样式布局对齐 Cursor，不要 “创建 workspace”功能
   - [x] 去掉 New Thread 按钮和 New Terminal 按钮
   - [x] 去掉下拉菜单，不允许在 Thread Panel 切换项目
 
+- [ ] 全局优化
+  - [ ] 以 cursor 为准重新创建图标合集，迁移 morphicons 算法
+
 ## Next
 
-- [ ] 全局优化
 - [ ] 设置菜单优化
 - [ ] 新增定时任务
 - [ ] 支持悬浮对话框
@@ -67,6 +70,7 @@ Shipped behavior is [docs/zdsh.md](docs/zdsh.md).
 
 ## Later
 
+- [ ] Markdown 可视化编辑器（暂缓实施，保留 [REA 研究结论](docs/cursor-markdown-editor-research.md)）
 - [ ] 支持浏览器端
 
 ## Out

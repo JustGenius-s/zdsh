@@ -3231,6 +3231,12 @@ impl Terminal {
         }
     }
 
+    pub fn retain_task_output(&mut self) {
+        if let Some(task) = self.task.as_mut() {
+            task.spawned_task.hide = task::HideStrategy::Never;
+        }
+    }
+
     pub fn task(&self) -> Option<&TaskState> {
         self.task.as_ref()
     }

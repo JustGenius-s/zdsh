@@ -373,6 +373,9 @@ pub struct Terminal {
     output: Option<TerminalOutput>,
     output_byte_limit: Option<usize>,
     execution: TerminalExecution,
+    background_request: Option<futures::channel::oneshot::Sender<()>>,
+    background_requested: Option<Shared<Task<()>>>,
+    background_task_id: Option<String>,
     /// Flag indicating whether this terminal was stopped by explicit user action
     /// (e.g., clicking the Stop button). This is set before kill() is called
     /// so that code awaiting wait_for_exit() can check it deterministically.
@@ -501,6 +504,9 @@ impl Terminal {
             terminal,
             started_at: Instant::now(),
             output: None,
+            background_request: None,
+            background_requested: None,
+            background_task_id: None,
             output_byte_limit,
             user_stopped: Arc::new(AtomicBool::new(false)),
             execution: TerminalExecution::Process(
@@ -557,6 +563,9 @@ impl Terminal {
             terminal,
             started_at: Instant::now(),
             output: None,
+            background_request: None,
+            background_requested: None,
+            background_task_id: None,
             output_byte_limit,
             execution: TerminalExecution::Display(DisplayTerminalState {
                 command: command_label
@@ -567,6 +576,48 @@ impl Terminal {
             user_stopped: Arc::new(AtomicBool::new(false)),
             _sandbox: None,
         }
+    }
+
+    pub fn enable_background(&mut self, cx: &App) {
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        self.background_request = Some(sender);
+        self.background_requested = Some(
+            cx.spawn(async move |_| {
+                if receiver.await.is_err() {
+                    futures::future::pending::<()>().await;
+                }
+            })
+            .shared(),
+        );
+    }
+
+    pub fn can_run_in_background(&self) -> bool {
+        self.background_request.is_some()
+            && self.output.is_none()
+            && self.background_task_id.is_none()
+    }
+
+    pub fn background_requested(&self) -> Option<Shared<Task<()>>> {
+        self.background_requested.clone()
+    }
+
+    pub fn request_background(&mut self, cx: &mut Context<Self>) {
+        if let Some(sender) = self.background_request.take()
+            && sender.send(()).is_err()
+        {
+            log::debug!("Foreground terminal is no longer waiting for background handoff");
+        }
+        cx.notify();
+    }
+
+    pub fn set_background_task_id(&mut self, id: String, cx: &mut Context<Self>) {
+        self.background_task_id = Some(id);
+        self.background_request = None;
+        cx.notify();
+    }
+
+    pub fn background_task_id(&self) -> Option<&str> {
+        self.background_task_id.as_deref()
     }
 
     pub fn id(&self) -> &acp_v2::TerminalId {
@@ -609,6 +660,19 @@ impl Terminal {
     /// Returns whether this terminal was stopped by explicit user action.
     pub fn was_stopped_by_user(&self) -> bool {
         self.user_stopped.load(Ordering::SeqCst)
+    }
+
+    pub fn background_output(&self, cx: &App) -> ProcessOutput {
+        let terminal = self.terminal.read(cx);
+        let mut output = ProcessOutput::new(
+            terminal.get_content(),
+            terminal.total_lines() >= terminal::MAX_SCROLL_HISTORY_LINES,
+        );
+        output.exit_status = self
+            .output
+            .as_ref()
+            .map(|output| output.exit_status.clone());
+        output
     }
 
     pub fn current_output(&self, cx: &App) -> ProcessOutput {

@@ -96,6 +96,7 @@ pub use skill_tool::*;
 pub use spawn_agent_tool::*;
 pub use symbol_locator::*;
 
+pub use crate::background_task::BackgroundTaskTool;
 pub use terminal_tool::*;
 pub use tool_permissions::*;
 pub use web_search_tool::*;
@@ -201,6 +202,7 @@ macro_rules! tools {
 tools! {
     ApplyCodeActionTool,
     AskUserTool,
+    BackgroundTaskTool,
     CopyPathTool,
     CreateDirectoryTool,
     CreateThreadTool,

@@ -1829,12 +1829,20 @@ impl ConversationView {
 
     pub(crate) fn cancel_all_generation(&mut self, cx: &mut Context<Self>) {
         if let Some(connected) = self.as_connected() {
+            let native = self.as_native_connection(cx);
             let threads = connected
                 .threads
                 .values()
                 .map(|view| view.read(cx).thread.clone())
                 .collect::<Vec<_>>();
             for thread in threads {
+                // Background work owns its conversation beyond the tab's lifetime.
+                // Explicit Stop still cancels generation and pauses automatic delivery.
+                if native.as_ref().is_some_and(|connection| {
+                    connection.has_background_work(thread.read(cx).session_id(), cx)
+                }) {
+                    continue;
+                }
                 thread
                     .update(cx, |thread, cx| thread.cancel(cx))
                     .detach_and_log_err(cx);
