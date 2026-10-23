@@ -2691,6 +2691,22 @@ impl Pane {
         }
     }
 
+    pub fn toggle_item_pin(
+        &mut self,
+        item_id: EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.index_for_item_id(item_id) else {
+            return;
+        };
+        if self.is_tab_pinned(index) {
+            self.unpin_tab_at(index, window, cx);
+        } else {
+            self.pin_tab_at(index, window, cx);
+        }
+    }
+
     fn toggle_pin_tab(&mut self, _: &TogglePinTab, window: &mut Window, cx: &mut Context<Self>) {
         if self.items.is_empty() {
             return;

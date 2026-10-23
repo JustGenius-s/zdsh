@@ -1397,6 +1397,13 @@ impl ThreadView {
             .thread(acp_thread.session_id(), cx)
     }
 
+    pub fn fork_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let entry_index = self.thread.read(cx).entries().len().checked_sub(1);
+        if let Some(entry_index) = entry_index {
+            self.fork_at_response(entry_index, window, cx);
+        }
+    }
+
     fn fork_at_response(
         &mut self,
         entry_index: usize,

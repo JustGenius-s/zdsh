@@ -3,19 +3,21 @@ use std::{path::Path, sync::Arc};
 use chrono::{DateTime, Utc};
 use file_icons::FileIcons;
 use gpui::{
-    AnyElement, AnyView, App, ClickEvent, ElementId, Hsla, SharedString, Window, div, prelude::*,
-    rems,
+    AnyElement, AnyView, App, AvailableSpace, Bounds, ClickEvent, Context, ElementId, Hsla, Role,
+    SharedString, TextAlign, Window, canvas, div, point, prelude::*, px, rems, size,
 };
 use gpui_icons::Icon;
 use gpui_kit::component::{
     Icon as KitIcon, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
+    menu::{ContextMenuExt as _, PopupMenu},
 };
 use gpui_kit::img;
 use icons::IconName;
 use theme::{ActiveTheme, UiTextSize, UiTextTone, UiTypography};
 use ui::rems_from_px;
+use util::ResultExt as _;
 
 /// How far rows sit in from the sidebar's edges.
 pub(crate) const LIST_INSET: f32 = 8.;
@@ -38,6 +40,8 @@ const GLYPH_SIZE: f32 = 15.2;
 // Theme file icons fill most of a 16-unit grid, so 16 shows them about as large as the glyphs.
 const FILE_ICON_SIZE: f32 = 16.;
 
+type RowContextMenu = dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu;
+
 /// A row of the threads sidebar: an icon, a title, and something at the end, such as how long
 /// ago the thread was updated or buttons that act on it.
 #[derive(IntoElement)]
@@ -48,6 +52,10 @@ pub(crate) struct SidebarRow {
     leading_on_hover: Option<AnyElement>,
     title: AnyElement,
     end: Option<AnyElement>,
+    actions_on_hover: Option<AnyElement>,
+    end_padding: f32,
+    indent: usize,
+    context_menu: Option<Box<RowContextMenu>>,
     selected: bool,
     focused: bool,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
@@ -69,6 +77,10 @@ impl SidebarRow {
             leading_on_hover: None,
             title: title.into_any_element(),
             end: None,
+            actions_on_hover: None,
+            end_padding: 0.,
+            indent: 0,
+            context_menu: None,
             selected: false,
             focused: false,
             on_click: None,
@@ -91,6 +103,29 @@ impl SidebarRow {
 
     pub(crate) fn end(mut self, end: impl IntoElement) -> Self {
         self.end = Some(end.into_any_element());
+        self
+    }
+
+    pub(crate) fn actions_on_hover(mut self, actions: impl IntoElement) -> Self {
+        self.actions_on_hover = Some(actions.into_any_element());
+        self
+    }
+
+    pub(crate) fn end_padding(mut self, padding: f32) -> Self {
+        self.end_padding = padding;
+        self
+    }
+
+    pub(crate) fn indent(mut self, depth: usize) -> Self {
+        self.indent = depth;
+        self
+    }
+
+    pub(crate) fn context_menu(
+        mut self,
+        menu: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> Self {
+        self.context_menu = Some(Box::new(menu));
         self
     }
 
@@ -130,23 +165,38 @@ impl SidebarRow {
     }
 }
 
+impl gpui_kit::component::Selectable for SidebarRow {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
 impl RenderOnce for SidebarRow {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let clickable = self.on_click.is_some();
         let group = self.group;
+        let context_menu = self.context_menu;
 
         let hover_state = self
             .leading_on_hover
-            .as_ref()
-            .map(|_| window.use_keyed_state((self.id.clone(), "leading-hover"), cx, |_, _| false));
+            .is_some()
+            .then(|| window.use_keyed_state((self.id.clone(), "row-hover"), cx, |_, _| false));
         let leading = match (self.leading_on_hover, hover_state.as_ref()) {
             (Some(leading_on_hover), Some(hovered)) if *hovered.read(cx) => leading_on_hover,
             _ => self.leading,
         };
         let observe_hover = hover_state.is_some() || self.on_hover.is_some();
+        let end = self.end;
+        let has_end = end.is_some() || self.actions_on_hover.is_some();
         let colors = cx.theme().colors();
 
-        div()
+        let row = div()
+            .id((self.id.clone(), "container"))
             .ui_text(
                 UiTextSize::Body,
                 if self.selected || self.focused {
@@ -162,12 +212,14 @@ impl RenderOnce for SidebarRow {
             .child(
                 h_flex()
                     .id(self.id)
-                    .group(group)
+                    .group(group.clone())
                     .relative()
                     .w_full()
                     .min_w_0()
                     .min_h(rems_from_px(ROW_MIN_HEIGHT))
                     .px(rems_from_px(ROW_PADDING_X))
+                    .pl(rems_from_px(ROW_PADDING_X + self.indent as f32 * 14.))
+                    .pr(rems_from_px(ROW_PADDING_X + self.end_padding))
                     .gap(rems_from_px(ROW_GAP))
                     .rounded(rems_from_px(ROW_RADIUS))
                     .border_1()
@@ -212,7 +264,21 @@ impl RenderOnce for SidebarRow {
                             .overflow_hidden()
                             .child(self.title),
                     )
-                    .children(self.end.map(|end| div().flex_none().child(end)))
+                    .when(has_end, |row| {
+                        row.child(
+                            h_flex()
+                                .flex_none()
+                                .gap(rems_from_px(6_f32))
+                                .children(end)
+                                .children(self.actions_on_hover.map(|actions| {
+                                    h_flex()
+                                        .flex_none()
+                                        .invisible()
+                                        .group_hover(group, |style| style.visible())
+                                        .child(actions)
+                                })),
+                        )
+                    })
                     .when(observe_hover, |this| {
                         this.on_hover(move |hovered, window, cx| {
                             if let Some(state) = &hover_state {
@@ -230,6 +296,137 @@ impl RenderOnce for SidebarRow {
                     })
                     .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip))
                     .when_some(self.on_click, |this, on_click| this.on_click(on_click)),
+            );
+        if let Some(menu) = context_menu {
+            row.context_menu(menu).into_any_element()
+        } else {
+            row.into_any_element()
+        }
+    }
+}
+
+pub(crate) fn fading_label(text: impl Into<SharedString>) -> impl IntoElement {
+    FadingLabel(text.into())
+}
+
+#[derive(IntoElement)]
+struct FadingLabel(SharedString);
+
+impl RenderOnce for FadingLabel {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let text = if self.0.contains(['\n', '\r']) {
+            SharedString::from(self.0.replace(['\n', '\r'], " "))
+        } else {
+            self.0
+        };
+        let line_height = window.text_style().line_height_in_pixels(window.rem_size());
+        div()
+            .id("fading-label")
+            .role(Role::Label)
+            .aria_label(text.clone())
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                canvas(
+                    move |bounds, window, cx| {
+                        let text_style = window.text_style();
+                        let font_size = text_style.font_size.to_pixels(window.rem_size());
+                        let run = text_style.to_run(text.len());
+                        let line = Arc::new(window.text_system().shape_line(
+                            text.clone(),
+                            font_size,
+                            &[run],
+                            None,
+                        ));
+                        let mut bands = vec![(bounds, 1.)];
+
+                        // Clip alpha bands of the glyphs themselves: a background overlay would
+                        // leave an opaque patch on translucent sidebar chrome.
+                        if line.width() > bounds.size.width && bounds.size.width > px(0.) {
+                            let scale = window.scale_factor();
+                            let fade_width = rems_from_px(16_f32)
+                                .to_pixels(window.rem_size())
+                                .min(bounds.size.width);
+                            let fade_start = px((f32::from(bounds.right() - fade_width) * scale)
+                                .round()
+                                / scale);
+                            bands = vec![(
+                                Bounds::new(
+                                    bounds.origin,
+                                    size(
+                                        (fade_start - bounds.left()).max(px(0.)),
+                                        bounds.size.height,
+                                    ),
+                                ),
+                                1.,
+                            )];
+                            let band_width = px(1. / scale);
+                            let band_count =
+                                (f32::from(bounds.right() - fade_start) * scale).ceil() as usize;
+                            for index in 0..band_count {
+                                let left = fade_start + band_width * index as f32;
+                                let width = band_width.min(bounds.right() - left);
+                                if width <= px(0.) {
+                                    break;
+                                }
+                                let opacity = (1.
+                                    - ((left - fade_start) + width / 2.) / fade_width)
+                                    .clamp(0., 1.);
+                                bands.push((
+                                    Bounds::new(
+                                        point(left, bounds.top()),
+                                        size(width, bounds.size.height),
+                                    ),
+                                    opacity,
+                                ));
+                            }
+                        }
+                        let mut element = div()
+                            .relative()
+                            .w(bounds.size.width)
+                            .h(bounds.size.height)
+                            .children(bands.into_iter().map(|(clip, opacity)| {
+                                let line = line.clone();
+                                div()
+                                    .absolute()
+                                    .left(clip.left() - bounds.left())
+                                    .top_0()
+                                    .w(clip.size.width)
+                                    .h_full()
+                                    .overflow_hidden()
+                                    .opacity(opacity)
+                                    .child(
+                                        canvas(
+                                            |_, _, _| (),
+                                            move |_, _, window, cx| {
+                                                line.paint(
+                                                    bounds.origin,
+                                                    line_height,
+                                                    TextAlign::Left,
+                                                    None,
+                                                    window,
+                                                    cx,
+                                                )
+                                                .log_err();
+                                            },
+                                        )
+                                        .size_full(),
+                                    )
+                            }))
+                            .into_any_element();
+                        element.prepaint_as_root(
+                            bounds.origin,
+                            bounds.size.map(AvailableSpace::Definite),
+                            window,
+                            cx,
+                        );
+                        element
+                    },
+                    |_, mut element, window, cx| element.paint(window, cx),
+                )
+                .w_full()
+                .h(line_height),
             )
     }
 }
@@ -349,13 +546,22 @@ pub(crate) fn glyph(name: gpui_icons::IconName) -> Icon {
         .glyph_scale(1.)
 }
 
-pub(crate) fn glyph_button(id: impl Into<ElementId>, name: gpui_icons::IconName) -> Button {
+pub(crate) fn glyph_button(
+    id: impl Into<ElementId>,
+    name: gpui_icons::IconName,
+    cx: &App,
+) -> Button {
     Button::new(id)
         .ghost()
         .small()
         .size_6()
         .p_0()
-        .child(glyph(name).id("button-icon"))
+        .flex_none()
+        .child(
+            glyph(name)
+                .id("button-icon")
+                .text_color(cx.theme().colors().icon_muted),
+        )
 }
 
 pub(crate) fn sidebar_icon_button(id: impl Into<ElementId>, icon: IconName) -> Button {

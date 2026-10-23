@@ -3351,6 +3351,75 @@ impl AgentPanel {
             })
     }
 
+    pub fn fork_thread(
+        &mut self,
+        thread_id: ThreadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(conversation) = self.conversation_view_for_id(&thread_id, cx)
+            && let Some(view) = conversation.read(cx).root_thread_view()
+        {
+            view.update(cx, |view, cx| view.fork_conversation(window, cx));
+            return;
+        }
+        let metadata = ThreadMetadataStore::global(cx)
+            .read(cx)
+            .entry(thread_id)
+            .cloned();
+        let Some(metadata) = metadata else {
+            return;
+        };
+        if metadata.agent_id.as_ref() != agent::ZED_AGENT_ID.as_ref() {
+            return;
+        }
+        let Some(session_id) = metadata.session_id.clone() else {
+            return;
+        };
+        let store = agent::ThreadStore::global(cx);
+        let load = store.update(cx, |store, cx| store.load_thread(session_id, cx));
+        let workspace = self.workspace.clone();
+        let work_dirs = workspace
+            .upgrade()
+            .map(|workspace| PathList::new(&workspace.read(cx).root_paths(cx)))
+            .unwrap_or_default();
+        let title: SharedString = format!("{} (fork)", metadata.display_title()).into();
+        use workspace::notifications::NotifyTaskExt as _;
+        cx.spawn_in(window, async move |_, cx| {
+            let mut snapshot = load.await?.ok_or_else(|| anyhow!("Thread not found"))?;
+            snapshot.title = title.clone();
+            snapshot.updated_at = chrono::Utc::now();
+            snapshot.detailed_summary = None;
+            snapshot.draft_prompt = None;
+            snapshot.ui_scroll_position = None;
+            snapshot.subagent_context = None;
+            snapshot.sandbox_grants = Default::default();
+            snapshot.sandboxed_terminal_temp_dir = None;
+            snapshot.auto_reviews.clear();
+            let session_id = acp_v2::SessionId::new(uuid::Uuid::new_v4().to_string());
+            store
+                .update(cx, |store, cx| {
+                    store.save_thread(session_id.clone(), snapshot, work_dirs.clone(), cx)
+                })
+                .await?;
+            cx.update(|window, cx| {
+                let workspace = workspace
+                    .upgrade()
+                    .ok_or_else(|| anyhow!("Workspace closed"))?;
+                let panel = workspace
+                    .read(cx)
+                    .panel::<AgentPanel>(cx)
+                    .ok_or_else(|| anyhow!("Agent panel unavailable"))?;
+                panel.update(cx, |panel, cx| {
+                    panel.open_thread(session_id, Some(work_dirs), Some(title), window, cx)
+                });
+                anyhow::Ok(())
+            })??;
+            anyhow::Ok(())
+        })
+        .detach_and_notify_err(self.workspace.clone(), window, cx);
+    }
+
     /// Drops a thread — retained or the active ephemeral draft — from
     /// the panel and deletes its metadata row. Used by the sidebar when
     /// the user dismisses a parked draft.

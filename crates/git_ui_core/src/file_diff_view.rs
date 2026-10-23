@@ -41,6 +41,60 @@ pub struct FileDiffView {
 const RECALCULATE_DIFF_DEBOUNCE: Duration = Duration::from_millis(250);
 
 impl FileDiffView {
+    pub fn open_or_focus_buffers(
+        old_buffer: Entity<Buffer>,
+        new_buffer: Entity<Buffer>,
+        workspace: WeakEntity<Workspace>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Task<Result<Entity<Self>>> {
+        let Some(workspace_entity) = workspace.upgrade() else {
+            return Task::ready(Err(anyhow::anyhow!("workspace was dropped")));
+        };
+        let existing = workspace_entity
+            .read(cx)
+            .items_of_type::<Self>(cx)
+            .find(|view| {
+                let view = view.read(cx);
+                view.old_buffer == old_buffer && view.new_buffer == new_buffer
+            });
+        if let Some(existing) = existing {
+            workspace_entity.update(cx, |workspace, cx| {
+                workspace.activate_item(&existing, true, true, window, cx);
+            });
+            return Task::ready(Ok(existing));
+        }
+
+        window.spawn(cx, async move |cx| {
+            let diff = build_buffer_diff(&old_buffer, &new_buffer, cx).await?;
+            workspace_entity.update_in(cx, |workspace, window, cx| {
+                let existing = workspace.items_of_type::<Self>(cx).find(|view| {
+                    let view = view.read(cx);
+                    view.old_buffer == old_buffer && view.new_buffer == new_buffer
+                });
+                if let Some(existing) = existing {
+                    workspace.activate_item(&existing, true, true, window, cx);
+                    return existing;
+                }
+                let project = workspace.project().clone();
+                let workspace_handle = cx.entity();
+                let view = cx.new(|cx| {
+                    Self::new(
+                        old_buffer,
+                        new_buffer,
+                        diff,
+                        project,
+                        workspace_handle,
+                        window,
+                        cx,
+                    )
+                });
+                workspace.add_item_to_active_pane(Box::new(view.clone()), None, true, window, cx);
+                view
+            })
+        })
+    }
+
     #[ztracing::instrument(skip_all)]
     pub fn open(
         old_path: PathBuf,

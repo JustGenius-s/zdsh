@@ -79,21 +79,38 @@ The shared sidebar row implementation is `crates/sidebar/src/sidebar_row.rs`. Re
 | Group gap | 16px |
 | Row corner radius | 8px |
 
-Keep layout dimensions separate from typography. Icons use the existing `gpui_icons` helpers and their optical sizing; a 20px slot does not mean a 20px drawing. Preserve the same leading column for group rows and their content unless the content is actually nested.
+Keep layout dimensions separate from typography. Icons use the existing `gpui_icons` helpers and their optical sizing; a 20px slot does not mean a 20px drawing. Sidebar action buttons use `glyph_button`: a 24px control with the same 15.2px glyph and muted icon color as other sidebar controls. Do not inherit a button's default primary foreground for its icon. Preserve the same leading column for group rows and their content unless the content is actually nested.
 
 Navigation selection follows the active tab in the active pane, including changes made through tabs, keyboard navigation, and pane focus. Resolve a thread from its conversation tab and a file from its project path; do not use a panel's last selected thread as the active-tab state. If a file appears in both Files and Changes, both rows represent that active file.
 
 File icons come from `FileIcons` through the shared sidebar helper. Embedded assets use an icon element; extension themes return disk paths, which must load as images so SVG colors and raster formats are preserved. Do not send external theme paths to the embedded asset loader.
 
-Selected rows use the theme's selected background; hovering a selected row keeps that background. Keyboard focus remains visible. Reserve space for trailing metadata and actions, and let only the title shrink. Muted metadata remains muted when its row is selected. Changes rows show available added and removed line counts in the theme's created and deleted colors, alongside Git status. Missing statistics must not be represented as zero changes. Keep complete titles and paths available through the existing tooltip or editing flow.
+Selected rows use the theme's selected background; hovering a selected row keeps that background. Keyboard focus remains visible. Reserve separate space for trailing metadata and hover actions, and let only the title shrink. A thread's timestamp and Pin / Archive buttons are siblings in the trailing flex row; buttons must not replace or cover the timestamp. Hidden actions reserve their width so hovering does not shift metadata. Muted metadata remains muted when its row is selected. Keep complete titles and paths available through the existing tooltip or editing flow.
 
-Current sidebar labels use single-line ellipsis. Cursor's agent-title fade is a separate overflow behavior, not a typography setting; migrate it through a shared component when implemented. Do not imitate a transparency mask by painting a flat background-colored gradient over translucent application chrome.
+Workspace sidebar headers, section labels, file names, thread titles, terminal titles, and branch names use the shared `fading_label` helper instead of single-line ellipsis. Only overflowing text fades, across the last 16px at the default UI scale before the reserved action area. The helper paints clipped glyph alpha bands at device-pixel boundaries, preserving font shaping and fallback without modifying GPUI or painting a background overlay on translucent chrome. Full thread titles remain available in hover tooltips and accessibility labels. Hover actions coexist with metadata: Pin for files, threads and terminals, Archive for saved threads, and Open Source File for changed files. Drafts keep their existing lifecycle and are not discarded through an archive button.
+
+Pinned content appears once, in the first **Pinned** group, before Threads. File and terminal pins share the tabs' existing pin state and workspace persistence. Thread pins persist by project paths and host identity, in pin order. Pinning must not activate a different tab. Unpinning returns an item to its original category. Customize Sidebar and Search have an 8px gap at the default UI scale. **Customize Sidebar** › **Show** › **Archived** toggles an Archived group; opening an archived thread restores it.
+
+Changes shows every changed file across the project's repositories, merged with conversation changes and deduplicated by project path. Git status and statistics take precedence when both sources describe the same file. Missing statistics must not be represented as zero changes. Its toolbar switches between a flat list and a directory tree; only tree directories collapse, with a 14px indentation per level. The trailing row has an extra 8px inset, and line counts remain visible beside the hover source action. Reuse `change_colors` in `workspace_nav.rs` for counts and Git status rather than the inherited bright created/deleted palette:
+
+| Role | Dark | Light |
+| --- | --- | --- |
+| Added lines / added files | `#70B489` | `#007041` |
+| Removed lines / deleted files | `#FC6B83` | `#BE1744` |
+| Modified files | `#F1B467` | `#A46700` |
+| Untracked files | `#88C0D0` | `#176C74` |
+
+Conflicts retain the theme's conflict role. These colors apply to Changes metadata; ordinary file titles retain the shared text hierarchy.
+
+The branch row opens the existing branch picker. The Changes section has its own action to open the Changes panel; clicking a changed file opens a single-file diff, and its hover action opens the source file. Keep these actions separate, and stop propagation from row action buttons so they do not activate or fold the containing row.
 
 ## Menus
 
 Pass every GPUI Kit menu through `workspace::style_menu`, and every submenu through `workspace::style_submenu`. They own the 236px / 200px minimum widths and trailing check marks.
 
 Use `workspace::menu_icon`, `menu_icon_spacer`, and `menu_heading` for aligned icon menus. Keep content-filled lists and menus that begin with a block of text iconless as described in `AGENTS.md`. Preserve GPUI Kit's keyboard, focus, disabled-state, and accessibility behavior.
+
+Thread context menus expose Pin / Unpin, Rename, Mark as Read / Unread, Fork, Copy, and Archive (Restore for archived threads). Copy offers the title, thread ID, and conversation. Disable unsupported operations: forks require a saved, idle native conversation, and closed external conversations cannot export content through the native store. Rename uses an inline input; Enter or blur commits a nonempty title and Escape cancels.
 
 ## Review a UI change
 
@@ -108,3 +125,5 @@ The baseline follows the Cursor 3.27.6 sidebar investigation from 2026-10-24. Cu
 The rasterization comparison also checked Cursor's shipped smoothing setting and CSS against [Chromium's macOS font policy](https://chromium.googlesource.com/chromium/src/+/1d56cda2d64d8479287a5eaf675e508ebce7d50d/third_party/blink/renderer/platform/fonts/mac/font_platform_data_mac.mm#205). Chromium's `antialiased` policy keeps antialiasing enabled while disabling font smoothing. GPUI's corresponding controls are in `crates/gpui/src/window.rs` and `crates/gpui_apple/src/text_system.rs`; this does not imply that Cursor's exact bundled Chromium revision was rebuilt or tested.
 
 The primary / secondary / muted hierarchy and the row geometry were checked against shipped styles and the supplied screenshots. REA Evidence: `ev_c8cbcfe1c5d5784ef09c915cefdee7dee62a1d7c2c15cc464dfa9fc6aabe0d74`; selected-carrier application coverage was complete, semantic coverage remained unknown. The analysis did not execute Cursor or establish runtime computed styles. See [the earlier layout research](cursor-thread-layout-research.md) for related package evidence; this standard supersedes its choice to leave sidebars at the inherited UI body size.
+
+The Git palette above comes from the dark and light `gitDecoration.*ResourceForeground` definitions in Cursor's shipped `extensions/theme-cursor` package, inspected on 2026-10-24 with REA Evidence `ev_1283fdc51fb9843caa4f65a53866bcadfd70df97a3826a08b03607a8e491ba20` (subject SHA-256 `2c5919f6ab870d93e3b1a9cb7f5212d510ae792823cabafb83768db09d95bd6f`). This evidence covers the theme package only. Separate static inspection of the shipped workbench found added/deleted counts using those Git roles, an Archived visibility flag, and Pinned/Archived group labels. Hover spacing, mixed pinned content, and the tree layout are zdsh implementation choices based on the supplied references; no runtime or pixel equivalence is claimed.

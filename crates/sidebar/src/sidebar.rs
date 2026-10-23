@@ -395,12 +395,17 @@ impl ThreadEntry {
 }
 
 /// A thread of one project group, for a workspace's own sidebar.
+#[derive(Clone)]
 pub(crate) struct ProjectThread {
-    pub entry_index: usize,
     pub thread_id: agent_ui::ThreadId,
     pub title: SharedString,
     pub status: StatusDot,
     pub updated: Option<String>,
+    pub can_archive: bool,
+    pub archived: bool,
+    pub is_unread: bool,
+    pub can_fork: bool,
+    pub can_copy: bool,
 }
 
 #[derive(Clone)]
@@ -734,6 +739,7 @@ pub struct Sidebar {
     rename_editor: Entity<Editor>,
     list_state: ListState,
     contents: SidebarContents,
+    manually_unread_threads: HashSet<ThreadId>,
     /// The index of the list item that currently has the keyboard focus
     ///
     /// Note: This is NOT the same as the active item.
@@ -883,6 +889,7 @@ impl Sidebar {
             rename_editor,
             list_state: ListState::new(0, gpui::ListAlignment::Top, px(1000.)),
             contents: SidebarContents::default(),
+            manually_unread_threads: HashSet::new(),
             selection: None,
             active_entry: None,
             hovered_thread_index: None,
@@ -1730,7 +1737,12 @@ impl Sidebar {
                         notified_threads.insert(thread.metadata.thread_id);
                     }
 
-                    if is_active_thread && !thread.is_background {
+                    if is_active_thread
+                        && !thread.is_background
+                        && !self
+                            .manually_unread_threads
+                            .contains(&thread.metadata.thread_id)
+                    {
                         notified_threads.remove(&thread.metadata.thread_id);
                     }
                 }
@@ -1775,7 +1787,9 @@ impl Sidebar {
                 if is_active
                     && let Some(ActiveEntry::Thread { thread_id, .. }) = self.active_entry.as_ref()
                 {
-                    notified_threads.remove(thread_id);
+                    if !self.manually_unread_threads.contains(thread_id) {
+                        notified_threads.remove(thread_id);
+                    }
                 }
             }
 
@@ -2890,7 +2904,7 @@ impl Sidebar {
         }
     }
 
-    fn apply_thread_rename(
+    pub(crate) fn apply_thread_rename(
         &mut self,
         thread_id: ThreadId,
         title: SharedString,
@@ -3441,6 +3455,8 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.manually_unread_threads.remove(&metadata.thread_id);
+        self.contents.notified_threads.remove(&metadata.thread_id);
         if self
             .find_workspace_in_current_window(cx, |candidate, _| candidate == workspace)
             .is_some()
@@ -6648,21 +6664,32 @@ impl Sidebar {
     }
 
     /// The threads of the project group `key`, in display order.
-    pub(crate) fn project_threads(&self, key: &ProjectGroupKey) -> Vec<ProjectThread> {
-        let Some(header_index) = self.contents.entries.iter().position(
+    pub(crate) fn project_threads(
+        &self,
+        key: &ProjectGroupKey,
+        show_archived: bool,
+        cx: &App,
+    ) -> Vec<ProjectThread> {
+        let header_index = self.contents.entries.iter().position(
             |entry| matches!(entry, ListEntry::ProjectHeader { key: header_key, .. } if header_key == key),
-        ) else {
-            return Vec::new();
-        };
-        self.contents.entries[header_index + 1..]
-            .iter()
-            .enumerate()
-            .take_while(|(_, entry)| !matches!(entry, ListEntry::ProjectHeader { .. }))
-            .filter_map(|(offset, entry)| {
+        );
+        let mut threads = header_index
+            .into_iter()
+            .flat_map(|header_index| {
+                self.contents
+                    .entries
+                    .iter()
+                    .skip(header_index + 1)
+                    .take_while(|entry| !matches!(entry, ListEntry::ProjectHeader { .. }))
+            })
+            .filter_map(|entry| {
                 let ListEntry::Thread(thread) = entry else {
                     return None;
                 };
-                let is_notified = self.contents.is_thread_notified(&thread.metadata.thread_id);
+                let is_notified = self.contents.is_thread_notified(&thread.metadata.thread_id)
+                    || self
+                        .manually_unread_threads
+                        .contains(&thread.metadata.thread_id);
                 let status = if thread.draft.is_some() {
                     StatusDot::Draft
                 } else {
@@ -6677,15 +6704,133 @@ impl Sidebar {
                     }
                 };
                 Some(ProjectThread {
-                    entry_index: header_index + 1 + offset,
                     thread_id: thread.metadata.thread_id,
                     title: thread.metadata.display_title(),
                     status,
                     updated: (thread.draft != Some(DraftKind::Empty))
                         .then(|| relative_time(Self::thread_display_time(&thread.metadata))),
+                    can_archive: thread.draft.is_none() && thread.metadata.session_id.is_some(),
+                    archived: false,
+                    is_unread: is_notified,
+                    can_fork: thread.metadata.agent_id.as_ref() == ZED_AGENT_ID.as_ref()
+                        && thread.draft.is_none()
+                        && !matches!(
+                            thread.status,
+                            AgentThreadStatus::Running | AgentThreadStatus::WaitingForConfirmation
+                        ),
+                    can_copy: thread.is_live
+                        || thread.metadata.agent_id.as_ref() == ZED_AGENT_ID.as_ref(),
                 })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        if show_archived {
+            let store = ThreadMetadataStore::global(cx);
+            for metadata in store
+                .read(cx)
+                .archived_entries()
+                .filter(|metadata| {
+                    key.matches(&ProjectGroupKey::from_worktree_paths(
+                        &metadata.worktree_paths,
+                        metadata.remote_connection.clone(),
+                    ))
+                })
+                .sorted_by(|left, right| {
+                    Self::thread_display_time(right).cmp(&Self::thread_display_time(left))
+                })
+            {
+                let is_native = metadata.agent_id.as_ref() == ZED_AGENT_ID.as_ref();
+                threads.push(ProjectThread {
+                    thread_id: metadata.thread_id,
+                    title: metadata.display_title(),
+                    status: StatusDot::Read,
+                    updated: Some(relative_time(Self::thread_display_time(metadata))),
+                    can_archive: false,
+                    archived: true,
+                    is_unread: false,
+                    can_fork: is_native,
+                    can_copy: is_native,
+                });
+            }
+        }
+        threads
+    }
+
+    pub(crate) fn set_project_thread_read(
+        &mut self,
+        thread_id: ThreadId,
+        read: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if read {
+            self.manually_unread_threads.remove(&thread_id);
+            self.contents.notified_threads.remove(&thread_id);
+        } else {
+            self.manually_unread_threads.insert(thread_id);
+            self.contents.notified_threads.insert(thread_id);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn activate_project_thread_id(
+        &mut self,
+        thread_id: ThreadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_project_thread_read(thread_id, true, cx);
+        if let Some(index) = self.contents.entries.iter().position(|entry| {
+            matches!(entry, ListEntry::Thread(thread) if thread.metadata.thread_id == thread_id)
+        }) {
+            self.activate_project_thread(index, window, cx);
+        } else {
+            let metadata = ThreadMetadataStore::global(cx).read(cx).entry(thread_id).cloned();
+            if let Some(metadata) = metadata {
+                self.open_thread(metadata, window, cx);
+            }
+        }
+    }
+
+    pub(crate) fn copy_project_thread(
+        &self,
+        thread_id: ThreadId,
+        workspace: &Entity<Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = workspace.read(cx).panel::<AgentPanel>(cx)
+            && let Some(conversation) = panel.read(cx).conversation_view_for_id(&thread_id, cx)
+            && let Some(view) = conversation.read(cx).root_thread_view()
+        {
+            let markdown = view.read(cx).thread.read(cx).to_markdown(cx);
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown));
+            return;
+        }
+        let metadata = ThreadMetadataStore::global(cx)
+            .read(cx)
+            .entry(thread_id)
+            .cloned();
+        let Some(metadata) = metadata else {
+            return;
+        };
+        let Some(session_id) = metadata.session_id else {
+            return;
+        };
+        let task =
+            ThreadStore::global(cx).update(cx, |store, cx| store.load_thread(session_id, cx));
+        let workspace = workspace.downgrade();
+        use workspace::notifications::NotifyTaskExt as _;
+        window
+            .spawn(cx, async move |cx| {
+                let thread = task
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("Thread not found"))?;
+                let markdown = thread.to_markdown();
+                cx.update(|_, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown))
+                })?;
+                anyhow::Ok(())
+            })
+            .detach_and_notify_err(workspace, window, cx);
     }
 
     /// Clears the unread dots of the project group's threads.
@@ -6708,6 +6853,7 @@ impl Sidebar {
             })
             .collect::<Vec<_>>();
         for thread_id in &thread_ids {
+            self.manually_unread_threads.remove(thread_id);
             self.contents.notified_threads.remove(thread_id);
         }
         cx.notify();
@@ -6727,6 +6873,46 @@ impl Sidebar {
                 _ => None,
             })
             .unwrap_or_default()
+    }
+
+    pub(crate) fn archive_project_thread(
+        &mut self,
+        thread_id: agent_ui::ThreadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let thread = self.contents.entries.iter().find_map(|entry| match entry {
+            ListEntry::Thread(thread) if thread.metadata.thread_id == thread_id => {
+                Some(thread.clone())
+            }
+            _ => None,
+        });
+        let Some(thread) = thread else {
+            return;
+        };
+        if thread.draft.is_none()
+            && let Some(session_id) = thread.metadata.session_id.as_ref()
+        {
+            let active_thread_id = self.active_workspace(cx).and_then(|workspace| {
+                let workspace = workspace.read(cx);
+                let item = workspace.active_item(cx)?;
+                workspace
+                    .panel::<AgentPanel>(cx)?
+                    .read(cx)
+                    .thread_id_for_item(item.as_ref())
+            });
+            // The panel retains its last thread while a file is active. Archiving that
+            // background thread must not activate a neighbor over the current tab.
+            if active_thread_id != Some(thread_id)
+                && self
+                    .active_entry
+                    .as_ref()
+                    .is_some_and(|active| active.is_active_thread(&thread_id))
+            {
+                self.active_entry = None;
+            }
+            self.archive_thread(session_id, window, cx);
+        }
     }
 
     /// Opens a thread returned by [`Self::project_threads`].
