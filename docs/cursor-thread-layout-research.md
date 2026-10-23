@@ -79,6 +79,35 @@ H/F 区分了当前 Glass 和仍随包发布的旧紧凑历史弹层。
 
 zdsh 保留已有的项目分组与 History 返回导航，以及历史记录的排序时间来源、会话恢复、归档/删除和运行状态逻辑；没有照搬 Cursor 的云端项目、分组设置全集或搜索索引。历史重开时内部恢复工作区的能力仍保留，这与提供创建 workspace 的产品入口不同。
 
+## 标题栏、分组标题与侧栏底部
+
+2026-10-23 补充，供整体布局重写使用。同一安装包、同一 SHA-256，REA 6.4.0 `analyze-javascript-application`，coverage `complete`。
+
+| 证据 | REA Evidence ID | 范围 |
+| --- | --- | --- |
+| L | `ev_a52551ed8f1b63c2b6e3cfbb7198d09870689f2a77b968d4b641768d2ca9619a` | 侧栏底部 `RTx`、账户/设置行 `ITx`、头像 `hTx`、`mTy`、`glass-titlebar.react.js`；5 个片段，全部解析成功 |
+
+| 组件 | 范围 | 作用 |
+| --- | --- | --- |
+| `RTx` | 46027485–46028766 | `glass-sidebar-footer` 容器 |
+| `ITx` | 46023385–46027354 | 底部账户触发区与设置按钮 |
+| `hTx` | 46018062–46020128 | 账户头像 |
+| `mTy` | 46045268–46047991 | 分组拖动浮层（不是标题行） |
+| `glass-titlebar` | 34632366–34632538 | 标题栏拖动区 |
+
+Token 取自 `molten/dist/renderer/assets/boot-BVZrksvb.css`：spacing 以 4px 为 1（`-0-5`=2px，`-1-5`=6px，`-2`=8px，`-2-25`=9px，`-2-5`=10px，`-4`=16px）；height `xs/sm/base/lg` = 20/24/28/32px；font-size `xs/sm/base/lg` = 11/12/13/14px，line-height 14/16/18/22px；radius `xs/sm/base/lg` = 2/4/6/8px。
+
+| 部分 | 安装包中的值或行为 |
+| --- | --- |
+| 标题栏高度 | `--glass-chrome-bar-height` 40px，另有 44px 变体；整条为拖动区 |
+| 分组标题 | 字号 base（13px），起始内边距 `--cursor-spacing-2-25` 9px，结束内边距 4px |
+| 底部容器 | 纵向排列，子项间距 10px，宽度 100% |
+| 账户/设置行 | 横向居中，间距 8px；账户触发区占满剩余宽度并可收缩；设置是 `gear` 图标按钮（size md，图标 base，tertiary 色调），悬停提示带快捷键 |
+| 设置按钮右边距 | `item-inset + (accessory 20px − icon 14px)/2 − (24px − 14px)/2` = 4px，使按钮图标与行尾操作列对齐 |
+| base 字号覆盖 | `glass-764vg1` 把 base 局部改为 12px，只用于输入行，不影响侧栏 |
+
+截图中侧栏顶部的「Workspaces」标题和筛选/新建按钮是分组标题加操作按钮的组合，按上表分组标题数值处理。侧栏宽度、头像 `xl` 尺寸没有在静态 CSS 中找到固定值，需要运行时测量；zdsh 侧栏按设计稿取 272px。
+
 ## 验证
 
 `cargo check --locked -p zed --bin zed`、修改文件的 rustfmt 检查及 `git diff --check` 通过。只运行格式与编译检查，不补测试、不自行启动应用。窄面板、不同 UI 字号、长标题以及归档恢复的视觉交互由用户验证。
