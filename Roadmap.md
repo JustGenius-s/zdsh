@@ -47,8 +47,8 @@ Shipped behavior is [docs/zdsh.md](docs/zdsh.md).
   - [x] 去掉下拉菜单，不允许在 Thread Panel 切换项目
 
 - [ ] 全局优化
-  - [ ] 以 cursor 为准重新创建图标合集，迁移 morphicons 算法
-  - [ ] 优化全局选中文本的样式，现在这个配色太古老
+  - [ ] 以 cursor 为准重新创建图标合集，迁移 morphicons 算法，所有需要变化的图标都使用 morphicon
+  - [x] 优化全局选中文本的样式，现在这个配色太古老
   - [ ] 重新设计 App 图标，让 Dev 版本的图标和 Release 版本的图标以及应用名保持一致
 
 ## Next

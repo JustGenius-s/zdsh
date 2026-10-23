@@ -12,6 +12,8 @@ Rails and the tab sidebar add the theme's panel color at 36% opacity in dark the
 
 Z Dark uses `#181818` for editor, terminal, and popup surfaces, `#141414` beneath conversations, and `#212121` with a `#313131` border for message and composer cards. State highlights use translucent `#f0f0f0`: top tabs use 6%, rail and workspace icon controls use 8%, and secondary buttons use 8% normally and 14% on hover. Sidebar rows use about 6% on hover and 8% when selected. The final glass color also depends on the wallpaper and macOS material.
 
+Text selections use a shared neutral overlay across editors, Agent responses, terminals, and GPUI Kit inputs: `#f0f0f033` (20% light gray) in Z Dark and `#17171726` (about 15% dark gray) in Z Light. Text and syntax colors remain visible over the selection. Unfocused editors retain their existing reduced selection opacity. Other themes and remote collaborators keep their own selection colors.
+
 To return to an opaque window, add this to your settings (or set `background.appearance` in a named `theme_overrides` entry):
 
 ```json

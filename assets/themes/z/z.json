@@ -58,7 +58,7 @@
         "secondary.active.background": "#f0f0f029",
         "secondary.foreground": "#f0f0f0",
         "secondary.hover.background": "#f0f0f024",
-        "selection.background": "#1d4ed8",
+        "selection.background": "#f0f0f033",
         "sidebar.background": "#181818",
         "sidebar.accent.background": "#f0f0f014",
         "sidebar.accent.foreground": "#f0f0f0",
@@ -227,7 +227,7 @@
         "element.active": "#f0f0f029",
         "element.selected": "#f0f0f014",
         "element.disabled": "#f0f0f00a",
-        "element.selection_background": "#1d4ed8ff",
+        "element.selection_background": "#f0f0f033",
         "drop_target.background": "#3b82f619",
         "drop_target.border": "#fafafaa6",
         "ghost_element.background": "#00000000",
@@ -412,7 +412,7 @@
           {
             "cursor": "#fafafaff",
             "background": "#fafafaff",
-            "selection": "#1d4ed8ff"
+            "selection": "#f0f0f033"
           },
           {
             "cursor": "#b197fc",
@@ -586,7 +586,7 @@
         "secondary.active.background": "neutral-300",
         "secondary.foreground": "neutral-900",
         "secondary.hover.background": "neutral-200",
-        "selection.background": "#55a0fc",
+        "selection.background": "#17171726",
         "sidebar.background": "#f8f8f8",
         "sidebar.accent.background": "#e5e5e5",
         "sidebar.accent.foreground": "#171717",
@@ -750,7 +750,7 @@
         "element.active": "#d4d4d4ff",
         "element.selected": "#d4d4d4ff",
         "element.disabled": "#f5f5f5ff",
-        "element.selection_background": "#55a0fcff",
+        "element.selection_background": "#17171726",
         "drop_target.background": "#3b82f640",
         "drop_target.border": "#171717a6",
         "ghost_element.background": "#00000000",
@@ -935,7 +935,7 @@
           {
             "cursor": "#0a0a0aff",
             "background": "#0a0a0aff",
-            "selection": "#55a0fcff"
+            "selection": "#17171726"
           },
           {
             "cursor": "#6741d9",
