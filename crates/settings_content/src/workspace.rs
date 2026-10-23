@@ -17,7 +17,7 @@ pub struct WorkspaceSettingsContent {
     pub active_pane_modifiers: Option<ActivePaneModifiers>,
     /// The text rendering mode to use.
     ///
-    /// Default: platform_default
+    /// Default: grayscale on macOS, platform_default elsewhere.
     pub text_rendering_mode: Option<TextRenderingMode>,
     /// Whether to render windows using the Display P3 color space (macOS only).
     ///
@@ -783,7 +783,7 @@ pub enum TextRenderingMode {
     PlatformDefault,
     /// Use subpixel (ClearType-style) text rendering.
     Subpixel,
-    /// Use grayscale text rendering.
+    /// Use grayscale text rendering, without extra stroke thickening on macOS.
     Grayscale,
 }
 

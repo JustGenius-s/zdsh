@@ -2861,7 +2861,7 @@ pub enum TextRenderingMode {
     PlatformDefault,
     /// Use subpixel (ClearType-style) text rendering.
     Subpixel,
-    /// Use grayscale text rendering.
+    /// Use grayscale text rendering, without additional font smoothing on macOS.
     Grayscale,
 }
 

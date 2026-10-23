@@ -13,7 +13,7 @@ use gpui_kit::component::{
     h_flex,
 };
 use icons::IconName;
-use theme::ActiveTheme;
+use theme::{ActiveTheme, UiTextSize, UiTextTone, UiTypography};
 use ui::rems_from_px;
 
 /// How far rows sit in from the sidebar's edges.
@@ -146,6 +146,15 @@ impl RenderOnce for SidebarRow {
         let colors = cx.theme().colors();
 
         div()
+            .ui_text(
+                UiTextSize::Body,
+                if self.selected || self.focused {
+                    UiTextTone::Primary
+                } else {
+                    UiTextTone::Secondary
+                },
+                cx,
+            )
             .w_full()
             .px(rems_from_px(LIST_INSET))
             .pb(rems_from_px(ROW_STACK_GAP))
@@ -170,11 +179,13 @@ impl RenderOnce for SidebarRow {
                     .when(clickable, |this| {
                         this.cursor_pointer()
                             .hover(|style| {
-                                style.bg(if self.selected {
-                                    colors.ghost_element_selected
-                                } else {
-                                    colors.ghost_element_hover
-                                })
+                                style.text_color(UiTextTone::Primary.color(cx)).bg(
+                                    if self.selected {
+                                        colors.ghost_element_selected
+                                    } else {
+                                        colors.ghost_element_hover
+                                    },
+                                )
                             })
                             .active(|style| {
                                 style.bg(if self.selected {

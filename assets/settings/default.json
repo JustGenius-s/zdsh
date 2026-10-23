@@ -53,10 +53,9 @@
   //         },
   "buffer_line_height": "comfortable",
   // The name of a font to use for rendering text in the UI
-  // You can set this to ".SystemUIFont" to use the system font
-  // ".ZedSans" currently aliases to "IBM Plex Sans", but this may
-  // change in the future
-  "ui_font_family": ".ZedSans",
+  // UI controls use the platform's system font by default.
+  // ".ZedSans" is available for users who prefer IBM Plex Sans.
+  "ui_font_family": ".SystemUIFont",
   // Set the UI's font fallbacks, this will be merged with the platform's
   // default font fallbacks.
   "ui_font_fallbacks": null,
@@ -237,8 +236,9 @@
   //         "text_rendering_mode": "platform_default"
   //  2. Use subpixel (ClearType-style) text rendering:
   //         "text_rendering_mode": "subpixel"
-  //  3. Use grayscale text rendering:
+  //  3. Use grayscale text rendering, without extra stroke thickening on macOS:
   //         "text_rendering_mode": "grayscale"
+  // Defaults to grayscale on macOS and platform_default elsewhere.
   "text_rendering_mode": "platform_default",
   // Whether to render windows using the Display P3 color space (macOS only).
   "use_display_p3": false,
@@ -2947,7 +2947,9 @@
   // Settings overrides to use when using Linux.
   "linux": {},
   // Settings overrides to use when using macOS.
-  "macos": {},
+  "macos": {
+    "text_rendering_mode": "grayscale",
+  },
   // Settings overrides to use when using Windows.
   "windows": {
     "languages": {

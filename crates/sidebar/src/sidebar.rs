@@ -70,7 +70,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
-use theme::ActiveTheme;
+use theme::{ActiveTheme, UiTextSize, UiTextTone, UiTypography};
 use ui::{
     AgentThreadStatus, ContextMenu, ContextMenuEntry, HighlightedLabel, PopoverMenu,
     PopoverMenuHandle, ThreadItemWorktreeInfo, WorktreeKind, prelude::*, render_modifiers,
@@ -2176,12 +2176,13 @@ impl Sidebar {
 
         let label = if highlight_positions.is_empty() {
             KitLabel::new(label.clone())
-                .text_color(cx.theme().colors().text_muted)
+                .ui_text(UiTextSize::Body, UiTextTone::Secondary, cx)
                 .truncate()
                 .into_any_element()
         } else {
             HighlightedLabel::new(label.clone(), highlight_positions.to_vec())
-                .when(!is_active, |this| this.color(Color::Muted))
+                .size(LabelSize::Custom(UiTextSize::Body.font_size()))
+                .color(Color::Custom(UiTextTone::Secondary.color(cx)))
                 .truncate()
                 .into_any_element()
         };
@@ -2290,9 +2291,11 @@ impl Sidebar {
                 .child(SidebarRow::new(
                     SharedString::from(format!("{id_prefix}no-threads-{ix}")),
                     StatusDot::Draft,
-                    KitLabel::new("No threads yet")
-                        .text_sm()
-                        .text_color(cx.theme().colors().text_placeholder),
+                    KitLabel::new("No threads yet").ui_text(
+                        UiTextSize::Body,
+                        UiTextTone::Muted,
+                        cx,
+                    ),
                 ))
                 .into_any_element()
         } else {
@@ -5703,8 +5706,6 @@ impl Sidebar {
 
         let id = SharedString::from(format!("thread-entry-{}", ix));
 
-        let color = cx.theme().colors();
-
         let timestamp =
             (!is_empty_draft).then(|| relative_time(Self::thread_display_time(&thread.metadata)));
 
@@ -5733,15 +5734,15 @@ impl Sidebar {
                 .regenerating_titles
                 .contains(&thread.metadata.thread_id);
 
-        let title_color = if is_active {
-            Color::Default
+        let title_tone = if is_active || is_focused || is_hovered {
+            UiTextTone::Primary
         } else {
-            Color::Muted
+            UiTextTone::Secondary
         };
         let title_label = match rename_title_editor {
             Some(title_editor) => title_editor,
             None if title_generating => KitLabel::new(title.clone())
-                .text_color(color.text_muted)
+                .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
                 .truncate()
                 .with_animation(
                     "generating-title",
@@ -5752,15 +5753,12 @@ impl Sidebar {
                 )
                 .into_any_element(),
             None if thread.highlight_positions.is_empty() => KitLabel::new(title.clone())
-                .text_color(if is_active {
-                    color.text
-                } else {
-                    color.text_muted
-                })
+                .ui_text(UiTextSize::Body, title_tone, cx)
                 .truncate()
                 .into_any_element(),
             None => HighlightedLabel::new(title.clone(), thread.highlight_positions.to_vec())
-                .color(title_color)
+                .size(LabelSize::Custom(UiTextSize::Body.font_size()))
+                .color(Color::Custom(title_tone.color(cx)))
                 .truncate()
                 .into_any_element(),
         };
@@ -5850,8 +5848,7 @@ impl Sidebar {
         let end = actions.or_else(|| {
             timestamp.map(|timestamp| {
                 KitLabel::new(timestamp)
-                    .text_sm()
-                    .text_color(color.text_placeholder)
+                    .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
                     .into_any_element()
             })
         });
@@ -6075,23 +6072,20 @@ impl Sidebar {
                 .into_any_element()
         };
 
-        let title_color = if is_active {
-            Color::Default
+        let title_tone = if is_active || is_focused || is_hovered {
+            UiTextTone::Primary
         } else {
-            Color::Muted
+            UiTextTone::Secondary
         };
         let title_label = match rename_title_editor {
             Some(title_editor) => title_editor,
             None if highlight_positions.is_empty() => KitLabel::new(title)
-                .text_color(if is_active {
-                    color.text
-                } else {
-                    color.text_muted
-                })
+                .ui_text(UiTextSize::Body, title_tone, cx)
                 .truncate()
                 .into_any_element(),
             None => HighlightedLabel::new(title, highlight_positions)
-                .color(title_color)
+                .size(LabelSize::Custom(UiTextSize::Body.font_size()))
+                .color(Color::Custom(title_tone.color(cx)))
                 .truncate()
                 .into_any_element(),
         };
@@ -6111,8 +6105,7 @@ impl Sidebar {
                 .into_any_element()
         } else {
             KitLabel::new(timestamp)
-                .text_sm()
-                .text_color(color.text_placeholder)
+                .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
                 .into_any_element()
         };
 
@@ -6183,7 +6176,7 @@ impl Sidebar {
             .gap_2()
             .child(
                 KitLabel::new("Threads")
-                    .text_color(cx.theme().colors().text_muted)
+                    .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
                     .truncate(),
             )
             .child(
@@ -6939,7 +6932,7 @@ impl Sidebar {
             .gap_2()
             .text_color(cx.theme().colors().text_muted)
             .child(sidebar_icon(IconName::Thread).size(rems(1.5)))
-            .child(KitLabel::new("No threads yet").text_sm())
+            .child(KitLabel::new("No threads yet").ui_text(UiTextSize::Body, UiTextTone::Muted, cx))
     }
 
     fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -6956,7 +6949,7 @@ impl Sidebar {
                     .size(rems(1.5))
                     .text_color(cx.theme().colors().text_muted),
             )
-            .child(KitLabel::new("No threads yet").text_color(cx.theme().colors().text_muted))
+            .child(KitLabel::new("No threads yet").ui_text(UiTextSize::Body, UiTextTone::Muted, cx))
     }
 
     fn active_workspace(&self, cx: &App) -> Option<Entity<Workspace>> {
@@ -7366,7 +7359,7 @@ impl Focusable for Sidebar {
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui_font = theme_settings::setup_ui_font(window, cx);
+        theme_settings::setup_ui_font(window, cx);
         let sticky_header = self.render_sticky_header(window, cx);
 
         let color = cx.theme().colors();
@@ -7407,7 +7400,7 @@ impl Render for Sidebar {
             .on_action(cx.listener(Self::on_previous_project))
             .on_action(cx.listener(Self::on_next_thread))
             .on_action(cx.listener(Self::on_previous_thread))
-            .font(ui_font)
+            .ui_text(UiTextSize::Body, UiTextTone::Secondary, cx)
             .size_full()
             .min_w_0()
             .min_h_0()

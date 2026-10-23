@@ -4862,7 +4862,13 @@ impl Window {
         );
         let integer_origin = quantized_origin.map(|c| ScaledPixels(c.trunc()));
         let subpixel_rendering = self.should_use_subpixel_rendering(font_id, font_size);
-        let dilation = self.text_system().glyph_dilation_for_color(color);
+        let dilation = if cfg!(target_os = "macos")
+            && self.text_rendering_mode.get() == TextRenderingMode::Grayscale
+        {
+            0
+        } else {
+            self.text_system().glyph_dilation_for_color(color)
+        };
         let params = RenderGlyphParams {
             font_id,
             glyph_id,

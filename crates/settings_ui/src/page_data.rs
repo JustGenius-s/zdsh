@@ -1410,7 +1410,7 @@ fn appearance_page() -> SettingsPage {
             SettingsPageItem::SectionHeader("Text Rendering"),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Text Rendering Mode",
-                description: "The text rendering mode to use.",
+                description: "On macOS, Grayscale uses lighter antialiased text; Platform Default keeps system font smoothing.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("text_rendering_mode"),

@@ -694,6 +694,7 @@ fn main() {
         #[cfg(target_os = "windows")]
         etw_tracing::init(cx);
 
+        apply_text_rendering_mode(cx);
         cx.observe_global::<SettingsStore>({
             let http = app_state.client.http_client();
             let client = app_state.client.clone();
@@ -707,17 +708,7 @@ fn main() {
                         .ok();
                 }
 
-                cx.set_text_rendering_mode(
-                    match WorkspaceSettings::get_global(cx).text_rendering_mode {
-                        settings::TextRenderingMode::PlatformDefault => {
-                            gpui::TextRenderingMode::PlatformDefault
-                        }
-                        settings::TextRenderingMode::Subpixel => gpui::TextRenderingMode::Subpixel,
-                        settings::TextRenderingMode::Grayscale => {
-                            gpui::TextRenderingMode::Grayscale
-                        }
-                    },
-                );
+                apply_text_rendering_mode(cx);
 
                 let new_host = &client::ClientSettings::get_global(cx).server_url;
                 if &http.base_url() != new_host {
@@ -881,6 +872,18 @@ fn main() {
         })
         .detach();
     });
+}
+
+fn apply_text_rendering_mode(cx: &mut App) {
+    let mode = match WorkspaceSettings::get_global(cx).text_rendering_mode {
+        settings::TextRenderingMode::PlatformDefault => gpui::TextRenderingMode::PlatformDefault,
+        settings::TextRenderingMode::Subpixel => gpui::TextRenderingMode::Subpixel,
+        settings::TextRenderingMode::Grayscale => gpui::TextRenderingMode::Grayscale,
+    };
+    if cx.text_rendering_mode() != mode {
+        cx.set_text_rendering_mode(mode);
+        cx.refresh_windows();
+    }
 }
 
 fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut App) {

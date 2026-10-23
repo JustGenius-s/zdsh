@@ -16,7 +16,7 @@ use gpui_kit::component::{
 };
 use project::{ProjectPath, git_store::GitStore};
 use project_panel::ProjectPanel;
-use theme::ActiveTheme;
+use theme::{ActiveTheme, UiTextSize, UiTextTone, UiTypography};
 use ui::{Color, rems_from_px};
 use util::ResultExt as _;
 use workspace::dock::Dock;
@@ -437,7 +437,6 @@ impl WorkspaceNav {
 
     fn render_header(&self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) -> AnyElement {
         let key = workspace.read(cx).project_group_key(cx);
-        let colors = cx.theme().colors();
         let nav = cx.entity().downgrade();
         let customized = self.thread_order != ThreadOrder::Updated
             || !self.show_thread_times
@@ -457,7 +456,7 @@ impl WorkspaceNav {
                     .gap(rems_from_px(4_f32))
                     .pl(rems_from_px(GROUP_LABEL_PADDING_START))
                     .pr(rems_from_px(GROUP_LABEL_PADDING_END))
-                    .text_color(colors.text_muted)
+                    .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
                     .child(
                         div()
                             .flex_1()
@@ -645,7 +644,10 @@ impl WorkspaceNav {
         SidebarRow::new(
             SharedString::from(format!("nav-section-{id}")),
             glyph(icon).text_color(colors.text_muted),
-            div().truncate().text_color(colors.text).child(title),
+            div()
+                .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
+                .truncate()
+                .child(title),
         )
         .leading_on_hover(glyph(chevron).text_color(colors.text_muted))
         .group(group.clone())
@@ -669,7 +671,7 @@ impl WorkspaceNav {
             div(),
             div()
                 .truncate()
-                .text_color(cx.theme().colors().text_muted)
+                .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
                 .child(text),
         )
         .into_any_element()
@@ -700,7 +702,6 @@ impl WorkspaceNav {
         };
         threads.truncate(threads.len() - hidden_threads);
 
-        let colors = cx.theme().colors();
         let warning = cx.theme().status().warning;
         let show_thread_times = self.show_thread_times;
         let rows = threads
@@ -708,18 +709,19 @@ impl WorkspaceNav {
             .map(|thread| {
                 let entry_index = thread.entry_index;
                 let end = if thread.status == StatusDot::WaitingForConfirmation {
-                    Some(div().text_sm().text_color(warning).child("Approve"))
+                    Some(div().text_color(warning).child("Approve"))
                 } else {
-                    thread
-                        .updated
-                        .filter(|_| show_thread_times)
-                        .map(|updated| div().text_sm().text_color(colors.text_muted).child(updated))
+                    thread.updated.filter(|_| show_thread_times).map(|updated| {
+                        div()
+                            .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
+                            .child(updated)
+                    })
                 };
                 let thread_list = self.threads.clone();
                 SidebarRow::new(
                     SharedString::from(format!("nav-thread-{entry_index}")),
                     thread.status,
-                    div().truncate().text_color(colors.text).child(thread.title),
+                    div().truncate().child(thread.title),
                 )
                 .when_some(end, |row, end| row.end(end))
                 .selected(thread.is_active)
@@ -764,7 +766,10 @@ impl WorkspaceNav {
                             SidebarRow::new(
                                 "nav-more-threads",
                                 div(),
-                                div().truncate().text_color(colors.text_muted).child("More"),
+                                div()
+                                    .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
+                                    .truncate()
+                                    .child("More"),
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.show_all_threads = true;
@@ -890,7 +895,7 @@ impl WorkspaceNav {
             FileRowEnd::DiffStats(stats) => Some(
                 h_flex()
                     .gap(rems_from_px(4_f32))
-                    .text_sm()
+                    .ui_text(UiTextSize::Caption, UiTextTone::Muted, cx)
                     .child(
                         div()
                             .text_color(status.created)
@@ -905,7 +910,7 @@ impl WorkspaceNav {
             ),
             FileRowEnd::Status(letter, color) => Some(
                 div()
-                    .text_sm()
+                    .ui_text(UiTextSize::Caption, UiTextTone::Muted, cx)
                     .text_color(color.color(cx))
                     .child(letter)
                     .into_any_element(),
@@ -921,7 +926,7 @@ impl WorkspaceNav {
                 row.path.path.as_unix_str()
             )),
             file_icon(row.path.path.as_std_path(), cx).text_color(colors.icon_muted),
-            div().truncate().text_color(colors.text).child(name),
+            div().truncate().child(name),
         )
         .when_some(end, |row, end| row.end(end))
         .tooltip(move |window, cx| KitTooltip::new(full_path.clone()).build(window, cx))
@@ -1108,7 +1113,6 @@ impl WorkspaceNav {
         active_item_id: Option<gpui::EntityId>,
         cx: &App,
     ) -> Vec<AnyElement> {
-        let colors = cx.theme().colors();
         terminals
             .into_iter()
             .map(|item| {
@@ -1136,7 +1140,7 @@ impl WorkspaceNav {
                 SidebarRow::new(
                     SharedString::from(format!("nav-terminal-{}", item.item_id())),
                     dot,
-                    div().truncate().text_color(colors.text).child(title),
+                    div().truncate().child(title),
                 )
                 .tooltip(move |window, cx| KitTooltip::new(tooltip.clone()).build(window, cx))
                 .selected(is_active)
@@ -1185,13 +1189,15 @@ impl WorkspaceNav {
                     SidebarRow::new(
                         "workspace-changes",
                         glyph(IconName::GitBranch).text_color(colors.text_muted),
-                        div().truncate().text_color(colors.text_muted).child(branch),
+                        div()
+                            .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
+                            .truncate()
+                            .child(branch),
                     )
                     .when(change_count > 0, |row| {
                         row.end(
                             div()
-                                .text_sm()
-                                .text_color(colors.text_muted)
+                                .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
                                 .child(change_count.to_string()),
                         )
                     })
@@ -1226,6 +1232,7 @@ impl Render for WorkspaceNav {
             return div().into_any_element();
         };
         v_flex()
+            .ui_text(UiTextSize::Body, UiTextTone::Secondary, cx)
             .w(rems_from_px(NAV_WIDTH))
             .h_full()
             .flex_none()
