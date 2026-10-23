@@ -14746,6 +14746,7 @@ dependencies = [
  "notifications",
  "pretty_assertions",
  "project",
+ "project_panel",
  "prompt_store",
  "recent_projects",
  "release_channel",

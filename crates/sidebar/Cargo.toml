@@ -39,6 +39,7 @@ log.workspace = true
 menu.workspace = true
 notifications.workspace = true
 project.workspace = true
+project_panel.workspace = true
 recent_projects.workspace = true
 remote.workspace = true
 remote_connection.workspace = true

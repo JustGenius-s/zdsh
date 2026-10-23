@@ -1,13 +1,18 @@
+use std::time::Duration;
+
 use action_log::DiffStats;
 use agent_ui::AgentPanel;
 use gpui::AsKeystroke as _;
 use gpui::{
-    AnyElement, App, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Subscription, WeakEntity, Window, div, prelude::*, px,
+    Animation, AnimationExt as _, AnyElement, App, Context, Entity, Focusable as _, IntoElement,
+    ParentElement, Render, SharedString, Styled, Subscription, WeakEntity, Window, deferred, div,
+    ease_out_quint, prelude::*, px,
 };
-use gpui_kit::component::{h_flex, kbd::Kbd, menu::DropdownMenu as _, v_flex};
+use gpui_kit::component::{Selectable as _, h_flex, kbd::Kbd, menu::DropdownMenu as _, v_flex};
 use icons::IconName;
 use project::{ProjectPath, git_store::GitStore};
+use project_panel::ProjectPanel;
+use workspace::dock::Dock;
 use theme::ActiveTheme;
 use ui::{Color, rems_from_px};
 use util::ResultExt as _;
@@ -26,6 +31,9 @@ const GROUP_LABEL_PADDING_END: f32 = 4.;
 const GROUP_LABEL_HEIGHT: f32 = 28.;
 const FILE_GROUP_LABEL_HEIGHT: f32 = 20.;
 const HEADER_HEIGHT: f32 = 30.;
+const NAV_WIDTH: f32 = 272.;
+const FILES_WIDTH: f32 = 264.;
+const FILES_ENTER_DURATION: Duration = Duration::from_millis(240);
 /// How many of the repository's changed files the sidebar lists before linking to all of them.
 const GIT_CHANGES_SHOWN: usize = 3;
 
@@ -36,8 +44,23 @@ pub struct WorkspaceNav {
     /// The window's thread list, which already tracks every project's threads and their status.
     threads: Option<Entity<Sidebar>>,
     needed_attention: bool,
+    /// The project's file tree, borrowed from the left dock and shown beside the sidebar.
+    project_files: Option<Entity<ProjectPanel>>,
+    files: FilesState,
+    /// Counts openings of the file tree, so each one replays its entrance.
+    files_openings: usize,
     _threads_subscription: Option<Subscription>,
+    _project_files_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FilesState {
+    Closed,
+    /// Floats over the center and closes once a file opens.
+    Floating,
+    /// Takes a column of its own and stays open.
+    Pinned,
 }
 
 struct FileRow {
@@ -58,7 +81,9 @@ impl WorkspaceNav {
         let workspace_handle = cx.entity();
         // The workspace is mid-update here, so the sidebar can't read it yet.
         let git_store = workspace.project().read(cx).git_store().clone();
-        let nav = cx.new(|cx| Self::new(&workspace_handle, &git_store, window, cx));
+        let left_dock = workspace.left_dock().clone();
+        let nav =
+            cx.new(|cx| Self::new(&workspace_handle, &git_store, &left_dock, window, cx));
         workspace.set_navigation(
             WorkspaceNavigation {
                 view: nav.clone().into(),
@@ -71,20 +96,231 @@ impl WorkspaceNav {
     fn new(
         workspace: &Entity<Workspace>,
         git_store: &Entity<GitStore>,
-        _window: &mut Window,
+        left_dock: &Entity<Dock>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let subscriptions = vec![
             cx.observe(workspace, |_, _, cx| cx.notify()),
             cx.subscribe(git_store, |_, _, _, cx| cx.notify()),
+            cx.observe_in(left_dock, window, Self::take_project_files_from_dock),
         ];
         Self {
             workspace: workspace.downgrade(),
             threads: None,
             needed_attention: false,
+            project_files: None,
+            files: FilesState::Closed,
+            files_openings: 0,
             _threads_subscription: None,
+            _project_files_subscription: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The file tree lives in the left dock, which actions such as revealing a file open. The
+    /// sidebar shows the tree itself instead, so it closes the dock and opens the tree beside it.
+    fn take_project_files_from_dock(
+        &mut self,
+        left_dock: Entity<Dock>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dock = left_dock.read(cx);
+        let Some(project_files) = dock.panel::<ProjectPanel>() else {
+            return;
+        };
+        let shows_project_files = dock.is_open()
+            && dock
+                .visible_panel()
+                .is_some_and(|panel| panel.panel_id() == project_files.entity_id());
+        if !shows_project_files {
+            return;
+        }
+        // The dock is mid-update while it notifies, so close it once that is done.
+        cx.defer_in(window, move |this, window, cx| {
+            left_dock.update(cx, |dock, cx| dock.set_open(false, window, cx));
+            this.open_project_files(window, cx);
+        });
+    }
+
+    fn connect_project_files(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<ProjectPanel>> {
+        if let Some(project_files) = &self.project_files {
+            return Some(project_files.clone());
+        }
+        let project_files = self
+            .workspace
+            .upgrade()?
+            .read(cx)
+            .panel::<ProjectPanel>(cx)?;
+        self._project_files_subscription = Some(cx.subscribe_in(
+            &project_files,
+            window,
+            |this, _, event: &project_panel::Event, window, cx| match event {
+                project_panel::Event::OpenedEntry { .. } | project_panel::Event::SplitEntry { .. } => {
+                    if this.files == FilesState::Floating {
+                        this.close_project_files(window, cx);
+                    }
+                }
+                project_panel::Event::Focus => {}
+            },
+        ));
+        self.project_files = Some(project_files.clone());
+        Some(project_files)
+    }
+
+    fn open_project_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(project_files) = self.connect_project_files(window, cx) else {
+            return;
+        };
+        if self.files == FilesState::Closed {
+            self.files = FilesState::Floating;
+            self.files_openings += 1;
+        }
+        window.focus(&project_files.focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    fn close_project_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.files == FilesState::Closed {
+            return;
+        }
+        self.files = FilesState::Closed;
+        if let Some(workspace) = self.workspace.upgrade() {
+            let pane_focus = workspace.read(cx).active_pane().focus_handle(cx);
+            window.focus(&pane_focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn toggle_project_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.files == FilesState::Closed {
+            self.open_project_files(window, cx);
+        } else {
+            self.close_project_files(window, cx);
+        }
+    }
+
+    fn toggle_files_pinned(&mut self, cx: &mut Context<Self>) {
+        self.files = match self.files {
+            FilesState::Pinned => FilesState::Floating,
+            FilesState::Floating | FilesState::Closed => FilesState::Pinned,
+        };
+        cx.notify();
+    }
+
+    fn render_project_files(
+        &self,
+        project_files: Entity<ProjectPanel>,
+        workspace: &Entity<Workspace>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = cx.theme().colors();
+        let pinned = self.files == FilesState::Pinned;
+        let name = workspace
+            .read(cx)
+            .project_group_key(cx)
+            .display_name(&Default::default());
+        let hint = if pinned {
+            "Pinned beside the sidebar. Unpin to float it again."
+        } else {
+            "Opening a file closes this list. Escape closes it."
+        };
+
+        v_flex()
+            .id("workspace-project-files")
+            .w(rems_from_px(FILES_WIDTH))
+            .h_full()
+            .flex_none()
+            .pt(rems_from_px(LIST_INSET))
+            .bg(colors.panel_background)
+            .border_r_1()
+            .border_color(colors.border_variant)
+            .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
+                this.close_project_files(window, cx)
+            }))
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_h(rems_from_px(HEADER_HEIGHT))
+                    .px(rems_from_px(LIST_INSET))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .min_w_0()
+                            .gap(rems_from_px(6_f32))
+                            .pl(rems_from_px(GROUP_LABEL_PADDING_START))
+                            .pr(rems_from_px(GROUP_LABEL_PADDING_END))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(colors.text)
+                                    .child("Files"),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .text_color(colors.text_muted)
+                                    .child(name),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                sidebar_icon_button("pin-project-files", IconName::Pin)
+                                    .tooltip(if pinned { "Unpin" } else { "Pin Beside Sidebar" })
+                                    .selected(pinned)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.toggle_files_pinned(cx)
+                                    })),
+                            )
+                            .child(
+                                sidebar_icon_button("close-project-files", IconName::Close)
+                                    .tooltip("Close")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_project_files(window, cx)
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                div().w_full().px(rems_from_px(LIST_INSET)).pb(rems_from_px(6_f32)).child(
+                    SidebarRow::new(
+                        "filter-project-files",
+                        sidebar_icon(IconName::MagnifyingGlass).text_color(colors.icon_muted),
+                        div()
+                            .truncate()
+                            .text_color(colors.text_placeholder)
+                            .child("Find a File…"),
+                    )
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(
+                            Box::new(zed_actions::unified_search::Toggle {
+                                tab: Some(zed_actions::unified_search::SearchTab::Files),
+                            }),
+                            cx,
+                        )
+                    }),
+                ),
+            )
+            .child(div().flex_1().min_h_0().child(project_files))
+            .child(
+                div()
+                    .w_full()
+                    .px(rems_from_px(LIST_INSET + GROUP_LABEL_PADDING_START))
+                    .py(rems_from_px(LIST_INSET))
+                    .border_t_1()
+                    .border_color(colors.border_variant)
+                    .text_xs()
+                    .text_color(colors.text_placeholder)
+                    .child(hint),
+            )
+            .into_any_element()
     }
 
     fn multi_workspace(&self, cx: &App) -> Option<Entity<MultiWorkspace>> {
@@ -508,7 +744,7 @@ impl WorkspaceNav {
             .child(title)
     }
 
-    fn render_files(&self, workspace: &Entity<Workspace>, cx: &App) -> impl IntoElement {
+    fn render_files(&self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) -> AnyElement {
         let (thread_changes, open_files, git_changes, git_change_count) =
             self.file_groups(workspace, cx);
         let count = thread_changes.len() + open_files.len() + git_changes.len();
@@ -517,9 +753,8 @@ impl WorkspaceNav {
         let buttons = vec![
             sidebar_icon_button("project-tree", IconName::ListTree)
                 .tooltip("Project Files")
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(zed_actions::project_panel::ToggleFocus), cx)
-                })
+                .selected(self.files != FilesState::Closed)
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_project_files(window, cx)))
                 .into_any_element(),
             sidebar_icon_button("open-file", IconName::Plus)
                 .tooltip("Open File")
@@ -574,6 +809,7 @@ impl WorkspaceNav {
                     }),
                 )
             })
+            .into_any_element()
     }
 
     fn render_terminals(&self, workspace: &Entity<Workspace>, cx: &App) -> impl IntoElement {
@@ -706,8 +942,16 @@ impl Render for WorkspaceNav {
         let Some(workspace) = self.workspace.upgrade() else {
             return div().into_any_element();
         };
-        v_flex()
-            .size_full()
+        let project_files = (self.files != FilesState::Closed)
+            .then(|| self.connect_project_files(window, cx))
+            .flatten()
+            .map(|project_files| self.render_project_files(project_files, &workspace, cx));
+        let floating = self.files == FilesState::Floating;
+        let nav = v_flex()
+            .relative()
+            .w(rems_from_px(NAV_WIDTH))
+            .h_full()
+            .flex_none()
             .pt(rems_from_px(LIST_INSET))
             .child(self.render_header(&workspace, cx))
             .child(
@@ -722,7 +966,33 @@ impl Render for WorkspaceNav {
                     .child(self.render_files(&workspace, cx))
                     .child(self.render_terminals(&workspace, cx)),
             )
-            .child(self.render_footer(&workspace, window, cx))
+            .child(self.render_footer(&workspace, window, cx));
+
+        h_flex()
+            .h_full()
+            .map(|row| match project_files {
+                Some(project_files) if floating => row.child(nav.child(
+                    // Drawn after the center, so it floats over it.
+                    deferred(
+                        div()
+                            .id("floating-project-files")
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(rems_from_px(NAV_WIDTH))
+                            .shadow_lg()
+                            .child(project_files)
+                            .with_animation(
+                                ("project-files-enter", self.files_openings),
+                                Animation::new(FILES_ENTER_DURATION).with_easing(ease_out_quint()),
+                                |files, delta| files.opacity(delta).ml(px(-16. * (1. - delta))),
+                            ),
+                    )
+                    .with_priority(1),
+                )),
+                Some(project_files) => row.child(nav).child(project_files),
+                None => row.child(nav),
+            })
             .into_any_element()
     }
 }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use agent_settings::AgentSettings;
 use fs::Fs;
-use gpui::{Action, AnyView, App, Context, Focusable as _, IntoElement, Styled, div, rems};
+use gpui::{Action, AnyView, App, Context, Focusable as _, IntoElement, Styled, div};
 use gpui::{ParentElement as _, prelude::FluentBuilder as _};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use settings::{Settings as _, update_settings_file};
@@ -11,9 +11,6 @@ use theme_settings::{ThemeAppearanceMode, ThemeSelection, ThemeSettings};
 use ui::IconName;
 
 use crate::{ItemHandle, Workspace, item::TabCategory};
-
-/// Width of the sidebar at a workspace's left edge, 272px at the default UI font size.
-const NAVIGATION_WIDTH: f32 = 17.;
 
 /// The sidebar at a workspace's left edge. The app provides it because its contents (threads,
 /// terminals, git changes) live in crates the workspace doesn't depend on.
@@ -40,12 +37,11 @@ impl Workspace {
 
     pub(crate) fn render_navigation(&self, cx: &App) -> Option<impl IntoElement + use<>> {
         let navigation = self.navigation.as_ref()?;
+        // The sidebar sets its own width, which grows when it pins the project's files beside it.
         Some(
             div()
                 .flex_none()
-                .w(rems(NAVIGATION_WIDTH))
                 .h_full()
-                .overflow_hidden()
                 .bg(cx.theme().sidebar_backdrop())
                 .child(navigation.view.clone()),
         )
