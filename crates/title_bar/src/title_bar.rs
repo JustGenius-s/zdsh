@@ -27,7 +27,6 @@ use gpui_kit::component::{
     Sizable as _,
     button::{Button as KitButton, ButtonVariants as _},
     menu::DropdownMenu as _,
-    tab::{Tab, TabBar},
 };
 use onboarding_banner::OnboardingBanner;
 use project::{Project, trusted_worktrees::TrustedWorktrees};
@@ -300,6 +299,10 @@ impl Render for TitleBar {
     }
 }
 
+/// The project pills fill the macOS title bar's 44px with room to spare, like the design's.
+const PILL_HEIGHT: f32 = 28.;
+const PILL_TRACK_PADDING: f32 = 3.;
+
 impl TitleBar {
     /// One pill per project open in the window, switching the window between them.
     fn render_project_pills(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -311,8 +314,12 @@ impl TitleBar {
         let active_index = groups.iter().position(|group| group.key == active_key);
         let accents = cx.theme().accents().clone();
         let attention_color = cx.theme().status().warning;
-        let tabs = groups
-            .iter()
+        let colors = cx.theme().colors();
+        let weak_multi_workspace = self.multi_workspace.clone()?;
+        // The kit's segmented tabs mark the selected tab with the window background, which the
+        // title bar shares, so the pills draw their own selection.
+        let pills = groups
+            .into_iter()
             .enumerate()
             .map(|(index, group)| {
                 let is_active = active_index == Some(index);
@@ -321,56 +328,84 @@ impl TitleBar {
                         .workspaces
                         .iter()
                         .any(|workspace| workspace.read(cx).needs_attention(cx));
-                Tab::new()
-                    .label(group.key.display_name(&Default::default()))
-                    .prefix(
+                let key = group.key.clone();
+                let weak_multi_workspace = weak_multi_workspace.clone();
+                h_flex()
+                    .id(("project-pill", index))
+                    .h(px(PILL_HEIGHT))
+                    .px(px(12.))
+                    .gap(px(8.))
+                    .rounded(px(6.))
+                    .text_color(if is_active {
+                        colors.text
+                    } else {
+                        colors.text_muted
+                    })
+                    .when(is_active, |pill| {
+                        pill.bg(colors.element_selected)
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .shadow_xs()
+                    })
+                    .when(!is_active, |pill| {
+                        pill.cursor_pointer().hover(|style| {
+                            style.bg(colors.ghost_element_hover).text_color(colors.text)
+                        })
+                    })
+                    .child(
                         div()
-                            .size(px(7.))
+                            .flex_none()
+                            .size(px(8.))
                             .rounded(px(2.))
                             .bg(accents.color_for_index(index as u32)),
                     )
-                    .when(needs_attention, |tab| {
-                        tab.suffix(div().size(px(6.)).rounded_full().bg(attention_color))
+                    .child(
+                        div()
+                            .max_w(px(180.))
+                            .truncate()
+                            .child(group.key.display_name(&Default::default())),
+                    )
+                    .when(needs_attention, |pill| {
+                        pill.child(
+                            div()
+                                .flex_none()
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(attention_color),
+                        )
+                    })
+                    .on_click(move |_, window, cx| {
+                        weak_multi_workspace
+                            .update(cx, |multi_workspace, cx| {
+                                if let Some(sidebar) = multi_workspace.sidebar() {
+                                    sidebar.activate_project_group(key.clone(), window, cx);
+                                }
+                            })
+                            .log_err();
                     })
             })
             .collect::<Vec<_>>();
-        let keys = groups
-            .into_iter()
-            .map(|group| group.key)
-            .collect::<Vec<_>>();
-        let weak_multi_workspace = self.multi_workspace.clone()?;
         Some(
             h_flex()
                 .flex_1()
                 .min_w_0()
-                .gap_1()
+                .gap(px(6.))
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .when(!tabs.is_empty(), |row| {
+                .when(!pills.is_empty(), |row| {
                     row.child(
-                        TabBar::new("project-pills")
-                            .segmented()
-                            .small()
-                            .when_some(active_index, |tab_bar, index| tab_bar.selected_index(index))
-                            .children(tabs)
-                            .on_click(move |index, window, cx| {
-                                let Some(key) = keys.get(*index).cloned() else {
-                                    return;
-                                };
-                                weak_multi_workspace
-                                    .update(cx, |multi_workspace, cx| {
-                                        if let Some(sidebar) = multi_workspace.sidebar() {
-                                            sidebar.activate_project_group(key, window, cx);
-                                        }
-                                    })
-                                    .log_err();
-                            }),
+                        h_flex()
+                            .p(px(PILL_TRACK_PADDING))
+                            .gap(px(2.))
+                            .rounded(px(8.))
+                            .bg(colors.element_background)
+                            .border_1()
+                            .border_color(colors.border_variant)
+                            .children(pills),
                     )
                 })
                 .child(
                     KitButton::new("new-project")
                         .ghost()
-                        .small()
                         .icon(gpui_kit::assets::IconName::Plus)
                         .label("New")
                         .dropdown_menu(|menu, _, _| {
