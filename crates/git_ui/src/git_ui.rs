@@ -42,6 +42,7 @@ use crate::{
 };
 
 pub mod branch_diff;
+pub mod changes_view;
 pub mod branch_picker;
 mod commit_context_menu;
 mod commit_modal;
@@ -71,6 +72,7 @@ pub use conflict_view::MergeConflictIndicator;
 pub fn init(cx: &mut App) {
     editor::set_blame_renderer(blame_ui::GitBlameRenderer, cx);
     commit_view::init(cx);
+    changes_view::init(cx);
     git_graph::init(cx);
 
     git_ui_core::set_branch_picker_builder(

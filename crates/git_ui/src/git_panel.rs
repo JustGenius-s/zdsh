@@ -2441,6 +2441,19 @@ impl GitPanel {
                 return None;
             };
 
+            // The changes tab shows every pick in its own diff.
+            if let Some(changes) = workspace
+                .read(cx)
+                .active_item_as::<crate::changes_view::ChangesView>(cx)
+            {
+                let project_diff = changes.read(cx).project_diff().clone();
+                project_diff.update(cx, |project_diff, cx| {
+                    project_diff.move_to_entry(entry.clone(), window, cx)
+                });
+                self.focus_handle.focus(window, cx);
+                return Some(());
+            }
+
             self.workspace
                 .update(cx, |workspace, cx| match target {
                     DiffTarget::Uncommitted => {
@@ -9654,10 +9667,7 @@ mod tests {
     use util::path;
     use util::rel_path::rel_path;
 
-    use workspace::{
-        ActivatePaneLeft, ActivatePaneRight, ItemHandle as _, MultiWorkspace, ToolbarItemEvent,
-        ToolbarItemLocation, item::test::TestItem,
-    };
+    use workspace::{ItemHandle as _, MultiWorkspace, ToolbarItemEvent, ToolbarItemLocation};
 
     use super::*;
 
@@ -13676,57 +13686,43 @@ mod tests {
         });
 
         cx.dispatch_action(super::ToggleFocus);
+        // The panel moves from its dock into the changes tab once the dock finishes opening.
+        cx.run_until_parked();
         panel.update_in(&mut cx, |panel, window, cx| {
             assert!(panel.commit_editor.focus_handle(cx).is_focused(window));
         });
     }
 
     #[gpui::test]
-    async fn test_history_tab_pane_navigation_focuses_rendered_panel(cx: &mut TestAppContext) {
+    async fn test_opening_git_panel_dock_opens_changes_tab(cx: &mut TestAppContext) {
         init_test(cx);
 
         let (_, _project, workspace, panel, mut cx) =
             setup_git_panel_with_changes(cx, json!({ ".git": {} }), &[]).await;
 
-        let center_item = workspace.update_in(&mut cx, |workspace, window, cx| {
-            let center_item = cx.new(TestItem::new);
-            workspace.add_item_to_active_pane(
-                Box::new(center_item.clone()),
-                None,
-                true,
-                window,
-                cx,
-            );
+        workspace.update_in(&mut cx, |workspace, window, cx| {
             workspace.add_panel(panel.clone(), window, cx);
             workspace.open_panel::<GitPanel>(window, cx);
-            center_item
-        });
-        panel.update_in(&mut cx, |panel, window, cx| {
-            assert!(panel.entries.is_empty());
-            panel.activate_history_tab(&ActivateHistoryTab, window, cx);
-        });
-        center_item.update_in(&mut cx, |center_item, window, cx| {
-            center_item.focus_handle(cx).focus(window, cx);
         });
         cx.run_until_parked();
 
-        cx.dispatch_action(ActivatePaneRight);
-        cx.run_until_parked();
-
-        let history_panel_was_focused = panel.update_in(&mut cx, |panel, window, cx| {
-            panel.focus_handle.contains_focused(window, cx)
+        workspace.update_in(&mut cx, |workspace, _window, cx| {
+            let docks = [
+                workspace.left_dock(),
+                workspace.right_dock(),
+                workspace.bottom_dock(),
+            ];
+            assert!(
+                docks.iter().all(|dock| !dock.read(cx).is_open()),
+                "the git panel's dock should close once its panel moves into the changes tab"
+            );
+            assert!(
+                workspace
+                    .active_item_as::<crate::changes_view::ChangesView>(cx)
+                    .is_some(),
+                "opening the git panel should activate the changes tab"
+            );
         });
-
-        cx.dispatch_action(ActivatePaneLeft);
-        cx.run_until_parked();
-
-        let center_item_is_focused = center_item.update_in(&mut cx, |center_item, window, cx| {
-            center_item.focus_handle(cx).is_focused(window)
-        });
-        assert!(
-            history_panel_was_focused && center_item_is_focused,
-            "pane navigation should focus the History panel after moving right and restore the center item after moving left; History panel focused after moving right: {history_panel_was_focused}, center item focused after moving left: {center_item_is_focused}"
-        );
     }
 
     #[test]
