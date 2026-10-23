@@ -65,11 +65,7 @@ use util::{
     serde::default_true, truncate_and_remove_front,
 };
 
-const SEGMENTED_TAB_HEIGHT: Pixels = if cfg!(target_os = "macos") {
-    px(36.)
-} else {
-    px(32.)
-};
+const SEGMENTED_TAB_HEIGHT: Pixels = px(34.);
 
 /// The widest a tab gets in the center's tab bar. Without a cap, a single long title, such as an
 /// agent thread named after its first prompt, can take over the bar and crowd out other tabs.
@@ -477,9 +473,6 @@ pub struct Pane {
     /// If a certain project item wants to get recreated with specific data, it can persist its data before the recreation here.
     pub project_item_restoration_data: HashMap<ProjectItemKind, Box<dyn Any + Send>>,
     welcome_page: Option<Entity<crate::welcome::WelcomePage>>,
-    /// Whether the window's title bar shows this pane's tab bar, while the pane is active, in place
-    /// of the pane.
-    tab_bar_in_title_bar: bool,
 
     pub in_center_group: bool,
 }
@@ -655,7 +648,6 @@ impl Pane {
             diagnostic_summary_update: Task::ready(()),
             project_item_restoration_data: HashMap::default(),
             welcome_page: None,
-            tab_bar_in_title_bar: false,
             in_center_group: false,
         }
     }
@@ -857,27 +849,6 @@ impl Pane {
         F: 'static + Fn(&Window, &mut Context<Pane>) -> bool,
     {
         self.should_display_tab_bar = Rc::new(should_display_tab_bar);
-    }
-
-    pub(crate) fn set_tab_bar_in_title_bar(
-        &mut self,
-        tab_bar_in_title_bar: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if self.tab_bar_in_title_bar != tab_bar_in_title_bar {
-            self.tab_bar_in_title_bar = tab_bar_in_title_bar;
-            cx.notify();
-        }
-    }
-
-    /// The tab bar the window's title bar shows for this pane while it is the active one.
-    pub fn render_title_bar_tab_bar(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let should_display_tab_bar = self.should_display_tab_bar.clone();
-        should_display_tab_bar(window, cx).then(|| (self.render_tab_bar.clone())(self, window, cx))
     }
 
     pub fn set_should_display_welcome_page(&mut self, should_display_welcome_page: bool) {
@@ -3666,9 +3637,7 @@ impl Pane {
         let pinned_tabs = tab_items;
 
         let tab_bar_settings = TabBarSettings::get_global(cx);
-        // The title bar has room for one row only.
-        let use_separate_rows =
-            tab_bar_settings.show_pinned_tabs_in_separate_row && !self.tab_bar_in_title_bar;
+        let use_separate_rows = tab_bar_settings.show_pinned_tabs_in_separate_row;
 
         let tab_bar = if use_separate_rows && !pinned_tabs.is_empty() && !unpinned_tabs.is_empty() {
             self.render_two_row_tab_bar(
@@ -3743,20 +3712,16 @@ impl Pane {
         start_children: Vec<AnyElement>,
         tab_bars: impl IntoIterator<Item = AnyElement>,
         end_children: Vec<AnyElement>,
-        window: &Window,
         cx: &App,
     ) -> Div {
         h_flex()
             .w_full()
             .min_w_0()
             .overflow_hidden()
-            .h(ui::utils::platform_title_bar_height(window))
+            .h(SEGMENTED_TAB_HEIGHT)
             .px_1()
             .gap_1()
-            .when(
-                !(self.tab_bar_in_title_bar && cx.theme().has_translucent_chrome()),
-                |row| row.bg(cx.theme().colors().tab_bar_background),
-            )
+            .bg(cx.theme().colors().tab_bar_background)
             .when(!start_children.is_empty(), |row| {
                 row.child(h_flex().flex_none().gap_1().children(start_children))
             })
@@ -3931,7 +3896,7 @@ impl Pane {
         let tab_bars = pinned_tab_bar.into_iter().chain([self
             .render_unpinned_tab_bar(unpinned_tabs, tab_count, cx)
             .into_any_element()]);
-        self.render_tab_bar_row(start_children, tab_bars, end_children, window, cx)
+        self.render_tab_bar_row(start_children, tab_bars, end_children, cx)
             .into_any_element()
     }
 
@@ -3969,7 +3934,6 @@ impl Pane {
                         start_children,
                         [pinned_tab_bar.into_any_element()],
                         end_children,
-                        window,
                         cx,
                     )),
             )
@@ -3980,7 +3944,6 @@ impl Pane {
                         .render_unpinned_tab_bar(unpinned_tabs, tab_count, cx)
                         .into_any_element()],
                     Vec::new(),
-                    window,
                     cx,
                 ),
             )
@@ -4864,7 +4827,7 @@ impl Render for Pane {
                     cx.propagate();
                 }
             }))
-            .when(display_tab_bar && !self.tab_bar_in_title_bar, |pane| {
+            .when(display_tab_bar, |pane| {
                 pane.child((self.render_tab_bar.clone())(self, window, cx))
             })
             .child({

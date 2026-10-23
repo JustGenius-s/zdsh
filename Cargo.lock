@@ -16303,6 +16303,7 @@ dependencies = [
  "command_palette_hooks",
  "db",
  "fs",
+ "gpui-kit",
  "gpui-pre",
  "icons",
  "platform_title_bar",

@@ -57,6 +57,11 @@ actions!(
     ]
 );
 
+/// Activates the project at a position in the title bar, counting from zero.
+#[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema, Default, gpui::Action)]
+#[action(namespace = multi_workspace)]
+pub struct ActivateProject(pub usize);
+
 #[derive(Default)]
 pub struct SidebarRenderState {
     pub open: bool,
@@ -99,6 +104,15 @@ pub trait Sidebar: Focusable + Render + EventEmitter<SidebarEvent> + Sized {
     /// Activates the next or previous project.
     fn cycle_project(&mut self, _forward: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
 
+    /// Activates the project group's workspace, opening one when the window holds none.
+    fn activate_project_group(
+        &mut self,
+        _key: ProjectGroupKey,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+    }
+
     /// Activates the next or previous thread in sidebar order.
     fn cycle_thread(&mut self, _forward: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
 
@@ -128,6 +142,7 @@ pub trait SidebarHandle: 'static + Send + Sync {
     fn entity_id(&self) -> EntityId;
     fn toggle_thread_switcher(&self, select_last: bool, window: &mut Window, cx: &mut App);
     fn cycle_project(&self, forward: bool, window: &mut Window, cx: &mut App);
+    fn activate_project_group(&self, key: ProjectGroupKey, window: &mut Window, cx: &mut App);
     fn cycle_thread(&self, forward: bool, window: &mut Window, cx: &mut App);
 
     fn is_threads_list_view_active(&self, cx: &App) -> bool;
@@ -194,6 +209,15 @@ impl<T: Sidebar> SidebarHandle for Entity<T> {
         window.defer(cx, move |window, cx| {
             entity.update(cx, |this, cx| {
                 this.cycle_project(forward, window, cx);
+            });
+        });
+    }
+
+    fn activate_project_group(&self, key: ProjectGroupKey, window: &mut Window, cx: &mut App) {
+        let entity = self.clone();
+        window.defer(cx, move |window, cx| {
+            entity.update(cx, |this, cx| {
+                this.activate_project_group(key, window, cx);
             });
         });
     }
@@ -2135,6 +2159,15 @@ impl Render for MultiWorkspace {
                             }
                         },
                     ))
+                    .on_action(
+                        cx.listener(|this: &mut Self, action: &ActivateProject, window, cx| {
+                            if let Some(key) = this.project_group_keys().get(action.0).cloned()
+                                && let Some(sidebar) = &this.sidebar
+                            {
+                                sidebar.activate_project_group(key, window, cx);
+                            }
+                        }),
+                    )
                     .on_action(cx.listener(|this: &mut Self, _: &NextProject, window, cx| {
                         if let Some(sidebar) = &this.sidebar {
                             sidebar.cycle_project(true, window, cx);

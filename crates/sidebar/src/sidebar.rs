@@ -1,7 +1,9 @@
 mod sidebar_row;
 mod thread_switcher;
+mod workspace_nav;
 
 pub use sidebar_row::relative_time;
+pub use workspace_nav::WorkspaceNav;
 
 use acp_thread::ThreadStatus;
 use action_log::DiffStats;
@@ -7169,6 +7171,15 @@ impl WorkspaceSidebar for Sidebar {
 
     fn cycle_project(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.cycle_project_impl(forward, window, cx);
+    }
+
+    fn activate_project_group(
+        &mut self,
+        key: ProjectGroupKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.activate_or_open_workspace_for_group(&key, window, cx);
     }
 
     fn cycle_thread(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {

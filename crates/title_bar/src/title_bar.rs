@@ -23,6 +23,12 @@ use gpui::{
     MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription,
     WeakEntity, Window, actions, div, pulsating_between,
 };
+use gpui_kit::component::{
+    Sizable as _,
+    button::{Button as KitButton, ButtonVariants as _},
+    menu::DropdownMenu as _,
+    tab::{Tab, TabBar},
+};
 use onboarding_banner::OnboardingBanner;
 use project::{Project, trusted_worktrees::TrustedWorktrees};
 use remote::RemoteConnectionOptions;
@@ -40,7 +46,7 @@ use update_version::UpdateVersion;
 use util::ResultExt;
 use workspace::{
     AccessibleMode, MultiWorkspace, ToggleWorktreeSecurity, Workspace,
-    notifications::NotifyResultExt,
+    notifications::NotifyResultExt, theme_menu,
 };
 
 use zed_actions::OpenRemote;
@@ -153,6 +159,10 @@ impl Render for TitleBar {
                 .upgrade()
                 .and_then(|ws| ws.read(cx).multi_workspace().cloned())
             {
+                if let Some(multi_workspace) = mw.upgrade() {
+                    self._subscriptions
+                        .push(cx.observe(&multi_workspace, |_, _, cx| cx.notify()));
+                }
                 self.multi_workspace = Some(mw.clone());
                 self.platform_titlebar.update(cx, |titlebar, _cx| {
                     titlebar.set_multi_workspace(mw);
@@ -194,7 +204,7 @@ impl Render for TitleBar {
                 .into_any_element(),
         );
 
-        children.extend(self.render_tab_bar(window, cx));
+        children.extend(self.render_project_pills(cx));
 
         if title_bar_settings.show_onboarding_banner {
             if let Some(banner) = &self.banner {
@@ -229,6 +239,7 @@ impl Render for TitleBar {
                     this.children(self.render_connection_status(status, cx))
                 })
                 .child(self.update_version.clone())
+                .child(self.render_settings_menu(cx))
                 .when(
                     accounts_enabled
                         && user.is_none()
@@ -290,21 +301,90 @@ impl Render for TitleBar {
 }
 
 impl TitleBar {
-    /// The window's one tab bar, showing the tabs of whichever center pane is active.
-    fn render_tab_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let pane = self.workspace.upgrade()?.read(cx).active_pane().clone();
-        let tab_bar = pane.update(cx, |pane, cx| pane.render_title_bar_tab_bar(window, cx))?;
+    /// One pill per project open in the window, switching the window between them.
+    fn render_project_pills(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let multi_workspace = self.multi_workspace.as_ref()?.upgrade()?;
+        let multi_workspace = multi_workspace.read(cx);
+        let groups = multi_workspace.project_groups(cx);
+        if groups.is_empty() {
+            return None;
+        }
+        let active_key = multi_workspace.project_group_key_for_workspace(multi_workspace.workspace(), cx);
+        let active_index = groups.iter().position(|group| group.key == active_key);
+        let accents = cx.theme().accents().clone();
+        let attention_color = cx.theme().status().warning;
+        let tabs = groups
+            .iter()
+            .enumerate()
+            .map(|(index, group)| {
+            let is_active = active_index == Some(index);
+            let needs_attention = !is_active
+                && group
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.read(cx).needs_attention(cx));
+            Tab::new()
+                .label(group.key.display_name(&Default::default()))
+                .prefix(
+                    div()
+                        .size(px(7.))
+                        .rounded(px(2.))
+                        .bg(accents.color_for_index(index as u32)),
+                )
+                .when(needs_attention, |tab| {
+                    tab.suffix(div().size(px(6.)).rounded_full().bg(attention_color))
+                })
+            })
+            .collect::<Vec<_>>();
+        let keys = groups.into_iter().map(|group| group.key).collect::<Vec<_>>();
+        let weak_multi_workspace = self.multi_workspace.clone()?;
         Some(
-            div()
+            h_flex()
                 .flex_1()
                 .min_w_0()
-                .overflow_hidden()
-                .h_full()
-                // Tabs are dragged and double-clicked as tabs, not as the title bar.
+                .justify_center()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(tab_bar)
+                .child(
+                    TabBar::new("project-pills")
+                        .segmented()
+                        .small()
+                        .when_some(active_index, |tab_bar, index| tab_bar.selected_index(index))
+                        .children(tabs)
+                        .on_click(move |index, window, cx| {
+                            let Some(key) = keys.get(*index).cloned() else {
+                                return;
+                            };
+                            weak_multi_workspace
+                                .update(cx, |multi_workspace, cx| {
+                                    if let Some(sidebar) = multi_workspace.sidebar() {
+                                        sidebar.activate_project_group(key, window, cx);
+                                    }
+                                })
+                                .log_err();
+                        }),
+                )
                 .into_any_element(),
         )
+    }
+
+    fn render_settings_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let fs = self.project.read(cx).fs().clone();
+        KitButton::new("title-bar-settings")
+            .ghost()
+            .small()
+            .icon(gpui_kit::assets::IconName::Settings)
+            .tooltip("Settings and Themes")
+            .dropdown_menu(move |menu, _, cx| {
+                let menu = menu
+                    .menu("Settings", Box::new(zed_actions::OpenSettings))
+                    .menu(
+                        "Extensions",
+                        Box::new(zed_actions::Extensions::default()),
+                    )
+                    .menu("Keymap", Box::new(zed_actions::OpenKeymap))
+                    .separator();
+                theme_menu(menu, fs.clone(), cx)
+            })
     }
 
     pub fn new(

@@ -571,7 +571,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
 
         if let Some(specs) = window.gpu_specs() {
             log::info!("Using GPU: {:?}", specs);
-            show_software_emulation_warning_if_needed(specs.clone(), window, cx);
+            show_software_emulation_warning_if_needed(specs, window, cx);
         }
 
         let active_file_name = cx.new(|_| workspace::active_file_name::ActiveFileName::new());
@@ -616,6 +616,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         });
         workspace.add_rail_item(diagnostics::rail_item(), cx);
         workspace.add_rail_item(debugger_ui::rail_item(), cx);
+        sidebar::WorkspaceNav::install(workspace, window, cx);
 
         let panels_task = initialize_panels(window, cx);
         workspace.set_panels_task(panels_task);

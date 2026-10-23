@@ -15,11 +15,10 @@ pub mod path_list {
 }
 pub mod path_link;
 mod persistence;
-mod rail;
+mod navigation;
 pub mod searchable;
 pub mod security_modal;
 pub mod shared_screen;
-mod tab_sidebar;
 pub use shared_screen::SharedScreen;
 pub mod focus_follows_mouse;
 mod status_bar;
@@ -34,7 +33,7 @@ mod workspace_settings;
 pub use chat_panel::ChatPanel;
 pub use dock::Panel;
 pub use multi_workspace::{
-    CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MoveProjectDown,
+    ActivateProject, CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MoveProjectDown,
     MoveProjectToNewWindow, MoveProjectUp, MultiWorkspace, MultiWorkspaceEvent,
     MultiWorkspaceWindow, NewThread, NextProject, NextThread, PreviousProject, PreviousThread,
     ProjectGroup, ProjectGroupKey, RemovalIntent, SerializedProjectGroupState, Sidebar,
@@ -42,7 +41,7 @@ pub use multi_workspace::{
 };
 pub use panel_header::{KitIconButton, PickerTrigger, ghost_button_style, panel_header};
 pub use path_list::{PathList, SerializedPathList};
-pub use rail::RailItem;
+pub use navigation::{RailItem, WorkspaceNavigation, theme_menu};
 pub use remote::{
     RemoteConnectionIdentity, remote_connection_identity, same_remote_connection_identity,
 };
@@ -1615,6 +1614,7 @@ pub struct Workspace {
     pub(crate) modal_layer: Entity<ModalLayer>,
     toast_layer: Entity<ToastLayer>,
     titlebar_item: Option<AnyView>,
+    navigation: Option<WorkspaceNavigation>,
     titlebar_focus_handle: FocusHandle,
     region_focus_handles: RegionFocusHandles,
     notifications: Notifications,
@@ -2108,6 +2108,7 @@ impl Workspace {
             modal_layer,
             toast_layer,
             titlebar_item: None,
+            navigation: None,
             titlebar_focus_handle: cx.focus_handle(),
             region_focus_handles: RegionFocusHandles::new(cx),
             notifications: Notifications::default(),
@@ -3329,13 +3330,23 @@ impl Workspace {
         &self.app_state.client
     }
 
-    /// The title bar shows the tab bar of the active center pane, as the window's one tab bar.
     pub fn set_titlebar_item(&mut self, item: AnyView, _: &mut Window, cx: &mut Context<Self>) {
         self.titlebar_item = Some(item);
-        for pane in &self.panes {
-            pane.update(cx, |pane, cx| pane.set_tab_bar_in_title_bar(true, cx));
-        }
         cx.notify();
+    }
+
+    /// Sets the sidebar drawn at the workspace's left edge.
+    pub fn set_navigation(&mut self, navigation: WorkspaceNavigation, cx: &mut Context<Self>) {
+        self.navigation = Some(navigation);
+        cx.notify();
+    }
+
+    /// Whether something in this workspace waits on the user, such as an agent asking for
+    /// permission, so the window can flag it while another workspace is showing.
+    pub fn needs_attention(&self, cx: &App) -> bool {
+        self.navigation
+            .as_ref()
+            .is_some_and(|navigation| (navigation.needs_attention)(cx))
     }
 
     pub fn set_prompt_for_new_path(&mut self, prompt: PromptForNewPath) {
@@ -4923,7 +4934,6 @@ impl Workspace {
     }
 
     fn add_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<Pane> {
-        let tab_bar_in_title_bar = self.titlebar_item.is_some();
         let pane = cx.new(|cx| {
             let mut pane = Pane::new(
                 self.weak_handle(),
@@ -4936,7 +4946,6 @@ impl Workspace {
                 cx,
             );
             pane.set_can_split(Some(Arc::new(|_, _, _, _| true)));
-            pane.set_tab_bar_in_title_bar(tab_bar_in_title_bar, cx);
             pane
         });
         cx.subscribe_in(&pane, window, Self::handle_pane_event)
@@ -9791,7 +9800,7 @@ impl Render for Workspace {
                             .when(!translucent_chrome, |this| {
                                 this.bg(colors.title_bar_background)
                             })
-                            .child(self.render_rail(window, cx))
+                            .children(self.render_navigation(cx))
                             .child(
                                 div()
                                     .id("workspace")
@@ -10224,8 +10233,7 @@ impl Render for Workspace {
                                             ))
                                         }
                                     }),
-                            )
-                            .child(self.render_tab_sidebar(window, cx)),
+                            ),
                     )
                     .child(self.toast_layer.clone()),
             )
