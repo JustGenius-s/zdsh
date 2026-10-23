@@ -2,8 +2,9 @@ use std::rc::Rc;
 
 use collections::HashMap;
 use gpui::{Anchor, Entity, WeakEntity};
+use gpui_icons::Icon as MorphIcon;
 use project::debugger::session::{ThreadId, ThreadStatus};
-use ui::{CommonAnimationExt, ContextMenu, DropdownMenu, Indicator, Tooltip, prelude::*};
+use ui::{ContextMenu, DropdownMenu, Indicator, Tooltip, prelude::*};
 use util::{maybe, truncate_and_trailoff};
 
 use crate::{
@@ -129,20 +130,37 @@ impl DebugPanel {
         let is_started = active_session
             .is_some_and(|session| session.read(cx).session(cx).read(cx).is_started());
 
-        let session_state_indicator = if is_terminated {
-            Indicator::dot().color(Color::Error).into_any_element()
-        } else if !is_started {
-            Icon::new(IconName::LoadCircle)
-                .size(IconSize::Small)
-                .color(Color::Muted)
-                .with_rotate_animation(2)
-                .into_any_element()
+        let is_starting = !is_terminated && !is_started;
+        let state_color = if is_terminated {
+            Color::Error
+        } else if is_starting {
+            Color::Muted
         } else {
             match running_state.thread_status(cx).unwrap_or_default() {
-                ThreadStatus::Stopped => Indicator::dot().color(Color::Conflict).into_any_element(),
-                _ => Indicator::dot().color(Color::Success).into_any_element(),
+                ThreadStatus::Stopped => Color::Conflict,
+                _ => Color::Success,
             }
         };
+        let session_state_indicator = h_flex()
+            .size(IconSize::Small.rems())
+            .justify_center()
+            .child(
+                MorphIcon::empty()
+                    .id("debug-session-state")
+                    .path(if is_starting {
+                        IconName::LoadCircle.path()
+                    } else {
+                        IconName::Indicator.path()
+                    })
+                    .size(if is_starting {
+                        IconSize::Small.rems()
+                    } else {
+                        rems_from_px(8_f32)
+                    })
+                    .text_color(state_color.color(cx))
+                    .spinning(is_starting)
+                    .spin_period(2.0),
+            );
 
         let trigger = h_flex()
             .gap_2()

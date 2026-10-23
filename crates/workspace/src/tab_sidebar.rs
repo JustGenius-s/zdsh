@@ -4,10 +4,11 @@ use gpui::{
     ParentElement, SharedString, StatefulInteractiveElement as _, Styled, TaskExt, WeakEntity,
     Window, div, prelude::FluentBuilder as _, px, rems,
 };
+use gpui_icons::Icon;
 use gpui_kit::{
     assets::IconName as KitIconName,
     component::{
-        Collapsible, Icon, Side, Sizable as _,
+        Collapsible, Side, Sizable as _,
         button::{Button, ButtonVariants as _},
         h_flex,
         list::ListItem,

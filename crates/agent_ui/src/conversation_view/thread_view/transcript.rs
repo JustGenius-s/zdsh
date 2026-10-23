@@ -3,10 +3,10 @@ use super::tool_calls::markdown_line;
 use super::*;
 use crate::entry_view_state::{ActivityGroup, TurnFold, is_hidden_canceled_tool_call};
 use gpui::{AnyView, FontWeight, TextStyleRefinement, point, transparent_white};
+use gpui_icons::Icon as KitIcon;
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::{
-    Colorize as _, Icon as KitIcon, Size as KitSize, Theme as KitTheme, alert::AlertVariant,
-    shimmer::ShimmerText,
+    Colorize as _, Size as KitSize, Theme as KitTheme, alert::AlertVariant, shimmer::ShimmerText,
 };
 use markdown::{HeadingLevelStyles, ListMarkerStyle};
 use std::time::Duration;
@@ -1317,6 +1317,7 @@ pub(super) fn transcript_markdown_style(window: &Window, cx: &App) -> MarkdownSt
     style
 }
 
+#[track_caller]
 pub(super) fn kit_icon(icon: IconName) -> KitIcon {
     KitIcon::empty().path(icon.path())
 }

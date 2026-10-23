@@ -33,9 +33,9 @@ use util::shell::Shell;
 use gpui::{Action, DismissEvent, EventEmitter, FocusHandle, Focusable, RenderOnce};
 use serde::Deserialize;
 use ui::{
-    AnyElement, App, Color, CommonAnimationExt, Context, Headline, HeadlineSize, Icon, IconName,
-    InteractiveElement, IntoElement, Label, ListItem, ListSeparator, ModalHeader, Navigable,
-    NavigableEntry, ParentElement, Render, Styled, StyledExt, Toggleable, Window, div, rems,
+    AnyElement, App, Color, Context, Headline, HeadlineSize, Icon, IconName, InteractiveElement,
+    IntoElement, Label, ListItem, ListSeparator, ModalHeader, Navigable, NavigableEntry,
+    ParentElement, Render, Styled, StyledExt, Toggleable, Window, div, rems,
 };
 use util::ResultExt;
 use util::rel_path::RelPath;

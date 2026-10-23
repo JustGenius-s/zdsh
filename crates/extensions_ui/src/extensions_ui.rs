@@ -13,6 +13,7 @@ use command_palette_hooks::CommandPaletteFilter;
 use extension_host::{ExtensionIndexEntry, ExtensionManifest, ExtensionStore};
 use fuzzy::{StringMatch, StringMatchCandidate, match_strings};
 use git::{GitHostingProviderRegistry, parse_git_remote_url};
+use gpui_icons::Icon as MorphIcon;
 use gpui_kit::{
     Action, App, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, Focusable,
     ParentElement, Render, SharedString, Styled, Task, TaskExt, UniformListScrollHandle,
@@ -34,7 +35,6 @@ use gpui_kit::{
         label::Label as KitLabel,
         list::ListItem,
         menu::PopupMenuItem,
-        spinner::Spinner,
         switch::Switch,
         tab::{Tab, TabBar},
         v_flex,
@@ -866,7 +866,13 @@ impl ExtensionsPage {
             .cleanable(true)
             .w_full()
             .when(self.fetch_state == ExtensionFetchState::Fetching, |input| {
-                input.suffix(Spinner::new().small())
+                input.suffix(
+                    MorphIcon::empty()
+                        .id("extension-search-loading")
+                        .path(IconName::LoadCircle.path())
+                        .small()
+                        .spinning(true),
+                )
             })
     }
 
@@ -970,17 +976,19 @@ impl ExtensionsPage {
             .size_full()
             .header(
                 EmptyHeader::new()
-                    .media(EmptyMedia::new().child(if is_loading {
-                        Spinner::new().into_any_element()
-                    } else {
-                        KitIcon::new(if fetch_failure_is_relevant {
-                            KitIconName::TriangleAlert
-                        } else {
-                            KitIconName::Search
-                        })
-                        .size(rems(1.5))
-                        .into_any_element()
-                    }))
+                    .media(
+                        EmptyMedia::new().child(
+                            MorphIcon::new(if fetch_failure_is_relevant {
+                                KitIconName::TriangleAlert
+                            } else {
+                                KitIconName::Search
+                            })
+                            .id("extension-empty-state")
+                            .when(is_loading, |icon| icon.path(IconName::LoadCircle.path()))
+                            .size(rems(1.5))
+                            .spinning(is_loading),
+                        ),
+                    )
                     .description(EmptyDescription::new().child(message)),
             )
             .when(fetch_failure_is_relevant, |this| {

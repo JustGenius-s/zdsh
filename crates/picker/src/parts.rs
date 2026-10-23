@@ -2,7 +2,7 @@
 
 use gpui::Entity;
 use project::Project;
-use ui::{CommonAnimationExt, Tooltip, prelude::*};
+use ui::{Tooltip, prelude::*};
 
 pub fn project_scan_indicator(
     has_query: bool,

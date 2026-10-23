@@ -29,6 +29,7 @@ futures.workspace = true
 fuzzy_nucleo.workspace = true
 gpui.workspace = true
 gpui-kit.workspace = true
+gpui-icons.workspace = true
 language.workspace = true
 log.workspace = true
 menu.workspace = true

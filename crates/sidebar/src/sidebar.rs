@@ -2215,13 +2215,17 @@ impl Sidebar {
                 )
             });
 
-        let folder = sidebar_icon(IconName::Folder).text_color(cx.theme().colors().text_muted);
-        let disclosure = sidebar_icon(disclosure_icon).text_color(cx.theme().colors().text_muted);
-        let row = if is_focused {
-            SidebarRow::new(id, disclosure, title)
+        let disclosure = sidebar_icon(disclosure_icon)
+            .id("project-leading-icon")
+            .text_color(cx.theme().colors().text_muted);
+        let leading = sidebar_icon(if is_focused {
+            disclosure_icon
         } else {
-            SidebarRow::new(id, folder, title).leading_on_hover(disclosure)
-        };
+            IconName::Folder
+        })
+        .id("project-leading-icon")
+        .text_color(cx.theme().colors().text_muted);
+        let row = SidebarRow::new(id, leading, title).leading_on_hover(disclosure);
 
         let header = div()
             .w_full()

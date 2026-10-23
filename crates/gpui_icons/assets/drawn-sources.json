@@ -1,0 +1,167 @@
+[
+ {
+  "name": "backspace",
+  "paths": [
+   "icons/backspace.svg"
+  ]
+ },
+ {
+  "name": "debug-disabled-log-breakpoint",
+  "paths": [
+   "icons/debug_disabled_log_breakpoint.svg"
+  ]
+ },
+ {
+  "name": "debug-log-breakpoint",
+  "paths": [
+   "icons/debug_log_breakpoint.svg"
+  ]
+ },
+ {
+  "name": "debug-step-into",
+  "paths": [
+   "icons/debug_step_into.svg"
+  ],
+  "derived_from": "lucide:arrow-down-to-dot"
+ },
+ {
+  "name": "debug-step-out",
+  "paths": [
+   "icons/debug_step_out.svg"
+  ],
+  "derived_from": "lucide:arrow-up-from-dot"
+ },
+ {
+  "name": "debug-step-over",
+  "paths": [
+   "icons/debug_step_over.svg"
+  ],
+  "derived_from": "lucide:redo-dot"
+ },
+ {
+  "name": "delete",
+  "paths": [
+   "icons/delete.svg"
+  ]
+ },
+ {
+  "name": "escape",
+  "paths": [
+   "icons/escape.svg"
+  ]
+ },
+ {
+  "name": "fast-forward-off",
+  "paths": [
+   "icons/fast_forward_off.svg"
+  ]
+ },
+ {
+  "name": "file-code-off",
+  "paths": [
+   "icons/file_code_off.svg"
+  ]
+ },
+ {
+  "name": "file-ignored",
+  "paths": [
+   "icons/file_ignored.svg"
+  ]
+ },
+ {
+  "name": "file-toml",
+  "paths": [
+   "icons/file_toml.svg"
+  ]
+ },
+ {
+  "name": "git-branch-plus",
+  "paths": [
+   "icons/git_branch_plus.svg"
+  ]
+ },
+ {
+  "name": "list-tree",
+  "paths": [
+   "icons/list_tree.svg"
+  ],
+  "derived_from": "lucide:list-tree"
+ },
+ {
+  "name": "option",
+  "paths": [
+   "icons/option.svg"
+  ],
+  "derived_from": "lucide:option"
+ },
+ {
+  "name": "pencil-unavailable",
+  "paths": [
+   "icons/pencil_unavailable.svg"
+  ]
+ },
+ {
+  "name": "power",
+  "paths": [
+   "icons/power.svg"
+  ],
+  "derived_from": "lucide:power"
+ },
+ {
+  "name": "scissors",
+  "paths": [
+   "icons/scissors.svg"
+  ],
+  "derived_from": "lucide:scissors"
+ },
+ {
+  "name": "space",
+  "paths": [
+   "icons/space.svg"
+  ]
+ },
+ {
+  "name": "text-unwrap",
+  "paths": [
+   "icons/text_unwrap.svg"
+  ],
+  "derived_from": "lucide:text-wrap"
+ },
+ {
+  "name": "text-wrap",
+  "paths": [
+   "icons/text_wrap.svg"
+  ],
+  "derived_from": "lucide:text-wrap"
+ },
+ {
+  "name": "zed-predict",
+  "paths": [
+   "icons/zed_predict.svg"
+  ]
+ },
+ {
+  "name": "zed-predict-disabled",
+  "paths": [
+   "icons/zed_predict_disabled.svg"
+  ]
+ },
+ {
+  "name": "zed-predict-down",
+  "paths": [
+   "icons/zed_predict_down.svg"
+  ]
+ },
+ {
+  "name": "zed-predict-error",
+  "paths": [
+   "icons/zed_predict_error.svg"
+  ]
+ },
+ {
+  "name": "zed-predict-up",
+  "paths": [
+   "icons/zed_predict_up.svg"
+  ]
+ }
+]

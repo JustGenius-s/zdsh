@@ -1,0 +1,40 @@
+{
+  "font": {
+    "filename": "cursor-icons-16.woff2",
+    "sha256": "420c80f80c2e1f094b91ae993799c93dcba4afc7372a0ccfe8a29d53c64593a7",
+    "bytes": 126980
+  },
+  "source_icons_sha256": "22e3959ca71f0cdf878a0b658c78cd51fa933a705fed3cb9e1be778dfe344ad0",
+  "rtl_icons_sha256": "4795c0f9e14342fcf065726d048428ada6e14c782acefa8b646cb73bdedfa4ff",
+  "names": 818,
+  "glyphs": 1008,
+  "drawn_glyphs": 26,
+  "total_glyphs": 1034,
+  "explicit_filled": 404,
+  "outline_fallback": 414,
+  "rtl_names": 77,
+  "legacy_mappings": 236,
+  "kit_mappings": 102,
+  "payload_bytes": 2069830,
+  "payload_sha256": "7797f2ca91a51b170c0854adc3e4a94fce62ffe3eb1fa131ee708c2191f35b8e",
+  "coordinate_transform": "x = font_x * 24 / unitsPerEm; y = ascent * 24 / unitsPerEm - font_y * 24 / unitsPerEm; no bounding-box fit",
+  "region": "Not generated: gpui_icons::region normalizes each glyph's nodes lazily at runtime, as upstream morphicons does.",
+  "drawn": {
+    "sources_sha256": "fa7b3ff5eb35bbc3a4bc581fd9dc2e1a999ac109817b6da9a250d3ec4cf02608",
+    "style": "Cursor's outline style for icons the font lacks: 24-unit grid, 1.92 centerline strokes with round caps and joins, Cursor keylines, and slashes from (1.52, 1.52) to (22.48, 22.48) with a 1.12 clear gap.",
+    "lucide_license": "drawn/LICENSE-LUCIDE covers the entries whose derived_from names a Lucide icon."
+  },
+  "enum_aliases": {
+    "chatBubble": "ChatBubbleAlias",
+    "chatBubble-ellipsis": "ChatBubbleEllipsisAlias",
+    "chatBubble-exclamation": "ChatBubbleExclamationAlias",
+    "chatBubble-question": "ChatBubbleQuestionAlias",
+    "chatBubbles": "ChatBubblesAlias",
+    "magnifyingGlass": "MagnifyingGlassAlias",
+    "magnifyingGlass-minus": "MagnifyingGlassMinusAlias",
+    "magnifyingGlass-plus": "MagnifyingGlassPlusAlias",
+    "magnifyingGlass-slash-circle": "MagnifyingGlassSlashCircleAlias",
+    "rect-magnifyingGlass": "RectMagnifyingGlassAlias",
+    "trafficCone": "TrafficConeAlias"
+  }
+}

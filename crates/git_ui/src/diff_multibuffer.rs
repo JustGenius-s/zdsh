@@ -29,7 +29,7 @@ use project::{
 use settings::{GitPanelGroupBy, GitPanelSortBy, Settings, SettingsStore};
 use std::{collections::BTreeMap, sync::Arc};
 use theme::ActiveTheme;
-use ui::{CommonAnimationExt as _, KeyBinding, prelude::*};
+use ui::{KeyBinding, prelude::*};
 use util::{ResultExt as _, rel_path::RelPath};
 use workspace::{
     CloseActiveItem, ItemNavHistory, Workspace,

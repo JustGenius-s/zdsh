@@ -1,0 +1,57 @@
+{
+  "behavior": "Provider and product brands remain with the existing asset renderer. Unused icons without a Cursor glyph (listed under unused) also keep their original assets. Every other compatibility icon is explicitly mapped or has a Cursor-style drawn glyph.",
+  "legacy": [
+    "ai_anthropic",
+    "ai_anthropic_compat",
+    "ai_bedrock",
+    "ai_claude",
+    "ai_deep_seek",
+    "ai_gemini",
+    "ai_google",
+    "ai_llama_cpp",
+    "ai_lm_studio",
+    "ai_mistral",
+    "ai_ollama",
+    "ai_open_ai",
+    "ai_open_ai_compat",
+    "ai_open_ai_gpt_sub",
+    "ai_open_code",
+    "ai_open_router",
+    "ai_vercel",
+    "ai_x_ai",
+    "ai_zed",
+    "bitbucket",
+    "codeberg",
+    "editor_atom",
+    "editor_emacs",
+    "editor_jet_brains",
+    "editor_sublime",
+    "forgejo",
+    "gerrit",
+    "gitea",
+    "inception",
+    "linux",
+    "sourcehut"
+  ],
+  "kit": [],
+  "unused": {
+    "legacy": [
+      "copilot_disabled",
+      "copilot_error",
+      "copilot_init",
+      "debug_ignore_breakpoints",
+      "slash"
+    ],
+    "kit": [
+      "battery",
+      "battery-charging",
+      "battery-full",
+      "battery-low",
+      "battery-medium",
+      "battery-warning",
+      "hard-drive",
+      "heart-off",
+      "star-off"
+    ]
+  }
+}

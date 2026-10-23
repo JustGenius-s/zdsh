@@ -1,3 +1,4 @@
+use gpui_icons::Icon as KitIcon;
 use std::rc::Rc;
 
 use gpui::{
@@ -9,7 +10,7 @@ use gpui_kit::{
     assets::IconName as KitIconName,
     base::Selectable as _,
     component::{
-        Disableable as _, Icon as KitIcon,
+        Disableable as _,
         button::{Button, ButtonCustomVariant, ButtonVariants as _},
     },
 };
@@ -98,13 +99,30 @@ impl RenderOnce for PickerTrigger {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let button = Button::new(self.id.clone())
             .custom(ghost_button_style(cx))
-            .label(self.label)
+            .accessibility_label(self.label.clone())
             .dropdown_caret(true)
             .loading(self.loading)
             .selected(self.selected)
-            .when_some(self.icon, |button, icon| {
-                button.icon(KitIcon::empty().path(icon.path()))
-            })
+            .when_some(
+                self.icon.or(self.loading.then_some(IconName::LoadCircle)),
+                |button, icon| {
+                    button.child(
+                        KitIcon::empty()
+                            .id("button-icon")
+                            .path(
+                                if self.loading {
+                                    IconName::LoadCircle
+                                } else {
+                                    icon
+                                }
+                                .path(),
+                            )
+                            .spinning(self.loading)
+                            .size_4(),
+                    )
+                },
+            )
+            .child(self.label)
             .when_some(self.on_click, |button, on_click| {
                 button.on_click(move |event, window, cx| on_click(event, window, cx))
             });
@@ -175,7 +193,14 @@ impl RenderOnce for KitIconButton {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let button = Button::new(self.id.clone())
             .custom(ghost_button_style(cx))
-            .icon(KitIcon::empty().path(assets::kit_icon_path(self.icon)))
+            .size_8()
+            .p_0()
+            .child(
+                KitIcon::empty()
+                    .id("button-icon")
+                    .path(assets::kit_icon_path(self.icon))
+                    .size_4(),
+            )
             .selected(self.selected)
             .disabled(self.disabled)
             .when_some(self.on_click, |button, on_click| {

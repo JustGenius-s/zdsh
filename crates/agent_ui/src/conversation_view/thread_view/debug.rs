@@ -663,10 +663,10 @@ impl ThreadView {
                                     .justify_between()
                                     .text_color(theme.muted_foreground)
                                     .child(format!("Line {line}"))
-                                    .child(
-                                        KitClipboard::new(("copy-debug-log", line))
-                                            .value(entry.raw.clone()),
-                                    ),
+                                    .child(CopyButton::new(
+                                        ("copy-debug-log", line),
+                                        entry.raw.clone(),
+                                    )),
                             )
                             .child(
                                 div()

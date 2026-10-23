@@ -20,8 +20,8 @@ use project::{AgentId, AgentRegistryStore, AgentServerStore};
 use release_channel::ReleaseChannel;
 use remote::RemoteConnectionOptions;
 use ui::{
-    Checkbox, CommonAnimationExt, KeyBinding, ListItem, ListItemSpacing, Modal, ModalFooter,
-    ModalHeader, Section, Tooltip, prelude::*,
+    Checkbox, KeyBinding, ListItem, ListItemSpacing, Modal, ModalFooter, ModalHeader, Section,
+    Tooltip, prelude::*,
 };
 use util::ResultExt;
 use workspace::{ModalView, MultiWorkspace, Workspace};

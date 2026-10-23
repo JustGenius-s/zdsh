@@ -2,7 +2,6 @@ use crate::component_prelude::*;
 use gpui::{AnyElement, AnyView, DefiniteLength};
 use ui_macros::RegisterComponent;
 
-use crate::traits::animation_ext::CommonAnimationExt;
 use crate::{ButtonCommon, ButtonLike, ButtonSize, ButtonStyle, Icon, Label};
 use crate::{
     Color, DynamicSpacing, ElevationIndex, KeyBinding, KeybindingPosition, TintColor, prelude::*,
@@ -459,32 +458,28 @@ impl RenderOnce for Button {
         } else {
             self.label_color.unwrap_or_default()
         };
-        let loading_icon_id = (self.base.id().clone(), "loading");
+        let start_icon = if self.loading {
+            Some(
+                Icon::new(IconName::LoadCircle)
+                    .size(IconSize::Small)
+                    .color(Color::Muted)
+                    .with_rotate_animation(2),
+            )
+        } else {
+            self.start_icon.map(|icon| {
+                if is_disabled {
+                    icon.color(Color::Disabled)
+                } else {
+                    icon
+                }
+            })
+        };
 
         self.base.child(
             h_flex()
                 .when(self.truncate, |this| this.min_w_0().overflow_hidden())
                 .gap(DynamicSpacing::Base04.rems(cx))
-                .when_else(
-                    self.loading,
-                    |this| {
-                        this.child(
-                            Icon::new(IconName::LoadCircle)
-                                .size(IconSize::Small)
-                                .color(Color::Muted)
-                                .with_keyed_rotate_animation(loading_icon_id, 2),
-                        )
-                    },
-                    |this| {
-                        this.when_some(self.start_icon, |this, icon| {
-                            this.child(if is_disabled {
-                                icon.color(Color::Disabled)
-                            } else {
-                                icon
-                            })
-                        })
-                    },
-                )
+                .children(start_icon.map(|icon| icon.morph_id("button-start-icon")))
                 .child(
                     h_flex()
                         .when(self.truncate, |this| this.min_w_0().overflow_hidden())
@@ -504,11 +499,14 @@ impl RenderOnce for Button {
                         .children(self.key_binding),
                 )
                 .when_some(self.end_icon, |this, icon| {
-                    this.child(if is_disabled {
-                        icon.color(Color::Disabled)
-                    } else {
-                        icon
-                    })
+                    this.child(
+                        if is_disabled {
+                            icon.color(Color::Disabled)
+                        } else {
+                            icon
+                        }
+                        .morph_id("button-end-icon"),
+                    )
                 }),
         )
     }

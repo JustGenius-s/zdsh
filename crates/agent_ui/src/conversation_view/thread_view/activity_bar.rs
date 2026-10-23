@@ -2,9 +2,9 @@ use super::composer::{PillButton, composer_surface};
 use super::tool_calls::diff_stat;
 use super::transcript::kit_icon;
 use super::*;
+use gpui_icons::Icon as KitIcon;
 use gpui_kit::component::{
-    Icon as KitIcon, Size as KitSize, Theme as KitTheme, button::ButtonVariant,
-    shimmer::ShimmerText, spinner::Spinner,
+    Size as KitSize, Theme as KitTheme, button::ButtonVariant, shimmer::ShimmerText,
 };
 
 impl ThreadView {
@@ -212,21 +212,17 @@ impl ThreadView {
                     acp_v2::PlanEntryStatus::Cancelled => (IconName::Close, theme.muted_foreground),
                     _ => (IconName::TodoPending, theme.muted_foreground),
                 };
-                let icon = if matches!(entry.source.status, acp_v2::PlanEntryStatus::InProgress) {
-                    Spinner::new()
-                        .icon(kit_icon(icon_name))
-                        .color(icon_color)
-                        .with_size(KitSize::Small)
-                        .into_any_element()
-                } else {
-                    kit_icon(icon_name)
-                        .with_size(KitSize::Small)
-                        .text_color(icon_color)
-                        .into_any_element()
-                };
+                let icon = kit_icon(icon_name)
+                    .id("plan-status")
+                    .spinning(matches!(
+                        entry.source.status,
+                        acp_v2::PlanEntryStatus::InProgress
+                    ))
+                    .with_size(KitSize::Small)
+                    .text_color(icon_color);
 
                 h_flex()
-                    .id(("plan_entry_row", index))
+                    .id(("plan_entry_row", entry.content.entity_id()))
                     .debug_selector(|| format!("plan-entry-{index}-{icon_name:?}"))
                     .relative()
                     .h_7()

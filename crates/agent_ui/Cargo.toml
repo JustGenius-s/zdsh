@@ -60,6 +60,7 @@ futures.workspace = true
 fuzzy.workspace = true
 git.workspace = true
 gpui.workspace = true
+gpui-icons.workspace = true
 gpui-kit.workspace = true
 gpui_tokio.workspace = true
 html_to_markdown.workspace = true

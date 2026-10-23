@@ -53,9 +53,9 @@ use zed_actions::{
 use theme::AccentColors;
 use time::{OffsetDateTime, UtcOffset, format_description::BorrowedFormatItem};
 use ui::{
-    Chip, ColumnWidthConfig, CommonAnimationExt as _, ContextMenu, ContextMenuEntry, DiffStat,
-    Disclosure, Divider, HeaderResizeInfo, HighlightedLabel, IndentGuideColors, ListItem,
-    ListItemSpacing, RedistributableColumnsState, ScrollableHandle, Table, TableInteractionState,
+    Chip, ColumnWidthConfig, ContextMenu, ContextMenuEntry, DiffStat, Disclosure, Divider,
+    HeaderResizeInfo, HighlightedLabel, IndentGuideColors, ListItem, ListItemSpacing,
+    RedistributableColumnsState, ScrollableHandle, Table, TableInteractionState,
     TableRenderContext, TableResizeBehavior, Tooltip, WithScrollbar, bind_redistributable_columns,
     prelude::*, redistribute_hidden_fractions, redistribute_hidden_widths,
     render_redistributable_columns_resize_handles, render_table_header, table_row::TableRow,
@@ -380,7 +380,7 @@ impl ChangedFileDirectoryEntry {
             .spacing(ListItemSpacing::Sparse)
             .indent_level(self.depth)
             .indent_step_size(px(TREE_INDENT))
-            .start_slot(folder_icon)
+            .start_slot(folder_icon.morph_id("changed-file-directory"))
             .child(
                 Label::new(self.name.clone())
                     .size(LabelSize::Small)

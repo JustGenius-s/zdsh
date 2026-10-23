@@ -61,9 +61,9 @@ use terminal_view::terminal_workspace::TerminalWorkspace;
 use text::Anchor;
 use theme_settings::{AgentBufferFontSize, AgentUiFontSize};
 use ui::{
-    Callout, CircularProgress, CommonAnimationExt, ContextMenu, ContextMenuEntry, CopyButton,
-    Disclosure, Divider, KeyBinding, PopoverMenu, PopoverMenuHandle, ScrollAxes, Scrollbars,
-    TintColor, Tooltip, WithScrollbar, prelude::*, right_click_menu,
+    Callout, CircularProgress, ContextMenu, ContextMenuEntry, CopyButton, Disclosure, Divider,
+    KeyBinding, PopoverMenu, PopoverMenuHandle, ScrollAxes, Scrollbars, TintColor, Tooltip,
+    WithScrollbar, prelude::*, right_click_menu,
 };
 use util::{
     ResultExt, debug_panic, defer,
@@ -3762,14 +3762,6 @@ impl ConversationView {
             }
         }));
     }
-}
-
-fn loading_contents_spinner(size: IconSize) -> AnyElement {
-    Icon::new(IconName::LoadCircle)
-        .size(size)
-        .color(Color::Accent)
-        .with_rotate_animation(3)
-        .into_any_element()
 }
 
 fn native_available_skills(

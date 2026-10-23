@@ -6,6 +6,7 @@ use crate::{
     thread_metadata_store::{ThreadId, ThreadMetadataStore},
 };
 use agent_client_protocol::schema::v2 as acp_v2;
+use gpui_icons::Icon as KitIcon;
 use std::{
     cell::{Cell, RefCell},
     path::Path,
@@ -37,11 +38,9 @@ use gpui::List;
 use gpui::Stateful;
 use gpui::TaskExt;
 use gpui_kit::component::{
-    Icon as KitIcon, Root as KitRoot, Side, Sizable as _, Size as KitSize, Theme as KitTheme,
-    WindowExt as _,
+    Root as KitRoot, Side, Sizable as _, Size as KitSize, Theme as KitTheme, WindowExt as _,
     alert::AlertVariant,
     button::{Button as KitButton, ButtonRounded, ButtonVariant, ButtonVariants as _},
-    clipboard::Clipboard as KitClipboard,
     list::ListItem as KitListItem,
     menu::{PopupMenu, PopupMenuItem},
     notification::Notification,
@@ -4636,8 +4635,14 @@ impl ThreadView {
                         .trigger(
                             KitButton::new("thread-permissions-trigger")
                                 .ghost()
-                                .label(<&'static str>::from(permissions))
-                                .icon(KitIcon::empty().path(icon.path()))
+                                .accessibility_label(<&'static str>::from(permissions))
+                                .child(
+                                    KitIcon::empty()
+                                        .id("permission-icon")
+                                        .path(icon.path())
+                                        .size_4(),
+                                )
+                                .child(<&'static str>::from(permissions))
                                 .dropdown_caret(true),
                         )
                         .content(move |_, _, _| match &menu {
@@ -8134,7 +8139,7 @@ impl ThreadView {
             .id("copy-error-message")
             .flex_none()
             .tooltip(Tooltip::text("Copy Error Message"))
-            .child(KitClipboard::new("copy-error-message").value(message))
+            .child(CopyButton::new("copy-error-message", message))
     }
 
     fn dismiss_error(

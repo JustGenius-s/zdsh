@@ -183,7 +183,7 @@ const CONTENT: (Section<4>, Section<3>) = (
                 visibility_guard: SectionVisibility::Always,
             },
             SectionEntry {
-                icon: IconName::ListCollapse,
+                icon: IconName::MagnifyingGlass,
                 title: "Open Command Palette",
                 action: &command_palette::Toggle,
                 visibility_guard: SectionVisibility::Always,

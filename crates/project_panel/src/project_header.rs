@@ -5,8 +5,9 @@ use git_ui_core::worktree_picker::WorktreePicker;
 use gpui::{
     Anchor, AnyElement, Context, Entity, Focusable as _, IntoElement, ParentElement, SharedString,
 };
+use gpui_icons::Icon as MorphIcon;
 use gpui_kit::component::{
-    Icon as KitIcon, Sizable,
+    Disableable as _, Icon as KitIcon, Sizable,
     button::{Button as KitButton, ButtonVariants},
     popover::Popover,
 };
@@ -196,9 +197,19 @@ impl ProjectPanel {
                 KitButton::new("worktree-picker-trigger")
                     .ghost()
                     .small()
-                    .label(display_label)
-                    .icon(KitIcon::empty().path(IconName::GitWorktree.path()))
-                    .loading(creation_in_progress.is_some())
+                    .child(
+                        MorphIcon::empty()
+                            .id("worktree-picker-icon")
+                            .path(if creation_in_progress.is_some() {
+                                IconName::LoadCircle.path()
+                            } else {
+                                IconName::GitWorktree.path()
+                            })
+                            .size_3p5()
+                            .spinning(creation_in_progress.is_some()),
+                    )
+                    .child(display_label)
+                    .disabled(creation_in_progress.is_some())
                     .tooltip(format!("Worktree: {worktree_label}")),
             )
             .anchor(Anchor::TopLeft)

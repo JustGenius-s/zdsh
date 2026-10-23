@@ -4,6 +4,10 @@ use gpui::{
     AnyElement, App, ClipboardItem, Context, ElementId, Entity, IntoElement, ParentElement,
     RenderOnce, Styled, Window,
 };
+use gpui_kit::component::{
+    Disableable as _,
+    button::{Button as KitButton, ButtonCustomVariant, ButtonVariants as _},
+};
 
 use crate::{Tooltip, prelude::*};
 
@@ -99,14 +103,28 @@ impl RenderOnce for CopyButton {
             (IconName::Copy, Color::Muted, self.tooltip_label)
         };
 
-        let button = IconButton::new(id, icon)
-            .icon_color(color)
-            .icon_size(self.icon_size)
+        let colors = cx.theme().colors();
+        let button = KitButton::new(id.clone())
+            .custom(
+                ButtonCustomVariant::new(cx)
+                    .foreground(color.color(cx))
+                    .hover(colors.ghost_element_hover)
+                    .active(colors.ghost_element_active),
+            )
+            .size(self.icon_size.square(window, cx))
+            .p_0()
+            .accessibility_label(tooltip.clone())
+            .child(
+                gpui_icons::Icon::empty()
+                    .id("copy-icon")
+                    .path(icon.path())
+                    .size(self.icon_size.rems()),
+            )
             .disabled(self.disabled)
-            .tooltip(Tooltip::text(tooltip))
             .on_click(move |_, window, cx| {
-                state.update(cx, |state, _cx| {
+                state.update(cx, |state, cx| {
                     state.mark_copied();
+                    cx.notify();
                 });
 
                 if let Some(custom_on_click) = custom_on_click.as_ref() {
@@ -126,11 +144,12 @@ impl RenderOnce for CopyButton {
                 .detach();
             });
 
-        if let Some(visible_on_hover) = visible_on_hover {
-            button.visible_on_hover(visible_on_hover)
-        } else {
-            button
-        }
+        div()
+            .id(id)
+            .flex_none()
+            .tooltip(Tooltip::text(tooltip))
+            .when_some(visible_on_hover, |this, group| this.visible_on_hover(group))
+            .child(button)
     }
 }
 

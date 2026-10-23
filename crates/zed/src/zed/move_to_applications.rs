@@ -8,8 +8,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use ui::{
-    ActiveTheme, Color, CommonAnimationExt, Icon, IconName, IconSize, IntoElement, Label,
-    LabelCommon, LabelSize, ParentElement, Styled, StyledExt, div, h_flex, v_flex,
+    ActiveTheme, Color, Icon, IconName, IconSize, IntoElement, Label, LabelCommon, LabelSize,
+    ParentElement, Styled, StyledExt, div, h_flex, v_flex,
 };
 use util::ResultExt;
 use util::command::new_command;

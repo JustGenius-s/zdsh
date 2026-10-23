@@ -4,6 +4,7 @@ use cloud_api_types::{ExtensionApiManifest, ExtensionMetadata, ExtensionProvides
 use component::{Component, ComponentScope, example_group, single_example};
 use extension::{ExtensionManifest, SchemaVersion};
 use extension_host::{ExtensionOperation, ExtensionStatus, ExtensionStore};
+use gpui_icons::Icon as MorphIcon;
 use gpui_kit::component::{
     Disableable as _, Icon as KitIcon, IconName as KitIconName, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -725,10 +726,13 @@ impl RenderOnce for ExtensionCard {
                                         Button::new(SharedString::from(format!("repository-{id}")))
                                             .ghost()
                                             .small()
+                                            .size_6()
+                                            .p_0()
                                             .tooltip("Visit Extension Repository")
                                             .disabled(is_overridden)
-                                            .icon(
-                                                KitIcon::empty()
+                                            .child(
+                                                MorphIcon::empty()
+                                                    .id("extension-repository-icon")
                                                     .path(repository_icon.path())
                                                     .size(rems(1.125)),
                                             )

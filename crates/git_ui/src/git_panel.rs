@@ -52,8 +52,9 @@ use gpui::{
     ParentElement as _, Pixels, Point, PromptLevel, Rems, Render, RenderOnce, ScrollStrategy,
     SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     TaskExt, TextStyle, Toggled, UniformListScrollHandle, WeakEntity, Window, actions, anchored,
-    deferred, div, img, prelude::FluentBuilder as _, px, rems, svg, uniform_list,
+    deferred, div, img, prelude::FluentBuilder as _, px, rems, uniform_list,
 };
+use gpui_icons::Icon as MorphIcon;
 use gpui_kit::{
     base::{CheckboxIndicator, CheckboxState, Scrollbar, ScrollbarAxis},
     component::{
@@ -6036,11 +6037,18 @@ impl GitPanel {
             let theme = KitTheme::global(cx);
             return Some(
                 h_flex()
+                    .id("generate-commit-message-tooltip")
                     .gap_1()
                     .child(
-                        Button::new("cancel-generate-commit-message")
+                        Button::new("generate-commit-message")
                             .small()
-                            .icon(kit_icon(IconName::Stop))
+                            .size_6()
+                            .p_0()
+                            .child(
+                                kit_icon(IconName::Stop)
+                                    .id("commit-message-action-icon")
+                                    .size_3p5(),
+                            )
                             .custom(
                                 ButtonCustomVariant::new(cx)
                                     .color(theme.danger.opacity(0.1))
@@ -6074,7 +6082,14 @@ impl GitPanel {
         let button = Button::new("generate-commit-message")
             .ghost()
             .small()
-            .icon(kit_icon(IconName::AiEdit).text_color(KitTheme::global(cx).muted_foreground))
+            .size_6()
+            .p_0()
+            .child(
+                kit_icon(IconName::AiEdit)
+                    .id("commit-message-action-icon")
+                    .size_3p5()
+                    .text_color(KitTheme::global(cx).muted_foreground),
+            )
             .disabled(!can_commit || has_commit_model_configuration_error)
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.generate_commit_message(cx);
@@ -6137,7 +6152,9 @@ impl GitPanel {
                 Button::new("co-authors")
                     .ghost()
                     .small()
-                    .icon(kit_icon(icon))
+                    .size_6()
+                    .p_0()
+                    .child(kit_icon(icon).id("co-author-state").size_3p5())
                     .selected(self.add_coauthors)
                     .tooltip(tooltip)
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -6327,6 +6344,7 @@ impl GitPanel {
                 } else {
                     IconName::ChevronRight
                 })
+                .id("view-disclosure")
                 .small()
                 .text_color(muted),
             )
@@ -6752,9 +6770,18 @@ impl GitPanel {
                 .primary()
                 .small()
                 .w_full()
-                .icon(kit_icon(icon))
-                .label(label.clone())
-                .loading(in_progress)
+                .child(
+                    kit_icon(if in_progress {
+                        IconName::LoadCircle
+                    } else {
+                        icon
+                    })
+                    .id("sync-action-icon")
+                    .size_3p5()
+                    .spinning(in_progress),
+                )
+                .child(label.clone())
+                .disabled(in_progress)
                 .on_click({
                     let action = action.boxed_clone();
                     move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx)
@@ -7986,6 +8013,7 @@ impl GitPanel {
                         } else {
                             IconName::ChevronDown
                         })
+                        .id("section-disclosure")
                         .small()
                         .text_color(theme.muted_foreground),
                     )
@@ -8416,6 +8444,7 @@ impl GitPanel {
             .gap_1p5()
             .when(settings.file_icons, |this| {
                 let icon = theme_icon(
+                    "file-type-icon",
                     file_icon.unwrap_or_else(|| IconName::File.path().into()),
                     colors.text_muted,
                 );
@@ -8674,22 +8703,26 @@ impl GitPanel {
             .gap_1()
             .pl(px(entry.depth as f32 * TREE_INDENT))
             .child(h_flex().flex_none().gap_0p5().children({
-                let render_indicator = |themed: Option<SharedString>, fallback: IconName| {
-                    theme_icon(
-                        themed.unwrap_or_else(|| fallback.path().into()),
-                        label_color,
-                    )
-                };
+                let render_indicator =
+                    |slot: &'static str, themed: Option<SharedString>, fallback: IconName| {
+                        theme_icon(
+                            slot,
+                            themed.unwrap_or_else(|| fallback.path().into()),
+                            label_color,
+                        )
+                    };
 
                 let mut indicators = Vec::new();
                 if folder_indicator.shows_chevron() {
                     indicators.push(render_indicator(
+                        "directory-disclosure",
                         folder_indicators.chevron,
                         fallback_chevron,
                     ));
                 }
                 if folder_indicator.shows_icon() {
                     indicators.push(render_indicator(
+                        "directory-icon",
                         folder_indicators.icon,
                         fallback_folder_icon,
                     ));
@@ -9403,9 +9436,10 @@ fn render_row_wash(
         })
 }
 
-fn theme_icon(path: SharedString, color: Hsla) -> AnyElement {
+fn theme_icon(slot: &'static str, path: SharedString, color: Hsla) -> AnyElement {
     if path.starts_with("icons/") {
-        svg()
+        MorphIcon::empty()
+            .id(slot)
             .path(path)
             .size(ENTRY_ICON_SIZE)
             .flex_none()
@@ -9597,7 +9631,7 @@ impl RenderOnce for StageCheckbox {
                             .text_color(theme.primary_foreground)
                     })
                     .when(disabled, |this| this.opacity(0.5))
-                    .children(mark.map(|mark| kit_icon(mark).size_2p5())),
+                    .children(mark.map(|mark| kit_icon(mark).id("stage-mark").size_2p5())),
             )
     }
 }

@@ -85,7 +85,7 @@ impl Render for ToolbarControls {
             .map(|div| {
                 if is_updating {
                     div.child(
-                        IconButton::new("stop-updating", IconName::Stop)
+                        IconButton::new("refresh-diagnostics", IconName::Stop)
                             .icon_color(Color::Error)
                             .icon_size(IconSize::Small)
                             .tooltip(Tooltip::for_action_title(

@@ -15,6 +15,7 @@ use gpui::{
     Action, App, AppContext as _, Context, Empty, Entity, EventEmitter, FocusHandle, Focusable,
     HighlightStyle, IntoElement, Render, Subscription, Task, WeakEntity, Window,
 };
+use gpui_icons::Icon as MorphIcon;
 use gpui_kit::component::{
     Disableable, Icon as KitIcon, Sizable,
     button::{Button as KitButton, ButtonVariants},
@@ -640,7 +641,14 @@ impl Render for SoloDiffStyleToolbar {
                 KitButton::new("solo-diff-toggle-excerpts")
                     .ghost()
                     .small()
-                    .icon(KitIcon::empty().path(expand_icon.path()))
+                    .size_6()
+                    .p_0()
+                    .child(
+                        MorphIcon::empty()
+                            .id("diff-excerpt-extent")
+                            .path(expand_icon.path())
+                            .size_3p5(),
+                    )
                     .tooltip(expand_tooltip)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_showing_full_file(cx);

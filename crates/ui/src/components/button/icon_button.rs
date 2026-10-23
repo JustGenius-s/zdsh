@@ -277,6 +277,7 @@ impl RenderOnce for IconButton {
             .map(|color| Color::Custom(color.color(cx).opacity(self.alpha.unwrap_or(1.0))));
 
         let icon_element = Icon::new(icon)
+            .morph_id("button-icon")
             .size(self.icon_size)
             .color(icon_color)
             .group_hover_color(hover_color);

@@ -1,0 +1,1358 @@
+{
+  "legacy": {
+    "acp_registry": {
+      "name": "extensions",
+      "variant": "outline"
+    },
+    "ai_edit": {
+      "name": "sparkle",
+      "variant": "outline"
+    },
+    "archive": {
+      "name": "archive",
+      "variant": "outline"
+    },
+    "arrow_circle": {
+      "name": "arrow-cw",
+      "variant": "outline"
+    },
+    "arrow_down": {
+      "name": "arrow-down",
+      "variant": "outline"
+    },
+    "arrow_down10": {
+      "name": "sort-descending",
+      "variant": "outline"
+    },
+    "arrow_down_right": {
+      "name": "arrow-right-down",
+      "variant": "outline"
+    },
+    "arrow_left": {
+      "name": "arrow-left",
+      "variant": "outline"
+    },
+    "arrow_right": {
+      "name": "arrow-right",
+      "variant": "outline"
+    },
+    "arrow_right_left": {
+      "name": "arrows-left-right",
+      "variant": "outline"
+    },
+    "arrow_up": {
+      "name": "arrow-up",
+      "variant": "outline"
+    },
+    "arrow_up_right": {
+      "name": "arrow-right-up",
+      "variant": "outline"
+    },
+    "at_sign": {
+      "name": "at",
+      "variant": "outline"
+    },
+    "attach": {
+      "name": "paperclip",
+      "variant": "outline"
+    },
+    "audio_off": {
+      "name": "speaker-x",
+      "variant": "outline"
+    },
+    "audio_on": {
+      "name": "speaker-waves",
+      "variant": "outline"
+    },
+    "bell": {
+      "name": "bell",
+      "variant": "outline"
+    },
+    "bell_dot": {
+      "name": "bell-dot",
+      "variant": "outline"
+    },
+    "bell_off": {
+      "name": "bell-slash",
+      "variant": "outline"
+    },
+    "bell_ring": {
+      "name": "bell",
+      "variant": "outline"
+    },
+    "binary": {
+      "name": "binary",
+      "variant": "outline"
+    },
+    "blocks": {
+      "name": "extensions",
+      "variant": "outline"
+    },
+    "bolt_filled": {
+      "name": "lightning",
+      "variant": "filled"
+    },
+    "bolt_outlined": {
+      "name": "lightning",
+      "variant": "outline"
+    },
+    "book": {
+      "name": "book",
+      "variant": "outline"
+    },
+    "book_copy": {
+      "name": "books",
+      "variant": "outline"
+    },
+    "bookmark": {
+      "name": "bookmark",
+      "variant": "outline"
+    },
+    "box": {
+      "name": "cube",
+      "variant": "outline"
+    },
+    "box_open": {
+      "name": "package",
+      "variant": "outline"
+    },
+    "case_sensitive": {
+      "name": "text-aa",
+      "variant": "outline"
+    },
+    "chat": {
+      "name": "chat-bubble",
+      "variant": "outline"
+    },
+    "check": {
+      "name": "check",
+      "variant": "outline"
+    },
+    "check_double": {
+      "name": "checks",
+      "variant": "outline"
+    },
+    "chevron_down": {
+      "name": "chevron-down",
+      "variant": "outline"
+    },
+    "chevron_down_up": {
+      "name": "chevrons-down-up",
+      "variant": "outline"
+    },
+    "chevron_left": {
+      "name": "chevron-left",
+      "variant": "outline"
+    },
+    "chevron_right": {
+      "name": "chevron-right",
+      "variant": "outline"
+    },
+    "chevron_up": {
+      "name": "chevron-up",
+      "variant": "outline"
+    },
+    "chevron_up_down": {
+      "name": "chevrons-up-down",
+      "variant": "outline"
+    },
+    "circle": {
+      "name": "circle",
+      "variant": "outline"
+    },
+    "circle_help": {
+      "name": "question-circle",
+      "variant": "outline"
+    },
+    "clock": {
+      "name": "clock",
+      "variant": "outline"
+    },
+    "close": {
+      "name": "close",
+      "variant": "outline"
+    },
+    "cloud_download": {
+      "name": "cloud-download",
+      "variant": "outline"
+    },
+    "code": {
+      "name": "code",
+      "variant": "outline"
+    },
+    "command": {
+      "name": "command",
+      "variant": "outline"
+    },
+    "compact": {
+      "name": "arrows-contract",
+      "variant": "outline"
+    },
+    "control": {
+      "name": "chevron-up",
+      "variant": "outline"
+    },
+    "copilot": {
+      "name": "copilot",
+      "variant": "outline"
+    },
+    "copy": {
+      "name": "copy",
+      "variant": "outline"
+    },
+    "countdown_timer": {
+      "name": "stopwatch",
+      "variant": "outline"
+    },
+    "crosshair": {
+      "name": "crosshair",
+      "variant": "outline"
+    },
+    "cursor_i_beam": {
+      "name": "cursor-text",
+      "variant": "outline"
+    },
+    "dash": {
+      "name": "minus",
+      "variant": "outline"
+    },
+    "database_zap": {
+      "name": "database",
+      "variant": "outline"
+    },
+    "debug": {
+      "name": "bug",
+      "variant": "outline"
+    },
+    "debug_breakpoint": {
+      "name": "circle",
+      "variant": "filled"
+    },
+    "debug_continue": {
+      "name": "play",
+      "variant": "outline"
+    },
+    "debug_continue_thread": {
+      "name": "play",
+      "variant": "outline"
+    },
+    "debug_detach": {
+      "name": "plug-slash",
+      "variant": "outline"
+    },
+    "debug_disabled_breakpoint": {
+      "name": "circle",
+      "variant": "outline"
+    },
+    "debug_pause": {
+      "name": "debug-pause",
+      "variant": "outline"
+    },
+    "diff": {
+      "name": "diff",
+      "variant": "outline"
+    },
+    "diff_split": {
+      "name": "layout-split-horizontal",
+      "variant": "outline"
+    },
+    "diff_split_auto": {
+      "name": "layout-split-horizontal-dashed",
+      "variant": "outline"
+    },
+    "diff_unified": {
+      "name": "diff-single",
+      "variant": "outline"
+    },
+    "disconnected": {
+      "name": "plug-slash",
+      "variant": "outline"
+    },
+    "download": {
+      "name": "cloud-download",
+      "variant": "outline"
+    },
+    "editor_cursor": {
+      "name": "cursor-logo",
+      "variant": "outline"
+    },
+    "editor_vs_code": {
+      "name": "logo-vscode",
+      "variant": "outline"
+    },
+    "ellipsis": {
+      "name": "ellipsis",
+      "variant": "outline"
+    },
+    "envelope": {
+      "name": "envelope",
+      "variant": "outline"
+    },
+    "eraser": {
+      "name": "eraser",
+      "variant": "outline"
+    },
+    "exit": {
+      "name": "arrow-bracket-from-right",
+      "variant": "outline"
+    },
+    "expand_down": {
+      "name": "chevrons-down",
+      "variant": "outline"
+    },
+    "expand_up": {
+      "name": "chevrons-up",
+      "variant": "outline"
+    },
+    "expand_vertical": {
+      "name": "arrows-expand",
+      "variant": "outline"
+    },
+    "eye": {
+      "name": "eye",
+      "variant": "outline"
+    },
+    "eye_off": {
+      "name": "eye-slash",
+      "variant": "outline"
+    },
+    "fast_forward": {
+      "name": "fast-forward",
+      "variant": "outline"
+    },
+    "file": {
+      "name": "file",
+      "variant": "outline"
+    },
+    "file_code": {
+      "name": "file-code",
+      "variant": "outline"
+    },
+    "file_diff": {
+      "name": "diff-single",
+      "variant": "outline"
+    },
+    "file_doc": {
+      "name": "file-text",
+      "variant": "outline"
+    },
+    "file_generic": {
+      "name": "file",
+      "variant": "outline"
+    },
+    "file_git": {
+      "name": "file-type-git-meta",
+      "variant": "outline"
+    },
+    "file_lock": {
+      "name": "file-lock",
+      "variant": "outline"
+    },
+    "file_markdown": {
+      "name": "logo-markdown",
+      "variant": "outline"
+    },
+    "file_multiple": {
+      "name": "files",
+      "variant": "outline"
+    },
+    "file_rust": {
+      "name": "file-type-rust",
+      "variant": "outline"
+    },
+    "file_text_filled": {
+      "name": "file-text",
+      "variant": "filled"
+    },
+    "file_text_outlined": {
+      "name": "file-text",
+      "variant": "outline"
+    },
+    "file_tree": {
+      "name": "file",
+      "variant": "outline"
+    },
+    "filter": {
+      "name": "filter",
+      "variant": "outline"
+    },
+    "filter_funnel": {
+      "name": "funnel",
+      "variant": "outline"
+    },
+    "flame": {
+      "name": "flame",
+      "variant": "outline"
+    },
+    "fold_vertical": {
+      "name": "arrows-contract",
+      "variant": "outline"
+    },
+    "folder": {
+      "name": "folder",
+      "variant": "outline"
+    },
+    "folder_add": {
+      "name": "folder-plus",
+      "variant": "outline"
+    },
+    "folder_include": {
+      "name": "folder-check",
+      "variant": "outline"
+    },
+    "folder_open": {
+      "name": "folder-open",
+      "variant": "outline"
+    },
+    "folder_search": {
+      "name": "folder",
+      "variant": "outline"
+    },
+    "folder_share": {
+      "name": "folder-arrow-right-up",
+      "variant": "outline"
+    },
+    "folder_shared": {
+      "name": "folders",
+      "variant": "outline"
+    },
+    "font": {
+      "name": "text-tt",
+      "variant": "outline"
+    },
+    "font_size": {
+      "name": "text-aa",
+      "variant": "outline"
+    },
+    "font_weight": {
+      "name": "text-b",
+      "variant": "outline"
+    },
+    "forward_arrow": {
+      "name": "arrow-right",
+      "variant": "outline"
+    },
+    "forward_arrow_up": {
+      "name": "arrow-elbow-up-right",
+      "variant": "outline"
+    },
+    "generic_close": {
+      "name": "close",
+      "variant": "outline"
+    },
+    "generic_maximize": {
+      "name": "square",
+      "variant": "outline"
+    },
+    "generic_minimize": {
+      "name": "minus",
+      "variant": "outline"
+    },
+    "generic_restore": {
+      "name": "squares",
+      "variant": "outline"
+    },
+    "git_branch": {
+      "name": "git-branch",
+      "variant": "outline"
+    },
+    "git_commit": {
+      "name": "git-commit",
+      "variant": "outline"
+    },
+    "git_graph": {
+      "name": "git-commit",
+      "variant": "outline"
+    },
+    "git_merge_conflict": {
+      "name": "git-merge",
+      "variant": "outline"
+    },
+    "git_worktree": {
+      "name": "fork",
+      "variant": "outline"
+    },
+    "github": {
+      "name": "github",
+      "variant": "outline"
+    },
+    "gitlab": {
+      "name": "logo-gitlab",
+      "variant": "outline"
+    },
+    "hash": {
+      "name": "hash",
+      "variant": "outline"
+    },
+    "history_rerun": {
+      "name": "history",
+      "variant": "outline"
+    },
+    "image": {
+      "name": "image",
+      "variant": "outline"
+    },
+    "indicator": {
+      "name": "circle",
+      "variant": "filled"
+    },
+    "info": {
+      "name": "info",
+      "variant": "outline"
+    },
+    "json": {
+      "name": "json",
+      "variant": "outline"
+    },
+    "keyboard": {
+      "name": "keyboard",
+      "variant": "outline"
+    },
+    "line_height": {
+      "name": "arrows-both-vertical",
+      "variant": "outline"
+    },
+    "link": {
+      "name": "link",
+      "variant": "outline"
+    },
+    "list_collapse": {
+      "name": "fold-dashed",
+      "variant": "outline"
+    },
+    "list_todo": {
+      "name": "list-todo",
+      "variant": "outline"
+    },
+    "list_x": {
+      "name": "list-x",
+      "variant": "outline"
+    },
+    "load_circle": {
+      "name": "spinner",
+      "variant": "outline"
+    },
+    "location_edit": {
+      "name": "map-pin",
+      "variant": "outline"
+    },
+    "lock": {
+      "name": "lock",
+      "variant": "outline"
+    },
+    "lock_off": {
+      "name": "unlock",
+      "variant": "outline"
+    },
+    "magnifying_glass": {
+      "name": "magnifying-glass",
+      "variant": "outline"
+    },
+    "maximize": {
+      "name": "corners-out",
+      "variant": "outline"
+    },
+    "maximize_alt": {
+      "name": "arrows-expand-simple",
+      "variant": "outline"
+    },
+    "menu": {
+      "name": "menu",
+      "variant": "outline"
+    },
+    "mic": {
+      "name": "mic",
+      "variant": "outline"
+    },
+    "mic_mute": {
+      "name": "mic-slash",
+      "variant": "outline"
+    },
+    "minimize": {
+      "name": "corners-in",
+      "variant": "outline"
+    },
+    "notepad": {
+      "name": "note",
+      "variant": "outline"
+    },
+    "on_call": {
+      "name": "headset",
+      "variant": "outline"
+    },
+    "page_down": {
+      "name": "arrow-bracket-to-down",
+      "variant": "outline"
+    },
+    "page_up": {
+      "name": "arrow-bracket-to-up",
+      "variant": "outline"
+    },
+    "paperclip": {
+      "name": "paperclip",
+      "variant": "outline"
+    },
+    "pencil": {
+      "name": "pencil",
+      "variant": "outline"
+    },
+    "person": {
+      "name": "person",
+      "variant": "outline"
+    },
+    "pin": {
+      "name": "pin",
+      "variant": "outline"
+    },
+    "play_filled": {
+      "name": "play",
+      "variant": "filled"
+    },
+    "play_outlined": {
+      "name": "play",
+      "variant": "outline"
+    },
+    "plus": {
+      "name": "plus",
+      "variant": "outline"
+    },
+    "public": {
+      "name": "globe",
+      "variant": "outline"
+    },
+    "pull_request": {
+      "name": "git-pull-request",
+      "variant": "outline"
+    },
+    "queue_message": {
+      "name": "chat-bubbles",
+      "variant": "outline"
+    },
+    "quote": {
+      "name": "quote",
+      "variant": "outline"
+    },
+    "reader": {
+      "name": "book-open",
+      "variant": "outline"
+    },
+    "refresh_title": {
+      "name": "pencil",
+      "variant": "outline"
+    },
+    "regex": {
+      "name": "regex",
+      "variant": "outline"
+    },
+    "repl_neutral": {
+      "name": "terminal",
+      "variant": "outline"
+    },
+    "replace": {
+      "name": "replace",
+      "variant": "outline"
+    },
+    "replace_all": {
+      "name": "replace-all",
+      "variant": "outline"
+    },
+    "replace_next": {
+      "name": "replace",
+      "variant": "outline"
+    },
+    "reply_arrow_right": {
+      "name": "arrow-bend-up-right",
+      "variant": "outline"
+    },
+    "rerun": {
+      "name": "refresh",
+      "variant": "outline"
+    },
+    "return": {
+      "name": "return",
+      "variant": "outline"
+    },
+    "rotate_ccw": {
+      "name": "arrow-ccw",
+      "variant": "outline"
+    },
+    "rotate_cw": {
+      "name": "refresh",
+      "variant": "outline"
+    },
+    "screen": {
+      "name": "display",
+      "variant": "outline"
+    },
+    "select_all": {
+      "name": "square-dashed",
+      "variant": "outline"
+    },
+    "send": {
+      "name": "send",
+      "variant": "outline"
+    },
+    "server": {
+      "name": "server",
+      "variant": "outline"
+    },
+    "settings": {
+      "name": "settings-gear",
+      "variant": "outline"
+    },
+    "share": {
+      "name": "share",
+      "variant": "outline"
+    },
+    "shift": {
+      "name": "arrow-block-up",
+      "variant": "outline"
+    },
+    "signal_high": {
+      "name": "signal",
+      "variant": "outline"
+    },
+    "signal_low": {
+      "name": "signal",
+      "variant": "outline"
+    },
+    "signal_medium": {
+      "name": "signal",
+      "variant": "outline"
+    },
+    "sparkle": {
+      "name": "sparkle",
+      "variant": "outline"
+    },
+    "split": {
+      "name": "split",
+      "variant": "outline"
+    },
+    "split_alt": {
+      "name": "layout-split-vertical",
+      "variant": "outline"
+    },
+    "square_dot": {
+      "name": "diff-modified",
+      "variant": "outline"
+    },
+    "square_minus": {
+      "name": "diff-removed",
+      "variant": "outline"
+    },
+    "square_plus": {
+      "name": "diff-added",
+      "variant": "outline"
+    },
+    "star": {
+      "name": "star",
+      "variant": "outline"
+    },
+    "star_filled": {
+      "name": "star",
+      "variant": "filled"
+    },
+    "stop": {
+      "name": "stop",
+      "variant": "filled"
+    },
+    "tab": {
+      "name": "keyboard-tab",
+      "variant": "outline"
+    },
+    "table": {
+      "name": "table",
+      "variant": "outline"
+    },
+    "terminal": {
+      "name": "terminal",
+      "variant": "outline"
+    },
+    "terminal_alt": {
+      "name": "terminal-rectangle",
+      "variant": "outline"
+    },
+    "text_snippet": {
+      "name": "file-text",
+      "variant": "outline"
+    },
+    "thinking_mode": {
+      "name": "brain",
+      "variant": "outline"
+    },
+    "thinking_mode_off": {
+      "name": "brain-slash",
+      "variant": "outline"
+    },
+    "this_window": {
+      "name": "window",
+      "variant": "outline"
+    },
+    "thread": {
+      "name": "chat-bubble",
+      "variant": "outline"
+    },
+    "thread_from_summary": {
+      "name": "chat-bubble-dashed",
+      "variant": "outline"
+    },
+    "threads_sidebar_left_closed": {
+      "name": "layout-sidebar-left-off",
+      "variant": "outline"
+    },
+    "threads_sidebar_left_open": {
+      "name": "layout-sidebar-left-on",
+      "variant": "outline"
+    },
+    "threads_sidebar_right_closed": {
+      "name": "layout-sidebar-right-off",
+      "variant": "outline"
+    },
+    "threads_sidebar_right_open": {
+      "name": "layout-sidebar-right-on",
+      "variant": "outline"
+    },
+    "thumbs_down": {
+      "name": "thumbs-down",
+      "variant": "outline"
+    },
+    "thumbs_up": {
+      "name": "thumbs-up",
+      "variant": "outline"
+    },
+    "todo_complete": {
+      "name": "check-circle",
+      "variant": "outline"
+    },
+    "todo_pending": {
+      "name": "circle-dashed",
+      "variant": "outline"
+    },
+    "todo_progress": {
+      "name": "spinner",
+      "variant": "outline"
+    },
+    "tool_copy": {
+      "name": "copy",
+      "variant": "outline"
+    },
+    "tool_delete_file": {
+      "name": "trash",
+      "variant": "outline"
+    },
+    "tool_diagnostics": {
+      "name": "exclamation-triangle",
+      "variant": "outline"
+    },
+    "tool_hammer": {
+      "name": "hammer",
+      "variant": "outline"
+    },
+    "tool_notification": {
+      "name": "bell",
+      "variant": "outline"
+    },
+    "tool_pencil": {
+      "name": "pencil",
+      "variant": "outline"
+    },
+    "tool_search": {
+      "name": "search",
+      "variant": "outline"
+    },
+    "tool_terminal": {
+      "name": "terminal",
+      "variant": "outline"
+    },
+    "tool_think": {
+      "name": "brain",
+      "variant": "outline"
+    },
+    "tool_web": {
+      "name": "globe",
+      "variant": "outline"
+    },
+    "trash": {
+      "name": "trash",
+      "variant": "outline"
+    },
+    "triangle": {
+      "name": "triangle-small-up",
+      "variant": "outline"
+    },
+    "triangle_right": {
+      "name": "triangle-small-right",
+      "variant": "outline"
+    },
+    "undo": {
+      "name": "arrow-ccw",
+      "variant": "outline"
+    },
+    "unpin": {
+      "name": "pin-slash",
+      "variant": "outline"
+    },
+    "user_arrow_up": {
+      "name": "person",
+      "variant": "outline"
+    },
+    "user_check": {
+      "name": "people",
+      "variant": "outline"
+    },
+    "user_group": {
+      "name": "people",
+      "variant": "outline"
+    },
+    "user_round_pen": {
+      "name": "person",
+      "variant": "outline"
+    },
+    "warning": {
+      "name": "warning",
+      "variant": "outline"
+    },
+    "whole_word": {
+      "name": "whole-word",
+      "variant": "outline"
+    },
+    "x_circle": {
+      "name": "x-circle",
+      "variant": "outline"
+    },
+    "x_circle_filled": {
+      "name": "x-circle",
+      "variant": "filled"
+    },
+    "zed_agent": {
+      "name": "agent",
+      "variant": "outline"
+    },
+    "zed_agent_two": {
+      "name": "agents",
+      "variant": "outline"
+    },
+    "zed_assistant": {
+      "name": "agent",
+      "variant": "outline"
+    },
+    "zed_src_custom": {
+      "name": "code",
+      "variant": "outline"
+    },
+    "zed_src_extension": {
+      "name": "extensions",
+      "variant": "outline"
+    }
+  },
+  "kit": {
+    "a-large-small": {
+      "name": "text-aa",
+      "variant": "outline"
+    },
+    "arrow-down": {
+      "name": "arrow-down",
+      "variant": "outline"
+    },
+    "arrow-left": {
+      "name": "arrow-left",
+      "variant": "outline"
+    },
+    "arrow-right": {
+      "name": "arrow-right",
+      "variant": "outline"
+    },
+    "arrow-up": {
+      "name": "arrow-up",
+      "variant": "outline"
+    },
+    "asterisk": {
+      "name": "asterisk",
+      "variant": "outline"
+    },
+    "ban": {
+      "name": "slash-circle",
+      "variant": "outline"
+    },
+    "bell": {
+      "name": "bell",
+      "variant": "outline"
+    },
+    "book-open": {
+      "name": "book-open",
+      "variant": "outline"
+    },
+    "bot": {
+      "name": "robot",
+      "variant": "outline"
+    },
+    "building-2": {
+      "name": "building",
+      "variant": "outline"
+    },
+    "calendar": {
+      "name": "calendar",
+      "variant": "outline"
+    },
+    "case-sensitive": {
+      "name": "text-aa",
+      "variant": "outline"
+    },
+    "chart-pie": {
+      "name": "chart-pie",
+      "variant": "outline"
+    },
+    "check": {
+      "name": "check",
+      "variant": "outline"
+    },
+    "chevron-down": {
+      "name": "chevron-down",
+      "variant": "outline"
+    },
+    "chevron-left": {
+      "name": "chevron-left",
+      "variant": "outline"
+    },
+    "chevron-right": {
+      "name": "chevron-right",
+      "variant": "outline"
+    },
+    "chevron-up": {
+      "name": "chevron-up",
+      "variant": "outline"
+    },
+    "chevrons-up-down": {
+      "name": "chevrons-up-down",
+      "variant": "outline"
+    },
+    "circle-alert": {
+      "name": "exclamation-circle",
+      "variant": "outline"
+    },
+    "circle-check": {
+      "name": "check-circle",
+      "variant": "outline"
+    },
+    "circle-user": {
+      "name": "person-circle",
+      "variant": "outline"
+    },
+    "circle-x": {
+      "name": "x-circle",
+      "variant": "outline"
+    },
+    "close": {
+      "name": "close",
+      "variant": "outline"
+    },
+    "columns-2": {
+      "name": "layout-split-horizontal",
+      "variant": "outline"
+    },
+    "copy": {
+      "name": "copy",
+      "variant": "outline"
+    },
+    "cpu": {
+      "name": "chip",
+      "variant": "outline"
+    },
+    "dash": {
+      "name": "minus",
+      "variant": "outline"
+    },
+    "delete": {
+      "name": "trash",
+      "variant": "outline"
+    },
+    "ellipsis": {
+      "name": "ellipsis",
+      "variant": "outline"
+    },
+    "ellipsis-vertical": {
+      "name": "dots-3-vertical",
+      "variant": "outline"
+    },
+    "external-link": {
+      "name": "link-external",
+      "variant": "outline"
+    },
+    "eye": {
+      "name": "eye",
+      "variant": "outline"
+    },
+    "eye-off": {
+      "name": "eye-slash",
+      "variant": "outline"
+    },
+    "file": {
+      "name": "file",
+      "variant": "outline"
+    },
+    "file-text": {
+      "name": "file-text",
+      "variant": "outline"
+    },
+    "folder": {
+      "name": "folder",
+      "variant": "outline"
+    },
+    "folder-closed": {
+      "name": "folder",
+      "variant": "outline"
+    },
+    "folder-open": {
+      "name": "folder-open",
+      "variant": "outline"
+    },
+    "frame": {
+      "name": "corners-out",
+      "variant": "outline"
+    },
+    "gallery-vertical-end": {
+      "name": "layers",
+      "variant": "outline"
+    },
+    "github": {
+      "name": "github",
+      "variant": "outline"
+    },
+    "globe": {
+      "name": "globe",
+      "variant": "outline"
+    },
+    "heart": {
+      "name": "heart",
+      "variant": "outline"
+    },
+    "inbox": {
+      "name": "inbox",
+      "variant": "outline"
+    },
+    "info": {
+      "name": "info",
+      "variant": "outline"
+    },
+    "inspector": {
+      "name": "inspect",
+      "variant": "outline"
+    },
+    "layout-dashboard": {
+      "name": "dashboard",
+      "variant": "outline"
+    },
+    "loader": {
+      "name": "spinner",
+      "variant": "outline"
+    },
+    "loader-circle": {
+      "name": "spinner",
+      "variant": "outline"
+    },
+    "map": {
+      "name": "map",
+      "variant": "outline"
+    },
+    "maximize": {
+      "name": "corners-out",
+      "variant": "outline"
+    },
+    "memory-stick": {
+      "name": "chip-simple",
+      "variant": "outline"
+    },
+    "menu": {
+      "name": "menu",
+      "variant": "outline"
+    },
+    "mic": {
+      "name": "mic",
+      "variant": "outline"
+    },
+    "minimize": {
+      "name": "corners-in",
+      "variant": "outline"
+    },
+    "minus": {
+      "name": "minus",
+      "variant": "outline"
+    },
+    "moon": {
+      "name": "moon",
+      "variant": "outline"
+    },
+    "network": {
+      "name": "database-network",
+      "variant": "outline"
+    },
+    "palette": {
+      "name": "palette",
+      "variant": "outline"
+    },
+    "panel-bottom": {
+      "name": "layout-panel-bottom",
+      "variant": "outline"
+    },
+    "panel-bottom-open": {
+      "name": "layout-panel-bottom-on",
+      "variant": "outline"
+    },
+    "panel-left": {
+      "name": "layout-sidebar-left",
+      "variant": "outline"
+    },
+    "panel-left-close": {
+      "name": "layout-sidebar-left-off",
+      "variant": "outline"
+    },
+    "panel-left-open": {
+      "name": "layout-sidebar-left-on",
+      "variant": "outline"
+    },
+    "panel-right": {
+      "name": "layout-sidebar-right",
+      "variant": "outline"
+    },
+    "panel-right-close": {
+      "name": "layout-sidebar-right-off",
+      "variant": "outline"
+    },
+    "panel-right-open": {
+      "name": "layout-sidebar-right-on",
+      "variant": "outline"
+    },
+    "pause": {
+      "name": "pause",
+      "variant": "outline"
+    },
+    "play": {
+      "name": "play",
+      "variant": "outline"
+    },
+    "plus": {
+      "name": "plus",
+      "variant": "outline"
+    },
+    "redo": {
+      "name": "redo",
+      "variant": "outline"
+    },
+    "redo-2": {
+      "name": "arrow-bend-up-right",
+      "variant": "outline"
+    },
+    "refresh-cw": {
+      "name": "refresh",
+      "variant": "outline"
+    },
+    "regex": {
+      "name": "regex",
+      "variant": "outline"
+    },
+    "replace": {
+      "name": "replace",
+      "variant": "outline"
+    },
+    "resize-corner": {
+      "name": "arrows-expand-simple",
+      "variant": "outline"
+    },
+    "rotate-cw": {
+      "name": "refresh",
+      "variant": "outline"
+    },
+    "search": {
+      "name": "search",
+      "variant": "outline"
+    },
+    "settings": {
+      "name": "settings-gear",
+      "variant": "outline"
+    },
+    "settings-2": {
+      "name": "sliders",
+      "variant": "outline"
+    },
+    "sort-ascending": {
+      "name": "sort-ascending",
+      "variant": "outline"
+    },
+    "sort-descending": {
+      "name": "sort-descending",
+      "variant": "outline"
+    },
+    "sparkles": {
+      "name": "sparkles",
+      "variant": "outline"
+    },
+    "square": {
+      "name": "square",
+      "variant": "outline"
+    },
+    "square-terminal": {
+      "name": "terminal-rectangle",
+      "variant": "outline"
+    },
+    "star": {
+      "name": "star",
+      "variant": "outline"
+    },
+    "star-fill": {
+      "name": "star",
+      "variant": "filled"
+    },
+    "sun": {
+      "name": "sun",
+      "variant": "outline"
+    },
+    "text-search": {
+      "name": "search",
+      "variant": "outline"
+    },
+    "thumbs-down": {
+      "name": "thumbs-down",
+      "variant": "outline"
+    },
+    "thumbs-up": {
+      "name": "thumbs-up",
+      "variant": "outline"
+    },
+    "triangle-alert": {
+      "name": "exclamation-triangle",
+      "variant": "outline"
+    },
+    "undo": {
+      "name": "arrow-ccw",
+      "variant": "outline"
+    },
+    "undo-2": {
+      "name": "arrow-bend-up-left",
+      "variant": "outline"
+    },
+    "user": {
+      "name": "person",
+      "variant": "outline"
+    },
+    "whole-word": {
+      "name": "whole-word",
+      "variant": "outline"
+    },
+    "window-close": {
+      "name": "close",
+      "variant": "outline"
+    },
+    "window-maximize": {
+      "name": "square",
+      "variant": "outline"
+    },
+    "window-minimize": {
+      "name": "minus",
+      "variant": "outline"
+    },
+    "window-restore": {
+      "name": "squares",
+      "variant": "outline"
+    }
+  }
+}

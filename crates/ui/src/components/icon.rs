@@ -151,9 +151,12 @@ pub struct Icon {
     group_hover_color: Option<Color>,
     size: Rems,
     transformation: Transformation,
+    morph_id: ElementId,
+    spin_period: Option<u64>,
 }
 
 impl Icon {
+    #[track_caller]
     pub fn new(icon: IconName) -> Self {
         Self {
             source: IconSource::Embedded(icon.path().into()),
@@ -161,15 +164,21 @@ impl Icon {
             group_hover_color: None,
             size: IconSize::default().rems(),
             transformation: Transformation::default(),
+            morph_id: ElementId::CodeLocation(*std::panic::Location::caller()),
+            spin_period: None,
         }
     }
 
     /// Create an icon from a path. Uses a heuristic to determine if it's embedded or external:
     /// - Paths starting with "icons/" are treated as embedded SVGs
     /// - Other paths are treated as external raster images (from icon themes)
+    #[track_caller]
     pub fn from_path(path: impl Into<SharedString>) -> Self {
         let path = path.into();
-        let source = if path.starts_with("icons/") {
+        let source = if path.starts_with("icons/")
+            || path.starts_with("gpui-icons/")
+            || path.starts_with("kit/")
+        {
             IconSource::Embedded(path)
         } else {
             IconSource::External(Arc::from(PathBuf::from(path.as_ref())))
@@ -180,9 +189,12 @@ impl Icon {
             group_hover_color: None,
             size: IconSize::default().rems(),
             transformation: Transformation::default(),
+            morph_id: ElementId::CodeLocation(*std::panic::Location::caller()),
+            spin_period: None,
         }
     }
 
+    #[track_caller]
     pub fn from_external_svg(svg: SharedString) -> Self {
         Self {
             source: IconSource::ExternalSvg(svg),
@@ -190,7 +202,23 @@ impl Icon {
             group_hover_color: None,
             size: IconSize::default().rems(),
             transformation: Transformation::default(),
+            morph_id: ElementId::CodeLocation(*std::panic::Location::caller()),
+            spin_period: None,
         }
+    }
+
+    pub fn morph_id(mut self, id: impl Into<ElementId>) -> Self {
+        self.morph_id = id.into();
+        self
+    }
+
+    pub fn with_rotate_animation(mut self, duration: u64) -> Self {
+        self.spin_period = Some(duration);
+        self
+    }
+
+    pub fn with_keyed_rotate_animation(self, id: impl Into<ElementId>, duration: u64) -> Self {
+        self.morph_id(id).with_rotate_animation(duration)
     }
 
     pub fn preload(&self, cx: &mut App) {
@@ -238,7 +266,20 @@ impl RenderOnce for Icon {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let color = self.color.color(cx);
         let svg = match self.source {
-            IconSource::Embedded(path) => svg().path(path),
+            IconSource::Embedded(path) => {
+                let group_hover_color = self.group_hover_color.map(|color| color.color(cx));
+                return gpui_icons::MorphIcon::new(self.morph_id, path)
+                    .transform(self.transformation)
+                    .spinning(self.spin_period.is_some())
+                    .spin_period(self.spin_period.unwrap_or(1) as f64)
+                    .size(self.size)
+                    .flex_none()
+                    .text_color(color)
+                    .when_some(group_hover_color, |this, hover_color| {
+                        this.group_hover("", |style| style.text_color(hover_color))
+                    })
+                    .into_any_element();
+            }
             IconSource::ExternalSvg(path) => svg().external_path(path),
             IconSource::External(path) => {
                 return img(path)

@@ -6,10 +6,11 @@ use context_server::ContextServerId;
 use editor::{actions::ConfirmCompletion, code_context_menus::CompletionsMenuRow};
 use fuzzy::{StringMatchCandidate, match_strings};
 use gpui::{AnyView, ListSizingBehavior, anchored, canvas, deferred, relative, uniform_list};
+use gpui_icons::Icon as KitIcon;
 use gpui_kit::{
     base::{Selectable as _, h_flex, v_flex},
     component::{
-        Disableable as _, Icon as KitIcon, IndexPath, Size as KitSize, Theme as KitTheme,
+        Disableable as _, IndexPath, Size as KitSize, Theme as KitTheme,
         button::{Button as KitButton, ButtonRounded, ButtonVariant},
         list::{List as KitList, ListDelegate, ListEvent, ListItem as KitListItem, ListState},
         menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
@@ -359,7 +360,22 @@ impl ThreadView {
                                 .primary()
                                 .small()
                                 .rounded(ButtonRounded::Size(px(12.)))
-                                .icon(KitIcon::empty().path(IconName::ArrowUp.path()))
+                                .size_6()
+                                .p_0()
+                                .child(
+                                    KitIcon::empty()
+                                        .id("button-icon")
+                                        .path(
+                                            if self.is_loading_contents {
+                                                IconName::LoadCircle
+                                            } else {
+                                                IconName::ArrowUp
+                                            }
+                                            .path(),
+                                        )
+                                        .size_4()
+                                        .spinning(self.is_loading_contents),
+                                )
                                 .loading(self.is_loading_contents)
                                 .disabled(!can_send)
                                 .tooltip("Send and restart from this message")
@@ -520,16 +536,16 @@ impl ThreadView {
         let is_generating = self.thread.read(cx).status() != ThreadStatus::Idle;
 
         if self.is_loading_contents {
-            return div()
-                .id("loading-message-content")
-                .px_1()
+            return PillButton::new("composer-submit")
+                .variant(ButtonVariant::Primary)
+                .icon(IconName::LoadCircle)
+                .loading(true)
                 .tooltip(Tooltip::text("Loading Added Context…"))
-                .child(loading_contents_spinner(IconSize::default()))
                 .into_any_element();
         }
 
         if is_generating && is_editor_empty {
-            return PillButton::new("stop-generation")
+            return PillButton::new("composer-submit")
                 .variant(ButtonVariant::Primary)
                 .icon(IconName::Stop)
                 .tooltip(move |_window, cx| {
@@ -541,7 +557,7 @@ impl ThreadView {
 
         let can_send = !is_editor_empty || is_generating;
 
-        PillButton::new("send-message")
+        PillButton::new("composer-submit")
             .variant(ButtonVariant::Primary)
             .icon(IconName::ArrowUp)
             .disabled(!can_send)
@@ -956,8 +972,14 @@ impl ThreadView {
                 .child(
                     KitButton::new("composer-branch-copy")
                         .ghost()
-                        .label(branch_name.clone())
-                        .icon(KitIcon::empty().path(icon.path()))
+                        .accessibility_label(branch_name.clone())
+                        .child(
+                            KitIcon::empty()
+                                .id("branch-icon")
+                                .path(icon.path())
+                                .size_4(),
+                        )
+                        .child(branch_name.clone())
                         .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                             this.branch_chip_hovered = *hovered;
                             cx.notify();
@@ -1786,6 +1808,7 @@ pub(super) struct PillButton {
     dropdown_caret: bool,
     selected: bool,
     disabled: bool,
+    loading: bool,
     tooltip: Option<Box<dyn Fn(&mut Window, &mut App) -> AnyView>>,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     debug_selector: Option<SharedString>,
@@ -1805,6 +1828,7 @@ impl PillButton {
             dropdown_caret: false,
             selected: false,
             disabled: false,
+            loading: false,
             tooltip: None,
             on_click: None,
             debug_selector: None,
@@ -1860,6 +1884,11 @@ impl PillButton {
         self
     }
 
+    pub(super) fn loading(mut self, loading: bool) -> Self {
+        self.loading = loading;
+        self
+    }
+
     pub(super) fn tooltip(
         mut self,
         tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
@@ -1901,6 +1930,7 @@ impl RenderOnce for PillButton {
             KitSize::Small => px(24.),
             KitSize::Medium | KitSize::Large => px(32.),
         };
+        let icon_only = self.icon.is_some() && self.label.is_none() && self.children.is_empty();
         let button = KitButton::new(self.id.clone())
             .with_variant(self.variant)
             .when(self.outline, |button| button.outline())
@@ -1908,11 +1938,21 @@ impl RenderOnce for PillButton {
             .rounded(ButtonRounded::Size(height / 2.))
             .selected(self.selected)
             .disabled(self.disabled)
+            .loading(self.loading)
             .dropdown_caret(self.dropdown_caret)
+            .when(icon_only, |button| button.w(height).px_0())
             .when_some(self.icon, |button, icon| {
-                button.icon(KitIcon::empty().path(icon.path()))
+                button.child(
+                    KitIcon::empty()
+                        .id("button-icon")
+                        .path(icon.path())
+                        .size_4()
+                        .spinning(self.loading),
+                )
             })
-            .when_some(self.label, |button, label| button.label(label))
+            .when_some(self.label, |button, label| {
+                button.accessibility_label(label.clone()).child(label)
+            })
             .children(self.children)
             .when_some(self.on_click, |button, on_click| {
                 button.on_click(move |event, window, cx| {

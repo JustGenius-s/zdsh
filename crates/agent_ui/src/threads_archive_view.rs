@@ -1,3 +1,4 @@
+use gpui_icons::Icon as KitIcon;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,14 +24,13 @@ use gpui::{
 use gpui_kit::{
     base::{Scrollbar, ScrollbarAxis, ScrollbarMode, StyledExt as _},
     component::{
-        Disableable as _, Icon as KitIcon, Selectable as _, Sizable as _,
+        Disableable as _, Selectable as _, Sizable as _,
         button::{Button as KitButton, ButtonVariants as _},
         h_flex,
         label::Label as KitLabel,
         list::ListItem as KitListItem,
         menu::{DropdownMenu as _, PopupMenuItem},
         separator::Separator,
-        spinner::Spinner,
         tooltip::Tooltip as KitTooltip,
         v_flex,
     },
@@ -531,9 +531,11 @@ impl ThreadsArchiveView {
                 let group: SharedString = format!("history-entry-{:?}", thread.thread_id).into();
 
                 let icon = if is_restoring {
-                    Spinner::new()
+                    history_icon(IconName::LoadCircle)
+                        .id("history-entry-icon")
                         .small()
-                        .color(colors.text_muted)
+                        .spinning(true)
+                        .text_color(colors.text_muted)
                         .into_any_element()
                 } else {
                     let external_icon = self
@@ -559,6 +561,7 @@ impl ThreadsArchiveView {
                                 IconName::Sparkle
                             },
                         )
+                        .id("history-entry-icon")
                         .text_color(icon_color)
                         .into_any_element()
                     }
@@ -938,6 +941,7 @@ impl ThreadsArchiveView {
     }
 }
 
+#[track_caller]
 fn history_icon(icon: IconName) -> KitIcon {
     KitIcon::empty().path(icon.path()).size(rems(0.875))
 }

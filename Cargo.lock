@@ -504,6 +504,7 @@ dependencies = [
  "fuzzy",
  "git",
  "git_ui_core",
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "gpui_tokio",
@@ -918,6 +919,7 @@ name = "assets"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "util",
@@ -3933,6 +3935,7 @@ dependencies = [
  "file_icons",
  "futures",
  "fuzzy",
+ "gpui-icons",
  "gpui-pre",
  "hex",
  "indoc",
@@ -4982,6 +4985,7 @@ dependencies = [
  "fs",
  "fuzzy",
  "git",
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "http_client",
@@ -5853,6 +5857,7 @@ dependencies = [
  "fuzzy_nucleo",
  "git",
  "git_ui_core",
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "icons",
@@ -5914,6 +5919,7 @@ dependencies = [
  "futures",
  "fuzzy",
  "git",
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "language",
@@ -6196,6 +6202,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "gpui-icons"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui-kit",
+ "gpui-pre",
+ "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -12350,6 +12368,7 @@ dependencies = [
  "git",
  "git_ui",
  "git_ui_core",
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "itertools 0.14.0",
@@ -13150,6 +13169,7 @@ dependencies = [
  "fs",
  "futures",
  "fuzzy_nucleo",
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "http_client",
@@ -14712,6 +14732,7 @@ dependencies = [
  "fs",
  "git",
  "git_ui_core",
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "http_client",
@@ -15950,6 +15971,7 @@ dependencies = [
  "dirs",
  "editor",
  "futures",
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "itertools 0.14.0",
@@ -16971,6 +16993,8 @@ dependencies = [
  "chrono",
  "component",
  "documented",
+ "gpui-icons",
+ "gpui-kit",
  "gpui-pre",
  "gpui-pre-macros",
  "gpui_util",
@@ -17143,6 +17167,7 @@ dependencies = [
  "command_palette",
  "editor",
  "fuzzy_nucleo",
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "language",
@@ -19566,6 +19591,7 @@ dependencies = [
  "futures",
  "futures-lite",
  "git",
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "http_client",

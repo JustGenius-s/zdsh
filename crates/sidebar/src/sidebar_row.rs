@@ -2,15 +2,15 @@ use chrono::{DateTime, Utc};
 use gpui::{
     AnyElement, AnyView, App, ClickEvent, ElementId, SharedString, Window, div, prelude::*, rems,
 };
+use gpui_icons::Icon;
 use gpui_kit::component::{
-    Icon, Selectable as _, Sizable as _,
+    Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    spinner::Spinner,
 };
 use icons::IconName;
 use theme::ActiveTheme;
-use ui::{VisibleOnHover as _, rems_from_px};
+use ui::rems_from_px;
 
 /// How far rows sit in from the sidebar's edges.
 pub(crate) const LIST_INSET: f32 = 8.;
@@ -118,39 +118,20 @@ impl SidebarRow {
 }
 
 impl RenderOnce for SidebarRow {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let colors = cx.theme().colors();
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let clickable = self.on_click.is_some();
         let group = self.group;
 
-        let leading = match self.leading_on_hover {
-            Some(leading_on_hover) => div()
-                .id("leading")
-                .relative()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .id("leading-at-rest")
-                        .group_hover(group.clone(), |style| style.invisible())
-                        .child(self.leading),
-                )
-                .child(
-                    div()
-                        .id("leading-on-hover")
-                        .absolute()
-                        .inset_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .visible_on_hover(group.clone())
-                        .child(leading_on_hover),
-                )
-                .into_any_element(),
-            None => self.leading,
+        let hover_state = self
+            .leading_on_hover
+            .as_ref()
+            .map(|_| window.use_keyed_state((self.id.clone(), "leading-hover"), cx, |_, _| false));
+        let leading = match (self.leading_on_hover, hover_state.as_ref()) {
+            (Some(leading_on_hover), Some(hovered)) if *hovered.read(cx) => leading_on_hover,
+            _ => self.leading,
         };
+        let observe_hover = hover_state.is_some() || self.on_hover.is_some();
+        let colors = cx.theme().colors();
 
         div().w_full().px(rems_from_px(LIST_INSET)).pb_0p5().child(
             h_flex()
@@ -204,7 +185,21 @@ impl RenderOnce for SidebarRow {
                         .child(self.title),
                 )
                 .children(self.end.map(|end| div().flex_none().child(end)))
-                .when_some(self.on_hover, |this, on_hover| this.on_hover(on_hover))
+                .when(observe_hover, |this| {
+                    this.on_hover(move |hovered, window, cx| {
+                        if let Some(state) = &hover_state {
+                            state.update(cx, |state, cx| {
+                                if *state != *hovered {
+                                    *state = *hovered;
+                                    cx.notify();
+                                }
+                            });
+                        }
+                        if let Some(on_hover) = &self.on_hover {
+                            on_hover(hovered, window, cx);
+                        }
+                    })
+                })
                 .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip))
                 .when_some(self.on_click, |this, on_click| this.on_click(on_click)),
         )
@@ -225,26 +220,52 @@ pub(crate) enum StatusDot {
 impl RenderOnce for StatusDot {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.theme().colors();
-        let dot = div().size(rems_from_px(STATUS_DOT)).rounded_full();
-        match self {
-            StatusDot::Running => Spinner::new()
-                .small()
-                .color(colors.text_muted)
-                .into_any_element(),
-            StatusDot::WaitingForConfirmation => {
-                dot.bg(cx.theme().status().warning).into_any_element()
-            }
-            StatusDot::Error => dot.bg(cx.theme().status().error).into_any_element(),
-            StatusDot::Unread => dot.bg(colors.text_accent).into_any_element(),
-            StatusDot::Draft => dot
-                .border_1()
-                .border_color(colors.text.opacity(0.28))
-                .into_any_element(),
-            StatusDot::Read => dot.bg(colors.text.opacity(0.16)).into_any_element(),
-        }
+        let (name, variant, color) = match self {
+            StatusDot::Running => (
+                gpui_icons::IconName::Loading,
+                gpui_icons::Variant::Outline,
+                colors.text_muted,
+            ),
+            StatusDot::WaitingForConfirmation => (
+                gpui_icons::IconName::Circle,
+                gpui_icons::Variant::Filled,
+                cx.theme().status().warning,
+            ),
+            StatusDot::Error => (
+                gpui_icons::IconName::Circle,
+                gpui_icons::Variant::Filled,
+                cx.theme().status().error,
+            ),
+            StatusDot::Unread => (
+                gpui_icons::IconName::Circle,
+                gpui_icons::Variant::Filled,
+                colors.text_accent,
+            ),
+            StatusDot::Draft => (
+                gpui_icons::IconName::Circle,
+                gpui_icons::Variant::Outline,
+                colors.text.opacity(0.28),
+            ),
+            StatusDot::Read => (
+                gpui_icons::IconName::Circle,
+                gpui_icons::Variant::Filled,
+                colors.text.opacity(0.16),
+            ),
+        };
+        Icon::empty()
+            .id("thread-status-icon")
+            .path(name.path_with_variant(variant))
+            .text_color(color)
+            .size(rems_from_px(if self == StatusDot::Running {
+                14.
+            } else {
+                STATUS_DOT
+            }))
+            .spinning(self == StatusDot::Running)
     }
 }
 
+#[track_caller]
 pub(crate) fn sidebar_icon(icon: IconName) -> Icon {
     Icon::empty().path(icon.path()).size(rems(0.875))
 }
@@ -255,7 +276,7 @@ pub(crate) fn sidebar_icon_button(id: impl Into<ElementId>, icon: IconName) -> B
         .small()
         .size_6()
         .p_0()
-        .child(sidebar_icon(icon).size(rems(1.125)))
+        .child(sidebar_icon(icon).id("button-icon").size(rems(1.125)))
 }
 
 // Project menus share handles with keyboard navigation and sticky headers.

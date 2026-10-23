@@ -605,7 +605,7 @@ impl Render for KeystrokeInput {
                     .map(|this| {
                         if is_recording {
                             this.child(
-                                IconButton::new("stop-record-btn", IconName::Stop)
+                                IconButton::new("record-btn", IconName::Stop)
                                     .shape(IconButtonShape::Square)
                                     .map(|this| {
                                         this.tooltip(Tooltip::for_action_title(

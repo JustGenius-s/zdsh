@@ -40,8 +40,8 @@ use std::{
 };
 
 use ui::{
-    CommonAnimationExt, HighlightedLabel, IconButtonShape, KeyBinding, ListItem, ListSeparator,
-    ModalHeader, Navigable, NavigableEntry, Tooltip, prelude::*,
+    HighlightedLabel, IconButtonShape, KeyBinding, ListItem, ListSeparator, ModalHeader, Navigable,
+    NavigableEntry, Tooltip, prelude::*,
 };
 use util::{
     ResultExt,

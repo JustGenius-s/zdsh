@@ -1,6 +1,6 @@
 use gpui::{AnyElement, AnyView, ClickEvent, prelude::*};
 
-use crate::{ButtonLike, CircularProgress, CommonAnimationExt, Tooltip, prelude::*};
+use crate::{ButtonLike, CircularProgress, Tooltip, prelude::*};
 
 const LOAD_CIRCLE_GLYPH_VIEWBOX: f32 = 16.0;
 const LOAD_CIRCLE_GLYPH_STROKE_WIDTH: f32 = 1.2;
@@ -176,6 +176,7 @@ impl RenderOnce for UpdateButton {
                 .into_any_element()
         } else {
             let icon = Icon::new(self.icon)
+                .morph_id("update-status")
                 .size(IconSize::XSmall)
                 .when_some(self.icon_color, |this, color| this.color(color));
             if self.icon_animate {
@@ -187,8 +188,8 @@ impl RenderOnce for UpdateButton {
 
         let tooltip = self.tooltip;
 
-        let button_id = ElementId::Name(self.message.clone());
-        let dismiss_button_id = ElementId::Name(format!("dismiss-{}", self.message).into());
+        let button_id = "update-status-button";
+        let dismiss_button_id = "dismiss-update-status";
 
         let label_row = h_flex()
             .h_full()

@@ -31,6 +31,7 @@ fs.workspace = true
 git.workspace = true
 gpui.workspace = true
 gpui-kit.workspace = true
+gpui-icons.workspace = true
 icons.workspace = true
 itertools.workspace = true
 language_model.workspace = true

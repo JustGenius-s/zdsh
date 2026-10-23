@@ -25,11 +25,12 @@ use gpui::{
     Point, PromptLevel, Render, ScrollHandle, Subscription, Task, TaskExt, WeakEntity,
     WeakFocusHandle, Window, actions, anchored, deferred, prelude::*,
 };
+use gpui_icons::Icon as KitIcon;
 use gpui_kit::{
     assets::IconName as KitIconName,
     base::{ElementExt as _, POPUP_PRIORITY, Selectable as _, Tab, Tabs},
     component::{
-        Icon as KitIcon, Sizable as _,
+        Sizable as _,
         button::{Button, ButtonVariants as _},
         menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
         tab::Tab as KitTab,
@@ -2952,12 +2953,21 @@ impl Pane {
         let capability = item.capability(cx);
         let tab_button = if is_pinned {
             Some((
-                Button::new("unpin tab").icon(KitIcon::empty().path(IconName::Pin.path())),
+                Button::new("tab-action").size_5().p_0().child(
+                    KitIcon::empty()
+                        .id("tab-action-icon")
+                        .path(IconName::Pin.path())
+                        .size_3p5(),
+                ),
                 &TogglePinTab as &'static dyn Action,
                 "Unpin Tab",
             ))
         } else {
-            let close_button = Button::new("close tab").icon(KitIconName::Close);
+            let close_button = Button::new("tab-action").size_5().p_0().child(
+                KitIcon::new(KitIconName::Close)
+                    .id("tab-action-icon")
+                    .size_3p5(),
+            );
             let close_tab: &'static dyn Action = &CloseActiveItem {
                 save_intent: None,
                 close_pinned: false,

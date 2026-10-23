@@ -21,11 +21,12 @@ use gpui::{
     HighlightStyle, KeyContext, ParentElement, Render, SharedString, Styled, StyledText,
     Subscription, Task, WeakEntity, Window, div, prelude::*, px, rems,
 };
+use gpui_icons::Icon;
 use gpui_kit::{
     assets::IconName,
     base::Selectable as _,
     component::{
-        ActiveTheme as _, Icon, IndexPath, Sizable as _,
+        ActiveTheme as _, IndexPath, Sizable as _,
         button::{Button, ButtonVariants as _},
         command::{Command, CommandGroup, CommandItem, CommandState},
         h_flex,
@@ -1058,13 +1059,19 @@ impl UnifiedSearch {
                         .items_center()
                         .justify_center()
                         .child(match leading {
-                            Leading::Icon(icon) => {
-                                Icon::new(icon).small().text_color(muted).into_any_element()
-                            }
-                            Leading::Dot => div()
+                            Leading::Icon(icon) => Icon::new(icon)
+                                .id("result-icon")
+                                .small()
+                                .text_color(muted)
+                                .into_any_element(),
+                            Leading::Dot => Icon::empty()
+                                .id("result-icon")
+                                .path(
+                                    gpui_icons::IconName::Circle
+                                        .path_with_variant(gpui_icons::Variant::Filled),
+                                )
                                 .size(px(6.))
-                                .rounded_full()
-                                .bg(muted.opacity(0.5))
+                                .text_color(muted.opacity(0.5))
                                 .into_any_element(),
                         }),
                 )

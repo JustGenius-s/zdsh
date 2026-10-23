@@ -546,7 +546,12 @@ impl TerminalView {
                 .bg(cx.theme().colors().element_background)
                 .tooltip(Tooltip::text(label.clone()))
                 .when_some(icon, |this, icon| {
-                    this.child(Icon::new(icon).size(IconSize::XSmall).color(color))
+                    this.child(
+                        Icon::new(icon)
+                            .morph_id("command-status")
+                            .size(IconSize::XSmall)
+                            .color(color),
+                    )
                 })
                 .child(
                     div()

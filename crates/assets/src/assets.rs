@@ -26,7 +26,7 @@ util::fs_embed! {
     exclude = ["themes/src/*", "*.DS_Store"],
 }
 
-/// Where GPUI Kit's own icons are found, even those with a namesake among ours.
+/// Disambiguates Kit icon names before resolving their shared catalog entry.
 const KIT_ICONS_PREFIX: &str = "kit/";
 
 // GPUI Kit embeds only its components' icons, so the others Zed uses are embedded here.
@@ -35,16 +35,16 @@ gpui_kit::assets::icon_assets!(
     [Columns2, Sparkles, Regex, TextSearch, WholeWord]
 );
 
-/// The path of GPUI Kit's `icon`, which loads GPUI Kit's drawing even where Zed has an icon of
-/// the same name.
+/// Resolves Kit's icon name independently of legacy icons with the same name.
 pub fn kit_icon_path(icon: KitIconName) -> SharedString {
     format!("{KIT_ICONS_PREFIX}{}", icon.path()).into()
 }
 
-// GPUI Kit components load their icons from the application's asset source, so paths this
-// crate does not have fall through to GPUI Kit's own icons. Where both have a file, ours wins.
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if let Some(icon) = gpui_icons::catalog::load(path)? {
+            return Ok(Some(icon));
+        }
         if let Some(kit_path) = path.strip_prefix(KIT_ICONS_PREFIX) {
             return load_kit_icon(kit_path);
         }
@@ -69,6 +69,14 @@ impl AssetSource for Assets {
         for kit_path in gpui_kit::assets::Assets.list(path)? {
             if Self::get(&kit_path).is_none() {
                 paths.push(kit_path);
+            }
+        }
+        for entry in gpui_icons::catalog::entries()? {
+            for suffix in ["", "-filled"] {
+                let icon_path = format!("gpui-icons/{}{suffix}.svg", entry.name);
+                if icon_path.starts_with(path) {
+                    paths.push(icon_path.into());
+                }
             }
         }
         Ok(paths)

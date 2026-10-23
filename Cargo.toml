@@ -58,6 +58,7 @@ members = [
     "crates/extension_host",
     "crates/extension_suggest",
     "crates/extensions_ui",
+    "crates/gpui_icons",
     "crates/feature_flags",
     "crates/feature_flags_macros",
     "crates/file_content",
@@ -318,6 +319,7 @@ gpui = { path = "crates/gpui", package = "gpui-pre", default-features = false }
 gpui_apple = { path = "crates/gpui_apple" }
 gpui_ios = { path = "crates/gpui_ios" }
 gpui-kit = "0.7.3"
+gpui-icons = { path = "crates/gpui_icons" }
 gpui_linux = { path = "crates/gpui_linux", default-features = false }
 gpui_macos = { path = "crates/gpui_macos", default-features = false }
 gpui_macros = { path = "crates/gpui_macros", package = "gpui-pre-macros" }
@@ -990,6 +992,7 @@ proc-macro2 = { opt-level = 3 }
 tree-sitter = { opt-level = 3 }
 taffy = { opt-level = 3 }
 resvg = { opt-level = 3 }
+gpui-icons = { opt-level = 3 }
 wasmtime = { opt-level = 3 }
 cranelift-codegen = { opt-level = 3 }
 wasmtime-environ = { opt-level = 3 }

@@ -10,6 +10,7 @@ use gpui::{
     InteractiveElement, IntoElement, Modifiers, ModifiersChangedEvent, ParentElement, PromptLevel,
     Render, SharedString, Styled, Subscription, Task, TaskExt, WeakEntity, Window, actions,
 };
+use gpui_icons::Icon as MorphIcon;
 use gpui_kit::component::{
     Icon as KitIcon, IndexPath,
     button::{Button as KitButton, ButtonVariants},
@@ -18,8 +19,8 @@ use gpui_kit::component::{
 use picker::{Picker, PickerDelegate, PickerEditorPosition};
 use project::{Project, git_store::RepositoryEvent, repo_identity_path_if_local};
 use ui::{
-    Button, CommonAnimationExt as _, Divider, HighlightedLabel, IconButton, KeyBinding, ListItem,
-    ListItemSpacing, ListSubHeader, Tooltip, prelude::*,
+    Button, Divider, HighlightedLabel, IconButton, KeyBinding, ListItem, ListItemSpacing,
+    ListSubHeader, Tooltip, prelude::*,
 };
 use util::{ResultExt as _, paths::PathExt};
 use workspace::{
@@ -456,7 +457,17 @@ impl ListDelegate for WorktreeListDelegate {
                     gpui_kit::base::h_flex()
                         .gap_2()
                         .min_w_0()
-                        .child(KitIcon::empty().path(icon.path()).size_4())
+                        .child(
+                            MorphIcon::empty()
+                                .id("worktree-entry-state")
+                                .path(if deleting {
+                                    IconName::LoadCircle.path()
+                                } else {
+                                    icon.path()
+                                })
+                                .size_4()
+                                .spinning(deleting),
+                        )
                         .child(
                             gpui_kit::base::v_flex()
                                 .min_w_0()
@@ -1427,6 +1438,7 @@ impl PickerDelegate for WorktreePickerDelegate {
                                 .gap_2p5()
                                 .child(
                                     Icon::new(entry_icon)
+                                        .morph_id("worktree-entry-state")
                                         .color(if is_current {
                                             Color::Accent
                                         } else {

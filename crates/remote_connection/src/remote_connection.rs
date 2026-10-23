@@ -14,10 +14,7 @@ use remote::{ConnectionIdentifier, RemoteClient, RemoteConnectionOptions, Remote
 use semver::Version;
 use settings::Settings;
 use theme_settings::ThemeSettings;
-use ui::{
-    ActiveTheme, CommonAnimationExt, Context, InteractiveElement, KeyBinding, ListItem, Tooltip,
-    prelude::*,
-};
+use ui::{ActiveTheme, Context, InteractiveElement, KeyBinding, ListItem, Tooltip, prelude::*};
 use ui_input::{ERASED_EDITOR_FACTORY, ErasedEditor};
 use workspace::{DismissDecision, ModalView, Workspace};
 

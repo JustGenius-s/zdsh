@@ -5,10 +5,10 @@ use super::transcript::{
 use super::*;
 use crate::entry_view_state::ActivityGroup;
 use gpui::{HighlightStyle, StyledText};
+use gpui_icons::Icon as KitIcon;
 use gpui_kit::component::{
-    Disableable as _, Icon as KitIcon, Selectable as _, Size as KitSize, Theme as KitTheme,
-    button::ButtonVariant, hover_card::HoverCard, shimmer::ShimmerText, skeleton::Skeleton,
-    spinner::Spinner,
+    Disableable as _, Selectable as _, Size as KitSize, Theme as KitTheme, button::ButtonVariant,
+    hover_card::HoverCard, shimmer::ShimmerText, skeleton::Skeleton,
 };
 use markdown::parser::MarkdownEvent;
 use std::ops::Range;
@@ -331,7 +331,7 @@ impl ThreadView {
             .filter(|_| is_file_read)
             .and_then(|location| location.path.file_name())
             .map(|file_name| file_name.to_string_lossy().into_owned());
-        let row_id = ("tool-call-activity", entry_ix);
+        let row_id = SharedString::from(format!("tool-call-activity-{}", tool_call.id.0));
         let row = if matches!(tool_call.kind(), acp_v2::ToolKind::Execute) {
             ActivityRow::new(row_id, command_verb(false, running))
                 .details(
@@ -3004,154 +3004,161 @@ impl ThreadView {
             theme.muted_foreground
         };
         let group: SharedString = format!("subagent-row-{}", tool_call.id.0).into();
-        let indicator = if is_running && !waiting {
-            Spinner::new()
-                .icon(kit_icon(IconName::LoadCircle))
-                .with_size(KitSize::Size(font_size * 0.7))
-                .into_any_element()
+        let indicator_icon = if waiting {
+            IconName::Warning
+        } else if is_running {
+            IconName::LoadCircle
+        } else if is_failed {
+            IconName::XCircle
+        } else if is_cancelled {
+            IconName::Stop
         } else {
-            div()
-                .size(font_size * 0.4)
-                .rounded_full()
-                .bg(status_color)
-                .when(is_cancelled, |this| this.opacity(0.65))
-                .into_any_element()
+            IconName::Check
         };
-        let header = KitListItem::new(("subagent-summary", entry_ix))
-            .accessibility_label(format!("{title}: {status}"))
-            .w_full()
-            .min_w_0()
-            .px_0()
-            .py_1()
-            .gap_2()
-            .text_size(font_size)
-            .font_weight(gpui::FontWeight::NORMAL)
-            .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_2()
-                    .child(
-                        h_flex()
-                            .flex_none()
-                            .w(font_size * 1.4)
-                            .justify_center()
-                            .child(indicator),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_0p5()
-                            .child(
-                                h_flex()
-                                    .min_w_0()
-                                    .gap_2()
-                                    .child(
+        let indicator = kit_icon(indicator_icon)
+            .id("subagent-status")
+            .spinning(is_running && !waiting)
+            .with_size(KitSize::Size(font_size * 0.7))
+            .text_color(status_color)
+            .into_any_element();
+        let header = KitListItem::new(SharedString::from(format!(
+            "subagent-summary-{}",
+            tool_call.id.0
+        )))
+        .accessibility_label(format!("{title}: {status}"))
+        .w_full()
+        .min_w_0()
+        .px_0()
+        .py_1()
+        .gap_2()
+        .text_size(font_size)
+        .font_weight(gpui::FontWeight::NORMAL)
+        .child(
+            h_flex()
+                .w_full()
+                .min_w_0()
+                .gap_2()
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .w(font_size * 1.4)
+                        .justify_center()
+                        .child(indicator),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_0p5()
+                        .child(
+                            h_flex()
+                                .min_w_0()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(theme.foreground)
+                                        .child(title),
+                                )
+                                .when_some(model_name, |this, model_name| {
+                                    this.child(
                                         div()
                                             .min_w_0()
                                             .truncate()
-                                            .text_color(theme.foreground)
-                                            .child(title),
+                                            .text_color(theme.muted_foreground.opacity(0.7))
+                                            .child(model_name),
                                     )
-                                    .when_some(model_name, |this, model_name| {
-                                        this.child(
-                                            div()
-                                                .min_w_0()
-                                                .truncate()
-                                                .text_color(theme.muted_foreground.opacity(0.7))
-                                                .child(model_name),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                h_flex()
-                                    .min_w_0()
-                                    .gap_2()
-                                    .text_color(status_color)
-                                    .child(div().min_w_0().truncate().child(
-                                        if is_running && !waiting {
-                                            ShimmerText::new(status).into_any_element()
-                                        } else {
-                                            status.into_any_element()
-                                        },
-                                    ))
-                                    .when(files_changed > 0, |this| {
-                                        this.child(div().flex_none().child(format!(
-                                            "{files_changed} {}",
-                                            if files_changed == 1 { "file" } else { "files" }
-                                        )))
-                                        .child(diff_stat(diff_stats, cx))
-                                    }),
-                            ),
-                    )
-                    .when(is_running, |this| {
-                        this.when_some(thread.clone(), |this, thread| {
-                            this.child(
-                                div().visible_on_hover(group.clone()).child(
-                                    PillButton::new(("stop-subagent", entry_ix))
-                                        .size(KitSize::XSmall)
-                                        .icon(IconName::Stop)
-                                        .debug_selector("ICON-Stop")
-                                        .tooltip(Tooltip::text("Stop Subagent"))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            telemetry::event!("Subagent Stopped");
-                                            this.cancel_thread(&thread, cx).detach();
-                                        })),
-                                ),
-                            )
-                        })
-                    })
-                    .when(has_preview, |this| {
-                        this.child(
-                            PillButton::new(("preview-subagent", entry_ix))
-                                .size(KitSize::XSmall)
-                                .icon(if is_expanded {
-                                    IconName::ChevronDown
-                                } else {
-                                    IconName::ChevronRight
-                                })
-                                .tooltip(Tooltip::text(if is_expanded {
-                                    "Collapse Preview"
-                                } else {
-                                    "Preview Subagent"
-                                }))
-                                .on_click(cx.listener({
-                                    let tool_call_id = tool_call.id.clone();
-                                    move |this, _, window, cx| {
-                                        this.hold_scroll_position_for_toggle();
-                                        this.entry_view_state.update(cx, |state, _| {
-                                            state.toggle_tool_call_expansion(&tool_call_id)
-                                        });
-                                        this.refresh_thread_search(window, cx);
-                                        cx.notify();
-                                    }
-                                })),
+                                }),
                         )
-                    }),
-            )
-            .when(subagent_session_id.is_some() || has_preview, |this| {
-                this.on_click(cx.listener({
-                    let tool_call_id = tool_call.id.clone();
-                    move |this, _, window, cx| {
-                        if let Some(session_id) = &subagent_session_id {
-                            telemetry::event!("Subagent Maximized");
-                            this.server_view
-                                .update(cx, |server, cx| {
-                                    server.navigate_to_thread(session_id.clone(), window, cx);
-                                })
-                                .log_err();
-                        } else {
-                            this.hold_scroll_position_for_toggle();
-                            this.entry_view_state.update(cx, |state, _| {
-                                state.toggle_tool_call_expansion(&tool_call_id)
-                            });
-                            this.refresh_thread_search(window, cx);
-                            cx.notify();
-                        }
+                        .child(
+                            h_flex()
+                                .min_w_0()
+                                .gap_2()
+                                .text_color(status_color)
+                                .child(div().min_w_0().truncate().child(
+                                    if is_running && !waiting {
+                                        ShimmerText::new(status).into_any_element()
+                                    } else {
+                                        status.into_any_element()
+                                    },
+                                ))
+                                .when(files_changed > 0, |this| {
+                                    this.child(div().flex_none().child(format!(
+                                        "{files_changed} {}",
+                                        if files_changed == 1 { "file" } else { "files" }
+                                    )))
+                                    .child(diff_stat(diff_stats, cx))
+                                }),
+                        ),
+                )
+                .when(is_running, |this| {
+                    this.when_some(thread.clone(), |this, thread| {
+                        this.child(
+                            div().visible_on_hover(group.clone()).child(
+                                PillButton::new(("stop-subagent", entry_ix))
+                                    .size(KitSize::XSmall)
+                                    .icon(IconName::Stop)
+                                    .debug_selector("ICON-Stop")
+                                    .tooltip(Tooltip::text("Stop Subagent"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        telemetry::event!("Subagent Stopped");
+                                        this.cancel_thread(&thread, cx).detach();
+                                    })),
+                            ),
+                        )
+                    })
+                })
+                .when(has_preview, |this| {
+                    this.child(
+                        PillButton::new(("preview-subagent", entry_ix))
+                            .size(KitSize::XSmall)
+                            .icon(if is_expanded {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            })
+                            .tooltip(Tooltip::text(if is_expanded {
+                                "Collapse Preview"
+                            } else {
+                                "Preview Subagent"
+                            }))
+                            .on_click(cx.listener({
+                                let tool_call_id = tool_call.id.clone();
+                                move |this, _, window, cx| {
+                                    this.hold_scroll_position_for_toggle();
+                                    this.entry_view_state.update(cx, |state, _| {
+                                        state.toggle_tool_call_expansion(&tool_call_id)
+                                    });
+                                    this.refresh_thread_search(window, cx);
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                }),
+        )
+        .when(subagent_session_id.is_some() || has_preview, |this| {
+            this.on_click(cx.listener({
+                let tool_call_id = tool_call.id.clone();
+                move |this, _, window, cx| {
+                    if let Some(session_id) = &subagent_session_id {
+                        telemetry::event!("Subagent Maximized");
+                        this.server_view
+                            .update(cx, |server, cx| {
+                                server.navigate_to_thread(session_id.clone(), window, cx);
+                            })
+                            .log_err();
+                    } else {
+                        this.hold_scroll_position_for_toggle();
+                        this.entry_view_state.update(cx, |state, _| {
+                            state.toggle_tool_call_expansion(&tool_call_id)
+                        });
+                        this.refresh_thread_search(window, cx);
+                        cx.notify();
                     }
-                }))
-            });
+                }
+            }))
+        });
 
         let mut sections = Vec::new();
         if is_running

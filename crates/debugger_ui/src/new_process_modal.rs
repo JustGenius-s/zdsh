@@ -1581,8 +1581,13 @@ impl PickerDelegate for DebugDelegate {
         };
 
         let icon = language_icon.or(icon).map(|icon| {
-            IconWithIndicator::new(icon.color(Color::Muted).size(IconSize::Small), indicator)
-                .indicator_border_color(Some(cx.theme().colors().border_transparent))
+            IconWithIndicator::new(
+                icon.morph_id("debug-task-source")
+                    .color(Color::Muted)
+                    .size(IconSize::Small),
+                indicator,
+            )
+            .indicator_border_color(Some(cx.theme().colors().border_transparent))
         });
 
         Some(

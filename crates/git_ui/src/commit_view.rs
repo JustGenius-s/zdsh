@@ -833,6 +833,7 @@ impl CommitView {
                             Button::new("sha", "Commit SHA")
                                 .start_icon(
                                     Icon::new(copy_icon)
+                                        .morph_id("commit-sha-copy-state")
                                         .size(IconSize::Small)
                                         .color(copy_icon_color),
                                 )

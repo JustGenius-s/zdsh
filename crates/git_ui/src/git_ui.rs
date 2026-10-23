@@ -17,9 +17,9 @@ use gpui::{
     App, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     SharedString, Subscription, Task, TaskExt, WeakEntity, Window,
 };
+use gpui_icons::Icon as MorphIcon;
 use gpui_kit::component::{
-    Icon as KitIcon, Theme as KitTheme, kbd::Kbd, tooltip::Tooltip as KitTooltip,
-    v_flex as kit_v_flex,
+    Theme as KitTheme, kbd::Kbd, tooltip::Tooltip as KitTooltip, v_flex as kit_v_flex,
 };
 use menu::{Cancel, Confirm};
 use notifications::status_toast::StatusToast;
@@ -994,8 +994,9 @@ mod remote_button {
     use crate::git_panel::RemoteOperationKind;
     use crate::{git_tooltip, kit_icon, with_tooltip};
     use gpui::{
-        Action, Anchor, App, ClickEvent, Div, FocusHandle, ParentElement as _, SharedString,
-        Stateful, Styled as _, Window, prelude::FluentBuilder as _,
+        Action, Anchor, App, ClickEvent, Div, FocusHandle, InteractiveElement as _,
+        ParentElement as _, SharedString, Stateful, Styled as _, Window,
+        prelude::FluentBuilder as _,
     };
     use gpui_kit::component::{
         Disableable as _, Sizable as _,
@@ -1165,6 +1166,7 @@ mod remote_button {
 
         let count = |arrow: IconName, count: usize| {
             h_flex()
+                .id(SharedString::from(arrow.path()))
                 .child(kit_icon(arrow).xsmall())
                 .child(Label::new(count.to_string()).text_xs())
         };
@@ -1173,7 +1175,16 @@ mod remote_button {
             .xsmall()
             .disabled(is_in_progress)
             .when_some(icon, |this, icon| {
-                this.icon(kit_icon(icon)).loading(is_in_progress)
+                this.child(
+                    kit_icon(if is_in_progress {
+                        IconName::LoadCircle
+                    } else {
+                        icon
+                    })
+                    .id("remote-operation-icon")
+                    .xsmall()
+                    .spinning(is_in_progress),
+                )
             })
             .when(should_render_counts, |this| {
                 this.child(
@@ -1217,8 +1228,9 @@ mod remote_button {
     }
 }
 
-pub(crate) fn kit_icon(icon: IconName) -> KitIcon {
-    KitIcon::empty().path(icon.path())
+#[track_caller]
+pub(crate) fn kit_icon(icon: IconName) -> MorphIcon {
+    MorphIcon::empty().path(icon.path())
 }
 
 /// A GPUI Kit tooltip for a git control: its title, the shortcut for `action` as resolved from
@@ -1276,7 +1288,11 @@ pub(crate) fn render_split_button_chevron_trigger(
         .selected_style(ButtonStyle::Tinted(TintColor::Accent))
         .width(chevron_button_size)
         .height(chevron_button_size.into())
-        .child(Icon::new(chevron_icon).size(IconSize::XSmall))
+        .child(
+            Icon::new(chevron_icon)
+                .morph_id("split-button-chevron")
+                .size(IconSize::XSmall),
+        )
 }
 
 /// A visual representation of a file's Git status.
@@ -1317,7 +1333,9 @@ impl RenderOnce for GitStatusIcon {
             )
         };
 
-        Icon::new(icon_name).color(Color::Custom(color))
+        Icon::new(icon_name)
+            .morph_id("git-file-status")
+            .color(Color::Custom(color))
     }
 }
 

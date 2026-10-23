@@ -843,6 +843,7 @@ impl LineBreakpoint {
             )))
             .child(
                 Icon::new(icon_name)
+                    .morph_id("breakpoint-state")
                     .color(Color::Debugger)
                     .size(IconSize::XSmall),
             )

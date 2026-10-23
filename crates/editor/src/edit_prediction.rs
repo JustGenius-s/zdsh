@@ -1215,7 +1215,11 @@ impl Editor {
         let is_refreshing = provider.provider.is_refreshing(cx);
 
         fn pending_completion_container(icon: IconName) -> Div {
-            h_flex().h_full().flex_1().gap_2().child(Icon::new(icon))
+            h_flex()
+                .h_full()
+                .flex_1()
+                .gap_2()
+                .child(Icon::new(icon).morph_id("edit-prediction-indicator"))
         }
 
         let completion = match &self.active_edit_prediction {
@@ -1231,6 +1235,7 @@ impl Editor {
 
                     return Some(
                         h_flex()
+                            .id("loading-completion")
                             .elevation_2(cx)
                             .border(BORDER_WIDTH)
                             .border_color(cx.theme().colors().border)
@@ -1246,16 +1251,18 @@ impl Editor {
                                     if target.text_anchor_in(&snapshot).to_point(snapshot).row
                                         > cursor_point.row
                                     {
-                                        Icon::new(icons.down)
+                                        Icon::new(icons.down).morph_id("edit-prediction-indicator")
                                     } else {
-                                        Icon::new(icons.up)
+                                        Icon::new(icons.up).morph_id("edit-prediction-indicator")
                                     }
                                 }
                                 EditPrediction::MoveOutside { .. } => {
                                     // TODO [zeta2] custom icon for external jump?
-                                    Icon::new(icons.base)
+                                    Icon::new(icons.base).morph_id("edit-prediction-indicator")
                                 }
-                                EditPrediction::Edit { .. } => Icon::new(icons.base),
+                                EditPrediction::Edit { .. } => {
+                                    Icon::new(icons.base).morph_id("edit-prediction-indicator")
+                                }
                             }))
                             .child(
                                 h_flex()
@@ -1340,7 +1347,7 @@ impl Editor {
                 )
                 .into_any_element()
         } else {
-            completion.into_any_element()
+            completion.id("loading-completion").into_any_element()
         };
 
         let has_completion = self.active_edit_prediction.is_some();
@@ -2392,7 +2399,12 @@ impl Editor {
                         .color(Color::Muted)
                         .size(LabelSize::Small),
                 )
-                .child(Icon::new(arrow).color(Color::Muted).size(IconSize::Small))
+                .child(
+                    Icon::new(arrow)
+                        .morph_id("edit-prediction-indicator")
+                        .color(Color::Muted)
+                        .size(IconSize::Small),
+                )
         }
 
         let supports_jump = self
@@ -2418,9 +2430,9 @@ impl Editor {
                         .gap_2()
                         .flex_1()
                         .child(if target.to_point(snapshot).row > cursor_point.row {
-                            Icon::new(icons.down)
+                            Icon::new(icons.down).morph_id("edit-prediction-indicator")
                         } else {
-                            Icon::new(icons.up)
+                            Icon::new(icons.up).morph_id("edit-prediction-indicator")
                         })
                         .child(Label::new("Jump to Edit")),
                 )
@@ -2435,7 +2447,7 @@ impl Editor {
                         .px_2()
                         .gap_2()
                         .flex_1()
-                        .child(Icon::new(icons.base))
+                        .child(Icon::new(icons.base).morph_id("edit-prediction-indicator"))
                         .child(Label::new(format!("Jump to {file_name}"))),
                 )
             }
@@ -2480,7 +2492,9 @@ impl Editor {
                     render_relative_row_jump("", cursor_point.row, first_edit_row)
                         .into_any_element()
                 } else {
-                    Icon::new(icons.base).into_any_element()
+                    Icon::new(icons.base)
+                        .morph_id("edit-prediction-indicator")
+                        .into_any_element()
                 };
 
                 Some(

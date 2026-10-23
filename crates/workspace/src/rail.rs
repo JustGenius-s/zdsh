@@ -1,3 +1,4 @@
+use gpui_icons::Icon as KitIcon;
 use std::sync::Arc;
 
 use fs::Fs;
@@ -11,7 +12,7 @@ use gpui_kit::{
     assets::IconName as KitIconName,
     base::Selectable,
     component::{
-        Icon as KitIcon, Theme as KitTheme,
+        Theme as KitTheme,
         menu::{DropdownMenu, PopupMenu, PopupMenuItem},
     },
 };

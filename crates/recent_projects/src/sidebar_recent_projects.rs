@@ -4,8 +4,9 @@ use gpui::{
     Action, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Subscription,
     Task, WeakEntity, Window,
 };
+use gpui_icons::Icon as KitIcon;
 use gpui_kit::component::{
-    Icon as KitIcon, IndexPath,
+    IndexPath,
     button::{Button, ButtonVariants},
     list::{List, ListDelegate, ListEvent, ListItem, ListState},
 };
@@ -301,6 +302,7 @@ impl ListDelegate for SidebarRecentProjectsDelegate {
                     .min_w_0()
                     .child(
                         KitIcon::empty()
+                            .id("project-icon")
                             .path(icon_for_remote_connection(connection).path())
                             .size_4(),
                     )

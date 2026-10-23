@@ -94,7 +94,9 @@ impl Render for StatusToast {
             .flex_none()
             .bg(cx.theme().colors().surface_background)
             .shadow_lg()
-            .when_some(self.icon.clone(), |this, icon| this.child(icon))
+            .when_some(self.icon.clone(), |this, icon| {
+                this.child(icon.morph_id("status-icon"))
+            })
             .child(Label::new(self.text.clone()).color(Color::Default))
             .when_some(self.action.as_ref(), |this, action| {
                 this.child(

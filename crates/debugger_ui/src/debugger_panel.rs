@@ -698,7 +698,7 @@ impl DebugPanel {
                                         if thread_status == ThreadStatus::Running {
                                             this.child(
                                                 IconButton::new(
-                                                    "debug-pause",
+                                                    "debug-execution-toggle",
                                                     IconName::DebugPause,
                                                 )
                                                 .icon_size(IconSize::Small)
@@ -722,7 +722,7 @@ impl DebugPanel {
                                             )
                                         } else {
                                             let continue_button = IconButton::new(
-                                                "debug-continue",
+                                                "debug-execution-toggle",
                                                 IconName::DebugContinue,
                                             )
                                             .icon_size(IconSize::Small)

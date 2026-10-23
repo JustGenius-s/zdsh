@@ -6665,11 +6665,12 @@ impl ProjectPanel {
                         let decoration_color =
                             entry_diagnostic_aware_icon_decoration_and_color(diagnostic_severity)
                                 .map(|(_, color)| color);
-                        let decorated = |glyph: SharedString,
+                        let decorated = |slot: &'static str,
+                                         glyph: SharedString,
                                          decoration_kind: IconDecorationKind,
                                          color: Color| {
                             DecoratedIcon::new(
-                                Icon::from_path(glyph).color(Color::Muted),
+                                Icon::from_path(glyph).morph_id(slot).color(Color::Muted),
                                 Some(
                                     IconDecoration::new(decoration_kind, bg_color, cx)
                                         .group_name(Some(GROUP_NAME.into()))
@@ -6686,11 +6687,18 @@ impl ProjectPanel {
 
                         let icon_slot = if let Some(icon) = &icon {
                             Some(match diagnostic_mark.zip(decoration_color) {
-                                Some((DiagnosticMark::OnIcon(decoration_kind), color)) => {
-                                    div().child(decorated(icon.clone(), decoration_kind, color))
-                                }
-                                _ => h_flex()
-                                    .child(Icon::from_path(icon.to_string()).color(Color::Muted)),
+                                Some((DiagnosticMark::OnIcon(decoration_kind), color)) => div()
+                                    .child(decorated(
+                                        "entry-file-icon",
+                                        icon.clone(),
+                                        decoration_kind,
+                                        color,
+                                    )),
+                                _ => h_flex().child(
+                                    Icon::from_path(icon.to_string())
+                                        .morph_id("entry-file-icon")
+                                        .color(Color::Muted),
+                                ),
                             })
                         } else if let Some(DiagnosticMark::Standalone(icon_name)) = diagnostic_mark
                         {
@@ -6698,9 +6706,12 @@ impl ProjectPanel {
                                 entry_diagnostic_aware_icon_name_and_color(diagnostic_severity)
                                     .map_or(Color::Error, |(_, color)| color);
                             Some(
-                                h_flex()
-                                    .size(IconSize::default().rems())
-                                    .child(Icon::new(icon_name).color(color).size(IconSize::Small)),
+                                h_flex().size(IconSize::default().rems()).child(
+                                    Icon::new(icon_name)
+                                        .morph_id("entry-file-icon")
+                                        .color(color)
+                                        .size(IconSize::Small),
+                                ),
                             )
                         } else if chevron.is_some() {
                             // The chevron already fills this slot; a spacer would double its width.
@@ -6717,9 +6728,10 @@ impl ProjectPanel {
                         let chevron =
                             chevron.map(|chevron| match diagnostic_mark.zip(decoration_color) {
                                 Some((DiagnosticMark::OnChevron(decoration_kind), color)) => {
-                                    decorated(chevron, decoration_kind, color)
+                                    decorated("entry-chevron", chevron, decoration_kind, color)
                                 }
                                 _ => Icon::from_path(chevron)
+                                    .morph_id("entry-chevron")
                                     .color(Color::Muted)
                                     .into_any_element(),
                             });

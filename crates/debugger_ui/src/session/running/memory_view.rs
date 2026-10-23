@@ -893,7 +893,11 @@ impl Render for MemoryView {
                             .child(
                                 div()
                                     .id("memory-view-editor-icon")
-                                    .child(Icon::new(icon).size(ui::IconSize::XSmall))
+                                    .child(
+                                        Icon::new(icon)
+                                            .morph_id("memory-query-state")
+                                            .size(ui::IconSize::XSmall),
+                                    )
                                     .tooltip(Tooltip::text(tooltip_text)),
                             )
                             .child(Divider::vertical())
