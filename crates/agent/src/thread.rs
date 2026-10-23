@@ -274,6 +274,28 @@ pub enum Message {
     Resume,
     Compaction(CompactionInfo),
     PermissionsChanged(PermissionsChange),
+    DebugModeReminder(DebugModeReminder),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DebugModeReminder {
+    prompt_id: PromptId,
+    #[serde(default)]
+    user_message_id: Option<ClientUserMessageId>,
+    #[serde(default)]
+    outcome: DebugTurnOutcome,
+    active: bool,
+    endpoint: Option<String>,
+    content: SharedString,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum DebugTurnOutcome {
+    #[default]
+    InProgress,
+    Completed,
+    Cancelled,
+    Failed,
 }
 
 /// Tells the model that the user changed the thread's permissions since its last request.
@@ -389,6 +411,12 @@ impl Message {
                 reasoning_details: None,
             }],
             Message::PermissionsChanged(change) => vec![change.to_request()],
+            Message::DebugModeReminder(reminder) => vec![LanguageModelRequestMessage {
+                role: Role::User,
+                content: vec![reminder.content.to_string().into()],
+                cache: false,
+                reasoning_details: None,
+            }],
         }
     }
 
@@ -406,6 +434,7 @@ impl Message {
             Message::PermissionsChanged(change) => {
                 format!("[permissions changed to {}]\n", change.label())
             }
+            Message::DebugModeReminder(_) => String::new(),
         }
     }
 
@@ -414,7 +443,8 @@ impl Message {
             Message::User(_)
             | Message::Resume
             | Message::Compaction(_)
-            | Message::PermissionsChanged(_) => Role::User,
+            | Message::PermissionsChanged(_)
+            | Message::DebugModeReminder(_) => Role::User,
             Message::Agent(_) => Role::Assistant,
         }
     }
@@ -1697,6 +1727,7 @@ impl Thread {
         self.thinking_effort = parent.thinking_effort.clone();
         self.summarization_model = parent.summarization_model.clone();
         self.profile_id = parent.profile_id.clone();
+        self.debug_session = parent.debug_session.clone();
         self.profile_downgraded_for_restricted_workspace =
             parent.profile_downgraded_for_restricted_workspace;
         self.parent_thread = Some(parent_thread.downgrade());
@@ -1789,7 +1820,9 @@ impl Thread {
                     }
                     agent_message_index += 1;
                 }
-                Message::Resume | Message::PermissionsChanged(_) => {}
+                Message::Resume
+                | Message::PermissionsChanged(_)
+                | Message::DebugModeReminder(_) => {}
                 Message::Compaction(info) => {
                     let compaction_id = acp_thread::ContextCompactionId(
                         format!("replay-compaction-{message_ix}").into(),
@@ -1989,7 +2022,7 @@ impl Thread {
         cx.defer(move |cx| {
             thread
                 .update(cx, |this, cx| {
-                    if this.profile_id.as_str() == builtin_profiles::DEBUG {
+                    if this.profile_id.as_str() == builtin_profiles::DEBUG && !this.is_subagent() {
                         drop(this.prepare_debug_session(cx));
                     }
                 })
@@ -2558,13 +2591,9 @@ impl Thread {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Shared<Task<Result<Arc<crate::debug_session::DebugSession>, SharedString>>> {
-        if let Some(session) = &self.debug_session {
-            return Task::ready(Ok(session.clone())).shared();
-        }
         if let Some(task) = &self.debug_preparation {
             return task.clone();
         }
-        self.debug_error = None;
         let project = self.project.read(cx);
         let root = (project.is_local()
             && !TrustedWorktrees::has_restricted_worktrees(&project.worktree_store(), cx))
@@ -2575,10 +2604,27 @@ impl Thread {
                 .map(|worktree| worktree.read(cx).abs_path())
         })
         .flatten();
+        let Some(root) = root else {
+            if let Some(session) = self.debug_session.take() {
+                session.stop();
+            }
+            let error = SharedString::from("Debug mode requires a trusted local project");
+            self.debug_error = Some(error.clone());
+            cx.notify();
+            return Task::ready(Err(error)).shared();
+        };
+        if let Some(session) = &self.debug_session
+            && session.is_running()
+            && session.log_path().starts_with(root.as_ref())
+        {
+            return Task::ready(Ok(session.clone())).shared();
+        }
+        if let Some(session) = self.debug_session.take() {
+            session.stop();
+        }
+        self.debug_error = None;
         let session_id = self.id.to_string();
         let opening = cx.background_spawn(async move {
-            let root =
-                root.ok_or_else(|| anyhow!("Debug mode requires a trusted local project"))?;
             crate::debug_session::DebugSession::open(&root, &session_id)
         });
         let task = cx
@@ -2605,6 +2651,19 @@ impl Thread {
             .shared();
         self.debug_preparation = Some(task.clone());
         task
+    }
+
+    pub fn restart_debug_session(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Shared<Task<Result<Arc<crate::debug_session::DebugSession>, SharedString>>> {
+        if let Some(task) = &self.debug_preparation {
+            return task.clone();
+        }
+        if let Some(session) = self.debug_session.take() {
+            session.stop();
+        }
+        self.prepare_debug_session(cx)
     }
 
     /// Whether this thread's profile was downgraded to `minimal` at thread start
@@ -2670,7 +2729,7 @@ impl Thread {
         }
 
         self.profile_id = profile_id.clone();
-        if profile_id.as_str() == builtin_profiles::DEBUG {
+        if profile_id.as_str() == builtin_profiles::DEBUG && !self.is_subagent() {
             drop(self.prepare_debug_session(cx));
         }
 
@@ -2701,6 +2760,7 @@ impl Thread {
         };
 
         let prompt_id = running_turn.prompt_id.clone();
+        self.record_debug_turn_outcome(&prompt_id, DebugTurnOutcome::Cancelled, cx);
         let turn_task = running_turn.cancel();
 
         cx.spawn(async move |this, cx| {
@@ -2842,7 +2902,8 @@ impl Thread {
                 Message::Agent(_)
                 | Message::Resume
                 | Message::Compaction(_)
-                | Message::PermissionsChanged(_) => {}
+                | Message::PermissionsChanged(_)
+                | Message::DebugModeReminder(_) => {}
             }
         }
         self.usage_predates_compaction =
@@ -3351,7 +3412,19 @@ impl Thread {
                     return;
                 }
 
-                _ = this.update(cx, |this, cx| this.flush_pending_message(cx));
+                this.update(cx, |this, cx| {
+                    this.flush_pending_message(cx);
+                    this.record_debug_turn_outcome(
+                        &prompt_id,
+                        if turn_result.is_ok() {
+                            DebugTurnOutcome::Completed
+                        } else {
+                            DebugTurnOutcome::Failed
+                        },
+                        cx,
+                    );
+                })
+                .log_err();
 
                 match turn_result {
                     Ok(()) => {
@@ -3396,15 +3469,6 @@ impl Thread {
         mut cancellation_rx: watch::Receiver<bool>,
         cx: &mut AsyncApp,
     ) -> Result<()> {
-        let debug_preparation = this.update(cx, |this, cx| {
-            (this.profile_id.as_str() == builtin_profiles::DEBUG && !this.is_subagent())
-                .then(|| this.prepare_debug_session(cx))
-        })?;
-        if let Some(preparation) = debug_preparation {
-            preparation
-                .await
-                .map_err(|error| anyhow!(error.to_string()))?;
-        }
         let mut attempt = 0;
         let mut intent = CompletionIntent::UserPrompt;
         // Set when a refusal fallback occurs so subsequent iterations use the fallback model.
@@ -3499,6 +3563,28 @@ impl Thread {
             if *cancellation_rx.borrow() {
                 return Ok(());
             }
+            let debug_owner = this.read_with(cx, |thread, _| {
+                (thread.profile_id.as_str() == builtin_profiles::DEBUG)
+                    .then(|| thread.parent_thread.clone().unwrap_or_else(|| this.clone()))
+            })?;
+            if let Some(owner) = debug_owner {
+                let preparation =
+                    owner.update(cx, |thread, cx| thread.prepare_debug_session(cx))?;
+                let session = futures::select_biased! {
+                    changed = cancellation_rx.changed().fuse() => {
+                        if changed.is_err() || *cancellation_rx.borrow() {
+                            return Ok(());
+                        }
+                        continue;
+                    }
+                    result = preparation.fuse() => result.map_err(|error| anyhow!(error.to_string()))?,
+                };
+                this.update(cx, |thread, _| {
+                    if thread.profile_id.as_str() == builtin_profiles::DEBUG {
+                        thread.debug_session = Some(session);
+                    }
+                })?;
+            }
             // Re-read the model and refresh tools on each iteration so that
             // mid-turn changes (e.g. the user switches model, toggles tools,
             // or changes profile) take effect between tool-call rounds.
@@ -3511,6 +3597,7 @@ impl Thread {
                 let provider = LanguageModelRegistry::read_global(cx).provider_for_model(&model);
                 this.refresh_turn_tools(cx);
                 this.announce_permissions_change(cx);
+                this.announce_debug_mode(cx)?;
                 let request = this.build_completion_request(intent, cx)?;
                 this.current_request_token_usage = TokenUsage::default();
                 anyhow::Ok((model, provider, request))
@@ -4996,7 +5083,8 @@ impl Thread {
                 Message::Agent(_)
                 | Message::Resume
                 | Message::Compaction(_)
-                | Message::PermissionsChanged(_) => None,
+                | Message::PermissionsChanged(_)
+                | Message::DebugModeReminder(_) => None,
             })
     }
 
@@ -5112,6 +5200,120 @@ impl Thread {
                 permissions,
                 sandboxed,
             })));
+    }
+
+    fn announce_debug_mode(&mut self, cx: &mut Context<Self>) -> Result<()> {
+        let active = self.profile_id.as_str() == builtin_profiles::DEBUG;
+        let previous = self
+            .messages
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, message)| {
+                if let Message::DebugModeReminder(reminder) = message.as_ref() {
+                    Some((index, reminder))
+                } else {
+                    None
+                }
+            });
+        let was_active = previous.is_some_and(|(_, reminder)| reminder.active);
+        if !active && !was_active {
+            return Ok(());
+        }
+
+        let session = active
+            .then(|| {
+                self.debug_session
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Debug log collector is not ready"))
+            })
+            .transpose()?;
+        let endpoint = session.map(|session| session.endpoint().to_string());
+        let compacted = previous.is_some_and(|(index, _)| {
+            latest_compaction_message_ix_before(&self.messages, self.messages.len())
+                .is_some_and(|compaction_index| compaction_index > index)
+        });
+        let endpoint_changed = previous.is_some_and(|(_, reminder)| reminder.endpoint != endpoint);
+        if !compacted
+            && !endpoint_changed
+            && previous.is_some_and(|(_, reminder)| {
+                reminder.prompt_id == self.prompt_id && reminder.active == active
+            })
+        {
+            return Ok(());
+        }
+
+        let content = if let Some(session) = session {
+            let run_id = self
+                .last_user_message_id()
+                .map(|id| id.message_id().to_string())
+                .unwrap_or_else(|| self.prompt_id.to_string());
+            let mut content = if !was_active || compacted || endpoint_changed {
+                session.entry_reminder(&run_id)
+            } else {
+                session.continuation_reminder(&run_id)
+            };
+            if self.is_subagent() {
+                content.push_str("\nYou share the parent investigation's collector. Report hypotheses, evidence and reproduction requirements to the parent agent; do not independently ask the user to reproduce or remove another agent's instrumentation.\n");
+            }
+            content
+        } else {
+            "The user has left Debug mode. Follow the current profile and user request. Do not keep requesting reproductions solely because earlier Debug reminders required them. Leave existing instrumentation and logs alone unless cleanup is requested.".to_string()
+        };
+
+        // Keep mode transitions in model history so retries and restored conversations retain
+        // the same instructions, without turning internal reminders into visible user messages.
+        self.flush_pending_message(cx);
+        self.messages
+            .push(Arc::new(Message::DebugModeReminder(DebugModeReminder {
+                prompt_id: self.prompt_id.clone(),
+                user_message_id: self.last_user_message_id(),
+                outcome: DebugTurnOutcome::InProgress,
+                active,
+                endpoint,
+                content: content.into(),
+            })));
+        cx.notify();
+        Ok(())
+    }
+
+    pub fn debug_turn_outcome(
+        &self,
+        user_message_id: &ClientUserMessageId,
+    ) -> Option<DebugTurnOutcome> {
+        self.messages.iter().rev().find_map(|message| {
+            if let Message::DebugModeReminder(reminder) = message.as_ref()
+                && reminder.user_message_id.as_ref() == Some(user_message_id)
+            {
+                Some(reminder.outcome)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn record_debug_turn_outcome(
+        &mut self,
+        prompt_id: &PromptId,
+        outcome: DebugTurnOutcome,
+        cx: &mut Context<Self>,
+    ) {
+        let mut changed = false;
+        for message in &mut self.messages {
+            if let Message::DebugModeReminder(reminder) = message.as_ref()
+                && &reminder.prompt_id == prompt_id
+                && reminder.outcome != outcome
+            {
+                let mut reminder = reminder.clone();
+                reminder.outcome = outcome;
+                *message = Arc::new(Message::DebugModeReminder(reminder));
+                changed = true;
+            }
+        }
+        if changed {
+            self.retained_history_revision += 1;
+            cx.notify();
+        }
     }
 
     fn pending_message(&mut self) -> &mut AgentMessage {
@@ -5474,7 +5676,7 @@ impl Thread {
     fn render_system_prompt(&self, available_tools: Vec<SharedString>, cx: &App) -> String {
         let user_agents_md = UserAgentsMd::global(cx).and_then(|s| s.content().cloned());
         let profile = AgentSettings::get_global(cx).profiles.get(&self.profile_id);
-        let mut prompt = SystemPromptTemplate {
+        let prompt = SystemPromptTemplate {
             project: self.project_context.read(cx),
             available_tools,
             model_name: self.model().map(|m| m.name().0.to_string()),
@@ -5493,11 +5695,6 @@ impl Thread {
         .render(&self.templates)
         .context("failed to build system prompt")
         .expect("Invalid template");
-        if self.profile_id.as_str() == builtin_profiles::DEBUG
-            && let Some(session) = &self.debug_session
-        {
-            prompt.push_str(&session.prompt());
-        }
         prompt
     }
 
@@ -5979,7 +6176,10 @@ pub(crate) fn messages_to_markdown(messages: &[Arc<Message>]) -> String {
         match &**message {
             Message::User(_) => markdown.push_str("## User\n\n"),
             Message::Agent(_) => markdown.push_str("## Assistant\n\n"),
-            Message::Resume | Message::Compaction(_) | Message::PermissionsChanged(_) => {}
+            Message::Resume
+            | Message::Compaction(_)
+            | Message::PermissionsChanged(_)
+            | Message::DebugModeReminder(_) => {}
         }
         markdown.push_str(&message.to_markdown());
     }

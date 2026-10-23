@@ -20,24 +20,15 @@ Shipped behavior is [docs/zdsh.md](docs/zdsh.md).
   - [x] 移除会话输出下面的滚动到用户消息按钮
   - [x] 会话输出下面的复制按钮点击后变成勾勾并弹窗提示复制成功
   - [x] 增加会话 fork 功能
-  - [x] 支持 Cursor Debug 模式
+  - [x] 支持 Cursor Debug 模式（复现步骤、队列等待、日志查看、重启恢复及验证流程已对齐）
   - [x] 支持输出内容选中添加到会话
   - [x] 支持模型 token 速率展示，缓存率展示
   - [x] 支持 Ask Question 工具
   - [x] 命令审批工具优化
   - [x] 支持 Composer 预测，Tab 自动接收，https://learn.chatgpt.com/docs/features/composer-predictions
+  - [ ] Markdown 拓展，支持可视化 Markdown 编辑器
   - [ ] 研究 Cursor 提示词和工具提示词，分析模型在 Cursor 中能输出高质量总结的原因，进行对齐（部分已对齐）
-
-
-  **新增问题**
-
-  - [x] Ask Question 工具没对齐 cursor
-  - [x] 命令审批工具没对齐 cursor
-  - [x] Composer 预测的内容和会话内容无关
-  - [x] 会话 fork 会导致闪退
-  - [x] 需要移除滚动到 Top
-  - [x] 会话结束后的操作按钮间距加大
-  - [x] 输出结束后 Worked 默认折叠
+  - [ ] 支持 Background Task. Background Task 会新建终端 Tab 执行. 任务完成之后通知 Agent
 
 - [x] 右侧边栏优化
   - [x] 分类项的菜单默认隐藏，鼠标悬浮后展示
@@ -65,13 +56,14 @@ Shipped behavior is [docs/zdsh.md](docs/zdsh.md).
 - [ ] 支持 Dots
 - [ ] 优化自动上下文压缩
 - [ ] 丰富插件体系
-- [ ] Markdown 拓展，支持可视化 Markdown 编辑器
 - [ ] 工具性能优化
 - [ ] 支持 Agent Trace
 - [ ] Worktree 功能优化
 - [ ] 完善更新图标合集
 - [ ] 支持自定义命令和Hooks
 - [ ] SSH 远程开发优化
+- [ ] 支持子 Agent 和父 Agent 的实时通信
+- [ ] 支持子会话和会话间通信
 
 ## Later
 

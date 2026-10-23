@@ -73,6 +73,7 @@ use transcript::AlertCard;
 
 mod activity_bar;
 mod composer;
+mod debug;
 mod navigation;
 mod tool_calls;
 mod transcript;
@@ -620,8 +621,7 @@ pub struct ThreadView {
     composer_bounds: Rc<Cell<Option<gpui::Bounds<Pixels>>>>,
     context_usage_expanded: bool,
     cursor_usage_expanded: bool,
-    debug_panel_expanded: bool,
-    debug_reproduction_seen: Option<usize>,
+    debug_ui: debug::DebugUiState,
     prediction_task: Option<Task<()>>,
     /// Whether the docked composer puts its controls on a row below the input, as it does once
     /// the input takes more than one line.
@@ -827,7 +827,10 @@ impl ThreadView {
         let session_id = thread.read(cx).session_id().clone();
         let parent_session_id = thread.read(cx).parent_session_id().cloned();
 
-        subscriptions.push(cx.observe(&thread, |_, _, cx| cx.notify()));
+        subscriptions.push(cx.observe(&thread, |this, _, cx| {
+            this.sync_debug_state(cx);
+            cx.notify();
+        }));
         subscriptions.push(cx.observe(&conversation, |_, _, cx| cx.notify()));
 
         let has_slash_completions = session_capabilities.read().has_slash_completions();
@@ -993,10 +996,26 @@ impl ThreadView {
                     &native_thread,
                     window,
                     |this, thread, window, cx| {
+                        let was_debug = this.debug_ui.active;
+                        this.sync_debug_state(cx);
                         if thread.read(cx).profile().as_str()
                             == agent_settings::builtin_profiles::DEBUG
                         {
                             this.clear_composer_prediction(window, cx);
+                        }
+                        if was_debug && !this.debug_ui.active {
+                            this.sync_queue_flag_to_native_thread(cx);
+                            if this.thread.read(cx).status() == ThreadStatus::Idle {
+                                let is_first_editor_focused =
+                                    this.message_queue.first().is_some_and(|entry| {
+                                        entry.editor.focus_handle(cx).is_focused(window)
+                                    });
+                                this.send_queued_message_after_generation_stopped(
+                                    is_first_editor_focused,
+                                    window,
+                                    cx,
+                                );
+                            }
                         }
                         cx.notify();
                     },
@@ -1028,6 +1047,8 @@ impl ThreadView {
             window,
             |this, _, event: &acp_thread::AcpThreadEvent, window, cx| {
                 if let acp_thread::AcpThreadEvent::Stopped { stop_reason, .. } = event {
+                    this.record_debug_stop(stop_reason.as_ref(), cx);
+                    this.sync_debug_state(cx);
                     this.refresh_cursor_usage_after_turn(cx);
                     if matches!(stop_reason, Some(acp_v2::StopReason::EndTurn)) {
                         this.request_composer_prediction(window, cx);
@@ -1132,8 +1153,7 @@ impl ThreadView {
             composer_bounds: Rc::default(),
             context_usage_expanded: false,
             cursor_usage_expanded: false,
-            debug_panel_expanded: false,
-            debug_reproduction_seen: None,
+            debug_ui: debug::DebugUiState::default(),
             prediction_task: None,
             composer_stacked: false,
             empty_thread_placeholder: placeholder,
@@ -1164,6 +1184,7 @@ impl ThreadView {
         this.sync_editor_mode(cx);
         this.sync_placeholder(window, cx);
         this.sync_existing_elicitation_states(window, cx);
+        this.sync_debug_state(cx);
         this.subscribe_to_navigation_focus(window, cx);
         let list_state_for_scroll = this.list_state.clone();
         let thread_view = cx.entity().downgrade();
@@ -2634,6 +2655,7 @@ impl ThreadView {
         let error = error.into();
         self.emit_thread_error_telemetry(&error, cx);
         self.thread_error = Some(error);
+        self.sync_debug_state(cx);
         cx.notify();
     }
 
@@ -3093,7 +3115,8 @@ impl ThreadView {
         if let Some(native_thread) = self.as_native_thread(cx) {
             // By default queued messages wait for the turn to fully complete.
             // Only a "steering" front message ends the turn at the next boundary.
-            let end_at_boundary = self.message_queue.front_wants_steer()
+            let end_at_boundary = !self.waiting_for_debug_reproduction(cx)
+                && self.message_queue.front_wants_steer()
                 && self.message_queue.first().is_some_and(|entry| {
                     self.thread
                         .read(cx)
@@ -3123,6 +3146,10 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.waiting_for_debug_reproduction(cx) {
+            self.sync_queue_flag_to_native_thread(cx);
+            return false;
+        }
         if let Some(id) = self
             .message_queue
             .auto_send_candidate(is_first_editor_focused)
@@ -3932,6 +3959,7 @@ impl ThreadView {
         self.thread_error = None;
         self.thread_error_markdown = None;
         self.token_limit_callout_dismissed = true;
+        self.sync_debug_state(cx);
         cx.notify();
     }
 
@@ -8835,13 +8863,16 @@ impl Render for ThreadView {
             .key_context("AcpThread")
             .track_focus(&self.focus_handle)
             .capture_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
-                if this.dismiss_conversation_navigation(window, cx) {
+                if this.dismiss_debug_panel(cx) || this.dismiss_conversation_navigation(window, cx)
+                {
                     cx.stop_propagation();
                 }
             }))
             .capture_action(
                 cx.listener(|this, _: &editor::actions::Cancel, window, cx| {
-                    if this.dismiss_conversation_navigation(window, cx) {
+                    if this.dismiss_debug_panel(cx)
+                        || this.dismiss_conversation_navigation(window, cx)
+                    {
                         cx.stop_propagation();
                     }
                 }),

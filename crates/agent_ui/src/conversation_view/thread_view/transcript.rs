@@ -655,16 +655,29 @@ impl ThreadView {
             .iter()
             .enumerate()
             .filter_map(|(chunk_ix, chunk)| match chunk {
-                AssistantMessageChunk::Message { block, .. } => {
-                    block.visible_content(cx).then(|| {
+                AssistantMessageChunk::Message { block, .. } => block
+                    .blocks()
+                    .any(|block| {
+                        block.markdown().map_or_else(
+                            || block.visible_content(cx),
+                            |markdown| {
+                                !self
+                                    .debug_display_markdown(markdown)
+                                    .read(cx)
+                                    .source()
+                                    .trim()
+                                    .is_empty()
+                            },
+                        )
+                    })
+                    .then(|| {
                         div()
                             .id(("assistant-message-chunk", chunk_ix))
                             .child(self.render_message_content(
                                 entry_ix, chunk_ix, block, false, window, cx,
                             ))
                             .into_any_element()
-                    })
-                }
+                    }),
                 AssistantMessageChunk::Thought { block, .. } => (!thoughts_folded
                     && block.visible_content(cx))
                 .then(|| {
@@ -985,9 +998,19 @@ impl ThreadView {
                 .blocks()
                 .enumerate()
                 .filter(|(_, block)| block.visible_content(cx))
-                .map(|(block_ix, block)| {
-                    let content = match block.markdown() {
+                .filter_map(|(block_ix, block)| {
+                    let markdown = block.markdown().map(|markdown| {
+                        if muted {
+                            markdown.clone()
+                        } else {
+                            self.debug_display_markdown(markdown)
+                        }
+                    });
+                    let content = match markdown.as_ref() {
                         Some(markdown) => {
+                            if markdown.read(cx).source().trim().is_empty() {
+                                return None;
+                            }
                             let mut style = transcript_markdown_style(window, cx);
                             if muted {
                                 style.base_text_style.color = text_shades(cx).secondary;
@@ -999,17 +1022,16 @@ impl ThreadView {
                             entry_ix, block_ix, block, None, false, window, cx,
                         ),
                     };
-                    div()
-                        .id(("message-content-block", block_ix))
-                        .debug_selector(move || {
-                            format!("message-content-{entry_ix}-{chunk_ix}-{block_ix}")
-                        })
-                        .child(self.render_message_context_menu(
-                            entry_ix,
-                            block.markdown().cloned(),
-                            content,
-                            cx,
-                        ))
+                    Some(
+                        div()
+                            .id(("message-content-block", block_ix))
+                            .debug_selector(move || {
+                                format!("message-content-{entry_ix}-{chunk_ix}-{block_ix}")
+                            })
+                            .child(
+                                self.render_message_context_menu(entry_ix, markdown, content, cx),
+                            ),
+                    )
                 }),
         )
     }
