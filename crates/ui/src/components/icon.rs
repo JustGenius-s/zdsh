@@ -270,6 +270,7 @@ impl RenderOnce for Icon {
                 let group_hover_color = self.group_hover_color.map(|color| color.color(cx));
                 return gpui_icons::MorphIcon::new(self.morph_id, path)
                     .transform(self.transformation)
+                    .glyph_scale(gpui_icons::BOX_GLYPH_SCALE)
                     .spinning(self.spin_period.is_some())
                     .spin_period(self.spin_period.unwrap_or(1) as f64)
                     .size(self.size)

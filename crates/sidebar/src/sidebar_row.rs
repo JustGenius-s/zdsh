@@ -1,10 +1,14 @@
+use std::path::Path;
+
 use chrono::{DateTime, Utc};
+use file_icons::FileIcons;
 use gpui::{
-    AnyElement, AnyView, App, ClickEvent, ElementId, SharedString, Window, div, prelude::*, rems,
+    AnyElement, AnyView, App, ClickEvent, ElementId, Hsla, SharedString, Window, div, prelude::*,
+    rems,
 };
 use gpui_icons::Icon;
 use gpui_kit::component::{
-    Selectable as _, Sizable as _,
+    Icon as KitIcon, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
 };
@@ -25,10 +29,13 @@ const ROW_PADDING_X: f32 = 6.;
 const ROW_GAP: f32 = 6.;
 const ROW_RADIUS: f32 = 8.;
 const ICON_BOX: f32 = 20.;
-// Icons are drawn on a 24-unit grid inside a 30-unit view box, so their box is about 1.3 times
-// the size they show at: 19 shows Cursor's 14.5, and 8 shows a 6px dot.
-const STATUS_DOT: f32 = 8.;
-const GLYPH_SIZE: f32 = 19.;
+// These glyphs are sized to Cursor's own measurements, so they fill their box as in Cursor's font
+// instead of drawing at `gpui_icons::BOX_GLYPH_SCALE`. They take up about 23 of its 24 units:
+// 15.2 shows Cursor's 14.5, and 6.4 shows a 6px dot.
+const STATUS_DOT: f32 = 6.4;
+const GLYPH_SIZE: f32 = 15.2;
+// Theme file icons fill most of a 16-unit grid, so 16 shows them about as large as the glyphs.
+const FILE_ICON_SIZE: f32 = 16.;
 
 /// A row of the threads sidebar: an icon, a title, and something at the end, such as how long
 /// ago the thread was updated or buttons that act on it.
@@ -226,10 +233,10 @@ pub(crate) enum StatusDot {
     Read,
 }
 
-impl RenderOnce for StatusDot {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+impl StatusDot {
+    fn glyph(self, cx: &App) -> (gpui_icons::IconName, gpui_icons::Variant, Hsla) {
         let colors = cx.theme().colors();
-        let (name, variant, color) = match self {
+        match self {
             StatusDot::Running => (
                 gpui_icons::IconName::Loading,
                 gpui_icons::Variant::Outline,
@@ -260,16 +267,37 @@ impl RenderOnce for StatusDot {
                 gpui_icons::Variant::Filled,
                 colors.text.opacity(0.24),
             ),
-        };
+        }
+    }
+
+    /// The status as a menu item's icon, as large and in the color the sidebar draws it.
+    pub(crate) fn menu_icon(self, cx: &App) -> KitIcon {
+        let (name, variant, color) = self.glyph(cx);
+        workspace::menu_icon_in_box(
+            KitIcon::empty().path(name.path_with_variant(variant)),
+            self.size(),
+        )
+        .text_color(color)
+    }
+
+    fn size(self) -> f32 {
+        if self == StatusDot::Running {
+            GLYPH_SIZE
+        } else {
+            STATUS_DOT
+        }
+    }
+}
+
+impl RenderOnce for StatusDot {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (name, variant, color) = self.glyph(cx);
         Icon::empty()
             .id("thread-status-icon")
             .path(name.path_with_variant(variant))
             .text_color(color)
-            .size(rems_from_px(if self == StatusDot::Running {
-                GLYPH_SIZE
-            } else {
-                STATUS_DOT
-            }))
+            .size(rems_from_px(self.size()))
+            .glyph_scale(1.)
             .spinning(self == StatusDot::Running)
     }
 }
@@ -279,10 +307,21 @@ pub(crate) fn sidebar_icon(icon: IconName) -> Icon {
     Icon::empty().path(icon.path()).size(rems(0.875))
 }
 
+/// The icon theme's icon for the file at `path`, at the sidebar's icon size.
+#[track_caller]
+pub(crate) fn file_icon(path: &Path, cx: &App) -> Icon {
+    let icon_path = FileIcons::get_icon(path, cx).unwrap_or_else(|| IconName::File.path().into());
+    Icon::empty()
+        .path(icon_path)
+        .size(rems_from_px(FILE_ICON_SIZE))
+}
+
 /// An icon from the set Cursor's sidebar draws with, at the sidebar's icon size.
 #[track_caller]
 pub(crate) fn glyph(name: gpui_icons::IconName) -> Icon {
-    Icon::new(name).size(rems_from_px(GLYPH_SIZE))
+    Icon::new(name)
+        .size(rems_from_px(GLYPH_SIZE))
+        .glyph_scale(1.)
 }
 
 pub(crate) fn glyph_button(id: impl Into<ElementId>, name: gpui_icons::IconName) -> Button {

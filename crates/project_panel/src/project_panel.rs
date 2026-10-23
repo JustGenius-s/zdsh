@@ -1,4 +1,3 @@
-mod project_header;
 pub mod project_panel_settings;
 mod undo;
 mod utils;
@@ -29,6 +28,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window, actions, anchored, deferred, div, hsla,
     linear_color_stop, linear_gradient, point, px, size, uniform_list,
 };
+use gpui_icons::IconName as MenuIcon;
 use gpui_kit::component::menu::PopupMenu;
 use itertools::Itertools;
 use language::DiagnosticSeverity;
@@ -1176,17 +1176,20 @@ impl ProjectPanel {
 
             let has_pasteable_content = self.has_pasteable_content(cx);
             let selected_path = worktree.absolutize(&entry.path);
-            let context_menu = PopupMenu::build(window, cx, |menu, _, _| {
+            let context_menu = PopupMenu::build(window, cx, |menu, window, _| {
+                let menu = workspace::style_menu(menu, window);
                 menu.action_context(self.focus_handle.clone())
-                    .menu(
+                    .menu_with_icon(
                         "Add to Chat",
+                        workspace::menu_icon(MenuIcon::ChatBubblePlus),
                         Box::new(zed_actions::agent::AddPathsToThread {
                             paths: vec![selected_path.clone()],
                         }),
                     )
                     .when(!is_dir && self.has_git_changes(entry_id), |menu| {
-                        menu.menu(
+                        menu.menu_with_icon(
                             "Open Diff",
+                            workspace::menu_icon(MenuIcon::DiffSingle),
                             Box::new(git::OpenFileDiff {
                                 path: Some(selected_path.clone()),
                             }),
@@ -1196,137 +1199,251 @@ impl ProjectPanel {
                     .map(|menu| {
                         if is_read_only {
                             menu.when(is_markdown, |menu| {
-                                menu.menu("Open Markdown Preview", Box::new(OpenMarkdownPreview))
+                                menu.menu_with_icon(
+                                    "Open Markdown Preview",
+                                    workspace::menu_icon(MenuIcon::Markdown),
+                                    Box::new(OpenMarkdownPreview),
+                                )
                             })
                             .when(is_svg, |menu| {
-                                menu.menu("Open SVG Preview", Box::new(OpenSvgPreview))
+                                menu.menu_with_icon(
+                                    "Open SVG Preview",
+                                    workspace::menu_icon(MenuIcon::Image),
+                                    Box::new(OpenSvgPreview),
+                                )
                             })
                             .when(is_dir, |menu| {
-                                menu.menu("Search Inside", Box::new(NewSearchInDirectory))
+                                menu.menu_with_icon(
+                                    "Search Inside",
+                                    workspace::menu_icon(MenuIcon::MagnifyingGlass),
+                                    Box::new(NewSearchInDirectory),
+                                )
                             })
                         } else {
-                            menu.menu("New File", Box::new(NewFile))
-                                .menu("New Folder", Box::new(NewDirectory))
-                                .separator()
-                                .when(is_local, |menu| {
-                                    menu.menu(
-                                        ui::utils::reveal_in_file_manager_label(is_remote),
-                                        Box::new(RevealInFileManager),
-                                    )
-                                })
-                                .when(is_local, |menu| {
-                                    menu.menu("Open in Default App", Box::new(OpenWithSystem))
-                                })
-                                .menu("Open in Terminal", Box::new(OpenInTerminal))
-                                .when(is_markdown, |menu| {
-                                    menu.menu(
-                                        "Open Markdown Preview",
-                                        Box::new(OpenMarkdownPreview),
-                                    )
-                                })
-                                .when(is_svg, |menu| {
-                                    menu.menu("Open SVG Preview", Box::new(OpenSvgPreview))
-                                })
-                                .when(is_dir, |menu| {
-                                    menu.separator()
-                                        .menu("Find in Folder…", Box::new(NewSearchInDirectory))
-                                })
-                                .when(is_unfoldable, |menu| {
-                                    menu.menu("Unfold Directory", Box::new(UnfoldDirectory))
-                                })
-                                .when(is_foldable, |menu| {
-                                    menu.menu("Fold Directory", Box::new(FoldDirectory))
-                                })
-                                .when(should_show_compare, |menu| {
-                                    menu.separator()
-                                        .menu("Compare Marked Files", Box::new(CompareMarkedFiles))
-                                })
-                                .separator()
-                                .menu("Cut", Box::new(Cut))
-                                .menu("Copy", Box::new(Copy))
-                                .menu("Duplicate", Box::new(Duplicate))
-                                .menu_with_disabled(
-                                    "Paste",
-                                    Box::new(Paste),
-                                    !has_pasteable_content,
+                            menu.menu_with_icon(
+                                "New File",
+                                workspace::menu_icon(MenuIcon::FilePlus),
+                                Box::new(NewFile),
+                            )
+                            .menu_with_icon(
+                                "New Folder",
+                                workspace::menu_icon(MenuIcon::FolderPlus),
+                                Box::new(NewDirectory),
+                            )
+                            .separator()
+                            .when(is_local, |menu| {
+                                menu.menu_with_icon(
+                                    ui::utils::reveal_in_file_manager_label(is_remote),
+                                    workspace::menu_icon(MenuIcon::FolderOpen),
+                                    Box::new(RevealInFileManager),
                                 )
-                                .when(!is_collab, |menu| {
-                                    let can_undo = self.undo_manager.can_undo();
-                                    let can_redo = self.undo_manager.can_redo();
+                            })
+                            .when(is_local, |menu| {
+                                menu.menu_with_icon(
+                                    "Open in Default App",
+                                    workspace::menu_icon(MenuIcon::FileArrowRightUp),
+                                    Box::new(OpenWithSystem),
+                                )
+                            })
+                            .menu_with_icon(
+                                "Open in Terminal",
+                                workspace::menu_icon(MenuIcon::TerminalRectangle),
+                                Box::new(OpenInTerminal),
+                            )
+                            .when(is_markdown, |menu| {
+                                menu.menu_with_icon(
+                                    "Open Markdown Preview",
+                                    workspace::menu_icon(MenuIcon::Markdown),
+                                    Box::new(OpenMarkdownPreview),
+                                )
+                            })
+                            .when(is_svg, |menu| {
+                                menu.menu_with_icon(
+                                    "Open SVG Preview",
+                                    workspace::menu_icon(MenuIcon::Image),
+                                    Box::new(OpenSvgPreview),
+                                )
+                            })
+                            .when(is_dir, |menu| {
+                                menu.separator().menu_with_icon(
+                                    "Find in Folder…",
+                                    workspace::menu_icon(MenuIcon::MagnifyingGlass),
+                                    Box::new(NewSearchInDirectory),
+                                )
+                            })
+                            .when(is_unfoldable, |menu| {
+                                menu.menu_with_icon(
+                                    "Unfold Directory",
+                                    workspace::menu_icon(MenuIcon::UnfoldDashed),
+                                    Box::new(UnfoldDirectory),
+                                )
+                            })
+                            .when(is_foldable, |menu| {
+                                menu.menu_with_icon(
+                                    "Fold Directory",
+                                    workspace::menu_icon(MenuIcon::FoldDashed),
+                                    Box::new(FoldDirectory),
+                                )
+                            })
+                            .when(should_show_compare, |menu| {
+                                menu.separator().menu_with_icon(
+                                    "Compare Marked Files",
+                                    workspace::menu_icon(MenuIcon::GitCompare),
+                                    Box::new(CompareMarkedFiles),
+                                )
+                            })
+                            .separator()
+                            .menu_with_icon("Cut", workspace::menu_icon_spacer(), Box::new(Cut))
+                            .menu_with_icon(
+                                "Copy",
+                                workspace::menu_icon(MenuIcon::Copy),
+                                Box::new(Copy),
+                            )
+                            .menu_with_icon(
+                                "Duplicate",
+                                workspace::menu_icon(MenuIcon::Clone),
+                                Box::new(Duplicate),
+                            )
+                            .menu_with_icon_and_disabled(
+                                "Paste",
+                                workspace::menu_icon(MenuIcon::Clipboard),
+                                Box::new(Paste),
+                                !has_pasteable_content,
+                            )
+                            .when(!is_collab, |menu| {
+                                let can_undo = self.undo_manager.can_undo();
+                                let can_redo = self.undo_manager.can_redo();
 
-                                    menu.menu_with_disabled("Undo", Box::new(Undo), !can_undo)
-                                        .menu_with_disabled("Redo", Box::new(Redo), !can_redo)
-                                })
-                                .when(is_remote, |menu| {
-                                    menu.separator()
-                                        .menu("Download...", Box::new(DownloadFromRemote))
-                                })
-                                .separator()
-                                .menu("Copy Path", Box::new(zed_actions::workspace::CopyPath))
-                                .menu(
-                                    "Copy Relative Path",
-                                    Box::new(zed_actions::workspace::CopyRelativePath),
+                                menu.menu_with_icon_and_disabled(
+                                    "Undo",
+                                    workspace::menu_icon(MenuIcon::ArrowBendUpLeft),
+                                    Box::new(Undo),
+                                    !can_undo,
                                 )
-                                .when(has_git_repo, |menu| {
-                                    menu.separator()
-                                        .when(!is_dir && self.has_git_changes(entry_id), |menu| {
-                                            menu.menu(
-                                                "Restore File",
-                                                Box::new(git::RestoreFile { skip_prompt: false }),
-                                            )
-                                        })
-                                        .menu("Add to .gitignore", Box::new(git::AddToGitignore))
-                                        .menu(
-                                            "Add to .git/info/exclude",
-                                            Box::new(git::AddToGitInfoExclude),
+                                .menu_with_icon_and_disabled(
+                                    "Redo",
+                                    workspace::menu_icon(MenuIcon::ArrowBendUpRight),
+                                    Box::new(Redo),
+                                    !can_redo,
+                                )
+                            })
+                            .when(is_remote, |menu| {
+                                menu.separator().menu_with_icon(
+                                    "Download...",
+                                    workspace::menu_icon(MenuIcon::CloudArrowDown),
+                                    Box::new(DownloadFromRemote),
+                                )
+                            })
+                            .separator()
+                            .menu_with_icon(
+                                "Copy Path",
+                                workspace::menu_icon(MenuIcon::Copy),
+                                Box::new(zed_actions::workspace::CopyPath),
+                            )
+                            .menu_with_icon(
+                                "Copy Relative Path",
+                                workspace::menu_icon(MenuIcon::Clipboard),
+                                Box::new(zed_actions::workspace::CopyRelativePath),
+                            )
+                            .when(has_git_repo, |menu| {
+                                menu.separator()
+                                    .when(!is_dir && self.has_git_changes(entry_id), |menu| {
+                                        menu.menu_with_icon(
+                                            "Restore File",
+                                            workspace::menu_icon(MenuIcon::ArrowCcw),
+                                            Box::new(git::RestoreFile { skip_prompt: false }),
                                         )
-                                        .when(has_history, |menu| {
-                                            menu.menu("View History", Box::new(git::FileHistory))
-                                        })
-                                        .when(!is_dir, |menu| {
-                                            menu.menu(
-                                                "Open File Permalink",
-                                                git::OpenFilePermalink.boxed_clone(),
-                                            )
-                                            .menu(
-                                                "Copy File Permalink",
-                                                git::CopyFilePermalink.boxed_clone(),
-                                            )
-                                        })
-                                })
-                                .when(!should_hide_rename, |menu| {
-                                    menu.separator().menu("Rename", Box::new(Rename))
-                                })
-                                .when(!is_root && !is_collab, |menu| {
-                                    menu.menu("Trash", Box::new(Trash { skip_prompt: false }))
-                                })
-                                .when(!is_root, |menu| {
-                                    menu.menu("Delete", Box::new(Delete { skip_prompt: false }))
-                                })
-                                .when(!is_collab && is_root, |menu| {
-                                    menu.separator()
-                                        .menu(
-                                            "Add Folders to Project…",
-                                            Box::new(workspace::AddFolderToProject),
+                                    })
+                                    .menu_with_icon(
+                                        "Add to .gitignore",
+                                        workspace::menu_icon(MenuIcon::EyeSlash),
+                                        Box::new(git::AddToGitignore),
+                                    )
+                                    .menu_with_icon(
+                                        "Add to .git/info/exclude",
+                                        workspace::menu_icon(MenuIcon::EyeSlash),
+                                        Box::new(git::AddToGitInfoExclude),
+                                    )
+                                    .when(has_history, |menu| {
+                                        menu.menu_with_icon(
+                                            "View History",
+                                            workspace::menu_icon(MenuIcon::History),
+                                            Box::new(git::FileHistory),
                                         )
-                                        .menu("Remove from Project", Box::new(RemoveFromProject))
-                                })
-                                .when(is_dir && !is_root, |menu| {
-                                    menu.separator()
-                                        .menu(
-                                            "Expand All",
-                                            Box::new(ExpandSelectedEntryAndChildren),
+                                    })
+                                    .when(!is_dir, |menu| {
+                                        menu.menu_with_icon(
+                                            "Open File Permalink",
+                                            workspace::menu_icon(MenuIcon::LinkExternal),
+                                            git::OpenFilePermalink.boxed_clone(),
                                         )
-                                        .menu(
-                                            "Collapse All",
-                                            Box::new(CollapseSelectedEntryAndChildren),
+                                        .menu_with_icon(
+                                            "Copy File Permalink",
+                                            workspace::menu_icon(MenuIcon::Link),
+                                            git::CopyFilePermalink.boxed_clone(),
                                         )
-                                })
-                                .when(is_dir && is_root, |menu| {
-                                    menu.separator()
-                                        .menu("Expand All", Box::new(ExpandAllEntries))
-                                        .menu("Collapse All", Box::new(CollapseAllEntries))
-                                })
+                                    })
+                            })
+                            .when(!should_hide_rename, |menu| {
+                                menu.separator().menu_with_icon(
+                                    "Rename",
+                                    workspace::menu_icon(MenuIcon::Pencil),
+                                    Box::new(Rename),
+                                )
+                            })
+                            .when(!is_root && !is_collab, |menu| {
+                                menu.menu_with_icon(
+                                    "Trash",
+                                    workspace::menu_icon(MenuIcon::Trash),
+                                    Box::new(Trash { skip_prompt: false }),
+                                )
+                            })
+                            .when(!is_root, |menu| {
+                                menu.menu_with_icon(
+                                    "Delete",
+                                    workspace::menu_icon(MenuIcon::Trashcan),
+                                    Box::new(Delete { skip_prompt: false }),
+                                )
+                            })
+                            .when(!is_collab && is_root, |menu| {
+                                menu.separator()
+                                    .menu_with_icon(
+                                        "Add Folders to Project…",
+                                        workspace::menu_icon(MenuIcon::FolderPlus),
+                                        Box::new(workspace::AddFolderToProject),
+                                    )
+                                    .menu_with_icon(
+                                        "Remove from Project",
+                                        workspace::menu_icon(MenuIcon::MinusCircle),
+                                        Box::new(RemoveFromProject),
+                                    )
+                            })
+                            .when(is_dir && !is_root, |menu| {
+                                menu.separator()
+                                    .menu_with_icon(
+                                        "Expand All",
+                                        workspace::menu_icon(MenuIcon::ChevronsUpDown),
+                                        Box::new(ExpandSelectedEntryAndChildren),
+                                    )
+                                    .menu_with_icon(
+                                        "Collapse All",
+                                        workspace::menu_icon(MenuIcon::ChevronsDownUp),
+                                        Box::new(CollapseSelectedEntryAndChildren),
+                                    )
+                            })
+                            .when(is_dir && is_root, |menu| {
+                                menu.separator()
+                                    .menu_with_icon(
+                                        "Expand All",
+                                        workspace::menu_icon(MenuIcon::ChevronsUpDown),
+                                        Box::new(ExpandAllEntries),
+                                    )
+                                    .menu_with_icon(
+                                        "Collapse All",
+                                        workspace::menu_icon(MenuIcon::ChevronsDownUp),
+                                        Box::new(CollapseAllEntries),
+                                    )
+                            })
                         }
                     })
             });
@@ -7502,11 +7619,9 @@ fn item_width_estimate(depth: usize, item_text_chars: usize, is_symlink: bool) -
 
 impl Render for ProjectPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let header = self.render_project_header(cx);
         let contents = self.render_contents(window, cx);
         v_flex()
             .size_full()
-            .children(header)
             .child(v_flex().flex_1().min_h_0().w_full().child(contents))
     }
 }

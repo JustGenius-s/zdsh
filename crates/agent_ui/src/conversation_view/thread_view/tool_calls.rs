@@ -2213,7 +2213,8 @@ impl ThreadView {
                     .tooltip("Choose commands to always allow")
                     .disabled(allow_disabled)))
                 .menu(move |window, cx| {
-                    Some(PopupMenu::build(window, cx, |mut menu, _, cx| {
+                    Some(PopupMenu::build(window, cx, |mut menu, window, cx| {
+                        menu = workspace::style_menu(menu, window);
                         menu = menu.max_h(font_size * 20.);
                         if patterns.is_empty() {
                             for (label, outcome) in &permanent_choices {
@@ -2528,7 +2529,8 @@ impl ThreadView {
             .with_handle(self.permission_dropdown_handle.clone())
             .trigger(self.permission_dropdown_trigger(current_label, entry_ix, is_first, cx))
             .menu(move |window, cx| {
-                Some(PopupMenu::build(window, cx, |mut menu, _, _| {
+                Some(PopupMenu::build(window, cx, |mut menu, window, _| {
+                    menu = workspace::style_menu(menu, window);
                     menu = menu.action_context(focus_handle.clone());
                     for (index, label) in &choices {
                         menu = menu.item(
@@ -2582,7 +2584,8 @@ impl ThreadView {
             .with_handle(self.permission_dropdown_handle.clone())
             .trigger(self.permission_dropdown_trigger(current_label, entry_ix, is_first, cx))
             .menu(move |window, cx| {
-                Some(PopupMenu::build(window, cx, |mut menu, _, cx| {
+                Some(PopupMenu::build(window, cx, |mut menu, window, cx| {
+                    menu = workspace::style_menu(menu, window);
                     menu = menu.action_context(focus_handle.clone());
                     for (index, label) in &choices {
                         let conversation = conversation.clone();

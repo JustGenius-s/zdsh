@@ -11932,6 +11932,7 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 name = "platform_title_bar"
 version = "0.1.0"
 dependencies = [
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "project",
@@ -12381,7 +12382,6 @@ dependencies = [
  "pretty_assertions",
  "project",
  "rayon",
- "recent_projects",
  "schemars 1.0.4",
  "serde",
  "serde_json",
@@ -14729,6 +14729,7 @@ dependencies = [
  "editor",
  "extension",
  "feature_flags",
+ "file_icons",
  "fs",
  "git",
  "git_ui_core",
@@ -16305,6 +16306,7 @@ dependencies = [
  "db",
  "fs",
  "git",
+ "gpui-icons",
  "gpui-kit",
  "gpui-pre",
  "icons",

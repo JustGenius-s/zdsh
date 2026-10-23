@@ -23,6 +23,7 @@ use gpui::{
     MouseButton, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription,
     WeakEntity, Window, actions, div, pulsating_between,
 };
+use gpui_icons::IconName as MenuIcon;
 use gpui_kit::component::{
     Sizable as _,
     button::{Button as KitButton, ButtonVariants as _},
@@ -329,11 +330,16 @@ impl TitleBar {
                         .iter()
                         .any(|workspace| workspace.read(cx).needs_attention(cx));
                 let key = group.key.clone();
+                let close_key = group.key.clone();
+                let close_multi_workspace = weak_multi_workspace.clone();
                 let weak_multi_workspace = weak_multi_workspace.clone();
+                let pill_group = SharedString::from(format!("project-pill-{index}"));
                 h_flex()
                     .id(("project-pill", index))
+                    .group(pill_group.clone())
                     .h(px(PILL_HEIGHT))
-                    .px(px(12.))
+                    .pl(px(12.))
+                    .pr(px(6.))
                     .gap(px(8.))
                     .rounded(px(6.))
                     .text_color(if is_active {
@@ -373,6 +379,31 @@ impl TitleBar {
                                 .bg(attention_color),
                         )
                     })
+                    .child(
+                        div()
+                            .flex_none()
+                            .invisible()
+                            .group_hover(pill_group, |style| style.visible())
+                            .child(
+                                KitButton::new(("close-project", index))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(gpui_kit::assets::IconName::Close)
+                                    .tooltip("Close Project")
+                                    .on_click(move |_, window, cx| {
+                                        // Otherwise the pill under the button switches to the
+                                        // project being closed.
+                                        cx.stop_propagation();
+                                        close_multi_workspace
+                                            .update(cx, |multi_workspace, cx| {
+                                                multi_workspace
+                                                    .remove_project_group(&close_key, window, cx)
+                                                    .detach_and_log_err(cx);
+                                            })
+                                            .log_err();
+                                    }),
+                            ),
+                    )
                     .on_click(move |_, window, cx| {
                         weak_multi_workspace
                             .update(cx, |multi_workspace, cx| {
@@ -408,17 +439,28 @@ impl TitleBar {
                         .ghost()
                         .icon(gpui_kit::assets::IconName::Plus)
                         .label("New")
-                        .dropdown_menu(|menu, _, _| {
-                            menu.menu("Open Folder…", Box::new(workspace::Open::default()))
-                                .menu("Clone Repository…", Box::new(git::Clone))
-                                .menu(
-                                    "Connect to SSH Host…",
-                                    Box::new(zed_actions::OpenRemote::default()),
-                                )
-                                .menu(
-                                    "Open in Dev Container…",
-                                    Box::new(zed_actions::OpenDevContainer),
-                                )
+                        .dropdown_menu(|menu, window, _| {
+                            let menu = workspace::style_menu(menu, window);
+                            menu.menu_with_icon(
+                                "Open Folder…",
+                                workspace::menu_icon(MenuIcon::FolderOpen),
+                                Box::new(workspace::Open::default()),
+                            )
+                            .menu_with_icon(
+                                "Clone Repository…",
+                                workspace::menu_icon(MenuIcon::CloudArrowDown),
+                                Box::new(git::Clone),
+                            )
+                            .menu_with_icon(
+                                "Connect to SSH Host…",
+                                workspace::menu_icon(MenuIcon::Server),
+                                Box::new(zed_actions::OpenRemote::default()),
+                            )
+                            .menu_with_icon(
+                                "Open in Dev Container…",
+                                workspace::menu_icon(MenuIcon::Package),
+                                Box::new(zed_actions::OpenDevContainer),
+                            )
                         }),
                 )
                 .into_any_element(),
@@ -432,11 +474,24 @@ impl TitleBar {
             .small()
             .icon(gpui_kit::assets::IconName::Settings)
             .tooltip("Settings and Themes")
-            .dropdown_menu(move |menu, _, cx| {
+            .dropdown_menu(move |menu, window, cx| {
+                let menu = workspace::style_menu(menu, window);
                 let menu = menu
-                    .menu("Settings", Box::new(zed_actions::OpenSettings))
-                    .menu("Extensions", Box::new(zed_actions::Extensions::default()))
-                    .menu("Keymap", Box::new(zed_actions::OpenKeymap))
+                    .menu_with_icon(
+                        "Settings",
+                        workspace::menu_icon(MenuIcon::Settings),
+                        Box::new(zed_actions::OpenSettings),
+                    )
+                    .menu_with_icon(
+                        "Extensions",
+                        workspace::menu_icon(MenuIcon::Extensions),
+                        Box::new(zed_actions::Extensions::default()),
+                    )
+                    .menu_with_icon(
+                        "Keymap",
+                        workspace::menu_icon(MenuIcon::Keyboard),
+                        Box::new(zed_actions::OpenKeymap),
+                    )
                     .separator();
                 theme_menu(menu, fs.clone(), cx)
             })

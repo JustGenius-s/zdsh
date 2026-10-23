@@ -40,7 +40,10 @@ pub use multi_workspace::{
     SidebarEvent, SidebarHandle, SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar,
 };
 pub use navigation::{RailItem, WorkspaceNavigation, theme_menu};
-pub use panel_header::{KitIconButton, PickerTrigger, ghost_button_style, panel_header};
+pub use panel_header::{
+    KitIconButton, PickerTrigger, ghost_button_style, menu_heading, menu_icon, menu_icon_in_box,
+    menu_icon_spacer, style_menu, style_submenu,
+};
 pub use path_list::{PathList, SerializedPathList};
 pub use remote::{
     RemoteConnectionIdentity, remote_connection_identity, same_remote_connection_identity,
@@ -3339,7 +3342,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Sets the sidebar drawn at the workspace's left edge.
+    /// Sets the sidebar drawn at the workspace's left edge and the view drawn right of its right
+    /// dock.
     pub fn set_navigation(&mut self, navigation: WorkspaceNavigation, cx: &mut Context<Self>) {
         self.navigation = Some(navigation);
         cx.notify();
@@ -9966,7 +9970,8 @@ impl Render for Workspace {
                                                     &self.right_dock,
                                                     window,
                                                     cx,
-                                                )),
+                                                ))
+                                                .children(self.render_trailing_navigation()),
                                         )
                                         .child(div().w_full().children(self.render_dock(
                                             DockPosition::Bottom,
@@ -10042,7 +10047,8 @@ impl Render for Workspace {
                                             &self.right_dock,
                                             window,
                                             cx,
-                                        )),
+                                        ))
+                                        .children(self.render_trailing_navigation()),
                                     BottomDockLayout::RightAligned => div()
                                         .flex()
                                         .flex_row()
@@ -10102,7 +10108,8 @@ impl Render for Workspace {
                                                             &self.right_dock,
                                                             window,
                                                             cx,
-                                                        )),
+                                                        ))
+                                                        .children(self.render_trailing_navigation()),
                                                 )
                                                 .child(div().w_full().children(self.render_dock(
                                                     DockPosition::Bottom,
@@ -10157,7 +10164,8 @@ impl Render for Workspace {
                                             &self.right_dock,
                                             window,
                                             cx,
-                                        )),
+                                        ))
+                                        .children(self.render_trailing_navigation()),
                                 }
                                         })
                                         .children(self.zoomed.as_ref().and_then(|view| {

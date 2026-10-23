@@ -7,7 +7,11 @@ use gpui::{
     IntoElement, Styled, div, ease_out_quint, px,
 };
 use gpui::{ParentElement as _, prelude::FluentBuilder as _};
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_icons::IconName as MenuIcon;
+use gpui_kit::component::{
+    Icon as KitIcon,
+    menu::{PopupMenu, PopupMenuItem},
+};
 use settings::{Settings as _, update_settings_file};
 use theme::{ActiveTheme as _, Appearance};
 use theme_settings::{ThemeAppearanceMode, ThemeSelection, ThemeSettings};
@@ -23,6 +27,9 @@ const ENTRANCE_OFFSET: f32 = 48.;
 /// terminals, git changes) live in crates the workspace doesn't depend on.
 pub struct WorkspaceNavigation {
     pub view: AnyView,
+    /// Drawn inside the content block, right of the right dock, such as the project's file tree
+    /// the sidebar opens.
+    pub trailing_view: AnyView,
     pub needs_attention: Box<dyn Fn(&App) -> bool>,
 }
 
@@ -71,7 +78,7 @@ impl Workspace {
 
     pub(crate) fn render_navigation(&self, cx: &App) -> Option<impl IntoElement + use<>> {
         let navigation = self.navigation.as_ref()?;
-        // The sidebar sets its own width, which grows when it pins the project's files beside it.
+        // The sidebar sets its own width.
         Some(
             div()
                 .flex_none()
@@ -81,11 +88,20 @@ impl Workspace {
         )
     }
 
+    /// The navigation's view right of the right dock, which sets its own width.
+    pub(crate) fn render_trailing_navigation(&self) -> Option<AnyView> {
+        Some(self.navigation.as_ref()?.trailing_view.clone())
+    }
+
     /// The tool views listed in the sidebar's workspace menu.
     pub fn tools_menu(&self, menu: PopupMenu, cx: &App) -> PopupMenu {
         let mut menu = menu.action_context(self.active_pane.read(cx).focus_handle(cx));
         for item in self.rail_items.iter().filter(|item| (item.is_visible)(cx)) {
-            menu = menu.menu(item.tooltip, item.action.boxed_clone());
+            menu = menu.menu_with_icon(
+                item.tooltip,
+                crate::menu_icon(KitIcon::empty().path(item.icon.path())),
+                item.action.boxed_clone(),
+            );
         }
         menu
     }
@@ -101,19 +117,24 @@ impl Workspace {
         match category {
             TabCategory::Agent => {
                 let has_project = self.project.read(cx).visible_worktrees(cx).next().is_some();
-                menu.menu_with_disabled(
+                menu.menu_with_icon_and_disabled(
                     "New Agent Tab",
+                    crate::menu_icon(MenuIcon::Agent),
                     Box::new(zed_actions::agent::NewThread),
                     !has_project || !AgentSettings::get_global(cx).enabled(cx),
                 )
                 .when(!has_project, |menu| {
-                    menu.separator()
-                        .menu("Open Folder…", Box::new(crate::Open::default()))
+                    menu.separator().menu_with_icon(
+                        "Open Folder…",
+                        crate::menu_icon(MenuIcon::FolderOpen),
+                        Box::new(crate::Open::default()),
+                    )
                 })
             }
             TabCategory::Terminal => {
-                let mut menu = menu.menu_with_disabled(
+                let mut menu = menu.menu_with_icon_and_disabled(
                     "New Terminal",
+                    crate::menu_icon(MenuIcon::TerminalRectangle),
                     Box::new(crate::NewTerminal::default()),
                     self.terminal_provider.is_none(),
                 );
@@ -122,19 +143,32 @@ impl Workspace {
                     if !actions.is_empty() {
                         menu = menu.separator();
                         for (label, action) in actions {
-                            menu = menu.menu(label, action);
+                            menu = menu.menu_with_icon(
+                                label,
+                                crate::menu_icon(MenuIcon::Lightning),
+                                action,
+                            );
                         }
                     }
-                    menu = menu.separator().menu(
+                    menu = menu.separator().menu_with_icon(
                         "Manage quick actions…",
+                        crate::menu_icon(MenuIcon::Sliders),
                         Box::new(crate::OpenTerminalQuickActions),
                     );
                 }
                 menu
             }
             TabCategory::File => menu
-                .menu("New File", Box::new(crate::NewFile))
-                .menu("Open File…", Box::new(crate::Open::default())),
+                .menu_with_icon(
+                    "New File",
+                    crate::menu_icon(MenuIcon::FilePlus),
+                    Box::new(crate::NewFile),
+                )
+                .menu_with_icon(
+                    "Open File…",
+                    crate::menu_icon(MenuIcon::File),
+                    Box::new(crate::Open::default()),
+                ),
             TabCategory::Action => self.tools_menu(menu, cx),
         }
     }
@@ -146,26 +180,41 @@ pub fn theme_menu(menu: PopupMenu, fs: Arc<dyn Fs>, cx: &mut Context<PopupMenu>)
         ThemeSelection::Dynamic { mode, .. } => Some(*mode),
         ThemeSelection::Static(_) => None,
     };
-    let mut menu = menu.label("Appearance");
-    for (label, mode) in [
-        ("System", ThemeAppearanceMode::System),
-        ("Light", ThemeAppearanceMode::Light),
-        ("Dark", ThemeAppearanceMode::Dark),
+    let mut menu = menu.item(crate::menu_heading("Appearance"));
+    for (label, icon, mode) in [
+        (
+            "System",
+            crate::menu_icon(MenuIcon::Display),
+            ThemeAppearanceMode::System,
+        ),
+        (
+            "Light",
+            crate::menu_icon(MenuIcon::Sun),
+            ThemeAppearanceMode::Light,
+        ),
+        (
+            "Dark",
+            crate::menu_icon(MenuIcon::Moon),
+            ThemeAppearanceMode::Dark,
+        ),
     ] {
         let fs = fs.clone();
         menu = menu.item(
             PopupMenuItem::new(label)
+                .icon(icon)
                 .checked(current_mode == Some(mode))
                 .on_click(move |_, _, cx| set_theme_mode(fs.clone(), mode, cx)),
         );
     }
     menu.separator()
-        .menu(
+        .menu_with_icon(
             "Color Theme…",
+            crate::menu_icon(MenuIcon::Palette),
             zed_actions::theme_selector::Toggle::default().boxed_clone(),
         )
-        .menu(
+        .menu_with_icon(
             "Icon Theme…",
+            crate::menu_icon(MenuIcon::ShapesSquareCircle),
             zed_actions::icon_theme_selector::Toggle::default().boxed_clone(),
         )
 }

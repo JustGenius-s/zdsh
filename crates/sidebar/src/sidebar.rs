@@ -6204,25 +6204,33 @@ impl Sidebar {
                             .tooltip("Thread History and Filters")
                             .dropdown_menu_with_anchor(
                                 gpui::Anchor::TopRight,
-                                move |menu, _, _| {
+                                move |menu, window, _| {
                                     let history_sidebar = sidebar.clone();
                                     let archived_sidebar = sidebar.clone();
                                     let import_sidebar = sidebar.clone();
-                                    menu.min_w(px(220.))
+                                    workspace::style_menu(menu, window)
                                         .max_w(px(420.))
-                                        .item(PopupMenuItem::new("History").on_click(
-                                            move |_, window, cx| {
-                                                history_sidebar
-                                                    .update(cx, |this, cx| {
-                                                        this.show_archive(window, cx)
-                                                    })
-                                                    .log_err();
-                                            },
-                                        ))
+                                        .item(
+                                            PopupMenuItem::new("History")
+                                                .icon(workspace::menu_icon(
+                                                    gpui_icons::IconName::History,
+                                                ))
+                                                .on_click(move |_, window, cx| {
+                                                    history_sidebar
+                                                        .update(cx, |this, cx| {
+                                                            this.show_archive(window, cx)
+                                                        })
+                                                        .log_err();
+                                                }),
+                                        )
                                         .separator()
                                         .item(
-                                            PopupMenuItem::new("Archived").checked(false).on_click(
-                                                move |_, window, cx| {
+                                            PopupMenuItem::new("Archived")
+                                                .icon(workspace::menu_icon(
+                                                    gpui_icons::IconName::Archive,
+                                                ))
+                                                .checked(false)
+                                                .on_click(move |_, window, cx| {
                                                     archived_sidebar
                                                         .update(cx, |this, cx| {
                                                             this.show_archive(window, cx);
@@ -6238,23 +6246,26 @@ impl Sidebar {
                                                             }
                                                         })
                                                         .log_err();
-                                                },
-                                            ),
+                                                }),
                                         )
                                         .separator()
-                                        .item(PopupMenuItem::new("Import Threads").on_click(
-                                            move |_, window, cx| {
-                                                import_sidebar
-                                                    .update(cx, |this, cx| {
-                                                        this.show_thread_import_modal(
-                                                            "thread_history",
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    })
-                                                    .log_err();
-                                            },
-                                        ))
+                                        .item(
+                                            PopupMenuItem::new("Import Threads")
+                                                .icon(workspace::menu_icon(
+                                                    gpui_icons::IconName::ArrowBracketToDown,
+                                                ))
+                                                .on_click(move |_, window, cx| {
+                                                    import_sidebar
+                                                        .update(cx, |this, cx| {
+                                                            this.show_thread_import_modal(
+                                                                "thread_history",
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        })
+                                                        .log_err();
+                                                }),
+                                        )
                                 },
                             ),
                     ),

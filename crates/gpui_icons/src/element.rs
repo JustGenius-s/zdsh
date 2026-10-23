@@ -236,11 +236,16 @@ impl MotionState {
     }
 }
 
+/// Glyphs fill their box, as in Cursor's font, but Zed's and Kit's icon boxes are larger than the
+/// sizes Cursor draws its icons at, so icons sized like them draw glyphs at this share of the box.
+pub const BOX_GLYPH_SCALE: f32 = 0.8;
+
 pub struct MorphIcon {
     interactivity: Interactivity,
     path: SharedString,
     data: Option<Arc<[u8]>>,
     transformation: Transformation,
+    glyph_scale: f32,
     angle: f64,
     spinning: bool,
     spin_period: f64,
@@ -256,6 +261,7 @@ impl MorphIcon {
             path: path.into(),
             data: None,
             transformation: Transformation::default(),
+            glyph_scale: 1.0,
             angle: 0.0,
             spinning: false,
             spin_period: 1.0,
@@ -264,6 +270,13 @@ impl MorphIcon {
 
     pub fn transform(mut self, transformation: Transformation) -> Self {
         self.transformation = transformation;
+        self
+    }
+
+    /// Draws catalog glyphs at `scale` of the box, leaving other SVGs, such as icon theme
+    /// files, at full size.
+    pub fn glyph_scale(mut self, scale: f32) -> Self {
+        self.glyph_scale = scale;
         self
     }
 
@@ -429,7 +442,17 @@ impl Element for MorphIcon {
                         None
                     }
                 };
-                let transform = self.transformation.into_matrix(bounds.center(), 1.0);
+                let glyph_scale = if glyph.is_some() {
+                    self.glyph_scale
+                } else {
+                    1.0
+                };
+                let glyph_transformation =
+                    Transformation::scale(gpui::size(glyph_scale, glyph_scale));
+                let transform = self
+                    .transformation
+                    .into_matrix(bounds.center(), 1.0)
+                    .compose(glyph_transformation.into_matrix(bounds.center(), 1.0));
                 let unique_id = global_id.filter(|global_id| {
                     PAINTED.with_borrow_mut(|painted| {
                         painted.painting = true;
@@ -479,6 +502,12 @@ impl Element for MorphIcon {
                                                 (state.angle + state.spin_angle) as f32,
                                             ))
                                             .into_matrix(bounds.center(), window.scale_factor()),
+                                        )
+                                        .compose(
+                                            glyph_transformation.into_matrix(
+                                                bounds.center(),
+                                                window.scale_factor(),
+                                            ),
                                         ),
                                     color,
                                     cx,
@@ -503,6 +532,10 @@ impl Element for MorphIcon {
                         .into_matrix(bounds.center(), window.scale_factor())
                         .compose(
                             Transformation::rotate(gpui::radians(self.angle as f32))
+                                .into_matrix(bounds.center(), window.scale_factor()),
+                        )
+                        .compose(
+                            glyph_transformation
                                 .into_matrix(bounds.center(), window.scale_factor()),
                         );
                     if let Err(error) = window.paint_svg(
@@ -529,6 +562,7 @@ pub struct Icon {
     style: StyleRefinement,
     size: Option<Size>,
     transformation: Transformation,
+    glyph_scale: f32,
     angle: f64,
     spinning: bool,
     spin_period: f64,
@@ -545,6 +579,7 @@ impl Default for Icon {
             style: StyleRefinement::default(),
             size: None,
             transformation: Transformation::default(),
+            glyph_scale: BOX_GLYPH_SCALE,
             angle: 0.0,
             spinning: false,
             spin_period: 1.0,
@@ -600,6 +635,13 @@ impl Icon {
         self
     }
 
+    /// Draws catalog glyphs at `scale` of the box instead of [`BOX_GLYPH_SCALE`], for icons
+    /// sized to Cursor's own measurements.
+    pub fn glyph_scale(mut self, scale: f32) -> Self {
+        self.glyph_scale = scale;
+        self
+    }
+
     pub fn into_kit(self) -> gpui_kit::component::Icon {
         let mut icon = gpui_kit::component::Icon::empty();
         *icon.style() = self.style;
@@ -643,6 +685,7 @@ impl RenderOnce for Icon {
         let mut icon = MorphIcon::new(self.id, self.path)
             .with_data(self.data)
             .transform(self.transformation)
+            .glyph_scale(self.glyph_scale)
             .rotate(gpui::radians(self.angle as f32))
             .spinning(self.spinning)
             .spin_period(self.spin_period);

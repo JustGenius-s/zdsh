@@ -902,14 +902,15 @@ impl ThreadsArchiveView {
                 history_icon_button("history-options", IconName::Filter)
                     .selected(show_archived)
                     .tooltip("History Options")
-                    .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
+                    .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, window, _| {
                         let archive_view_for_filter = archive_view.clone();
                         let archive_view_for_import = archive_view.clone();
-                        menu.min_w(px(220.))
+                        workspace::style_menu(menu, window)
                             .max_w(px(420.))
-                            .label("Filters")
+                            .item(workspace::menu_heading("Filters"))
                             .item(
                                 PopupMenuItem::new("Archived")
+                                    .icon(workspace::menu_icon(gpui_icons::IconName::Archive))
                                     .checked(show_archived)
                                     .on_click(move |_, _, cx| {
                                         archive_view_for_filter
@@ -928,13 +929,17 @@ impl ThreadsArchiveView {
                             )
                             .separator()
                             .item(
-                                PopupMenuItem::new("Import Threads").on_click(move |_, _, cx| {
-                                    archive_view_for_import
-                                        .update(cx, |_, cx| {
-                                            cx.emit(ThreadsArchiveViewEvent::Import)
-                                        })
-                                        .log_err();
-                                }),
+                                PopupMenuItem::new("Import Threads")
+                                    .icon(workspace::menu_icon(
+                                        gpui_icons::IconName::ArrowBracketToDown,
+                                    ))
+                                    .on_click(move |_, _, cx| {
+                                        archive_view_for_import
+                                            .update(cx, |_, cx| {
+                                                cx.emit(ThreadsArchiveViewEvent::Import)
+                                            })
+                                            .log_err();
+                                    }),
                             )
                     }),
             )

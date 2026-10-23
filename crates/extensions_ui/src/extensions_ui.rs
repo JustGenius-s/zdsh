@@ -13,7 +13,7 @@ use command_palette_hooks::CommandPaletteFilter;
 use extension_host::{ExtensionIndexEntry, ExtensionManifest, ExtensionStore};
 use fuzzy::{StringMatch, StringMatchCandidate, match_strings};
 use git::{GitHostingProviderRegistry, parse_git_remote_url};
-use gpui_icons::Icon as MorphIcon;
+use gpui_icons::{Icon as MorphIcon, IconName as MenuIcon};
 use gpui_kit::{
     Action, App, ClipboardItem, Context, DismissEvent, Entity, EventEmitter, Focusable,
     ParentElement, Render, SharedString, Styled, Task, TaskExt, UniformListScrollHandle,
@@ -791,32 +791,42 @@ impl ExtensionsPage {
                 .repository_icon(self.get_repository_icon(&extension.manifest.repository))
                 .context_menu(move |menu, extension_id, authors, _, _| {
                     let weak_self = weak_self.clone();
-                    menu.item(PopupMenuItem::new("Install Another Version…").on_click({
-                        let extension_id = extension_id.clone();
-                        move |_, window, cx| {
-                            weak_self
-                                .update(cx, |this, cx| {
-                                    this.show_extension_version_list(
-                                        extension_id.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                })
-                                .log_err();
-                        }
-                    }))
+                    menu.item(
+                        PopupMenuItem::new("Install Another Version…")
+                            .icon(workspace::menu_icon(MenuIcon::History))
+                            .on_click({
+                                let extension_id = extension_id.clone();
+                                move |_, window, cx| {
+                                    weak_self
+                                        .update(cx, |this, cx| {
+                                            this.show_extension_version_list(
+                                                extension_id.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        })
+                                        .log_err();
+                                }
+                            }),
+                    )
                     .separator()
                     .item(
-                        PopupMenuItem::new("Copy Extension ID").on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                extension_id.to_string(),
-                            ));
-                        }),
+                        PopupMenuItem::new("Copy Extension ID")
+                            .icon(workspace::menu_icon(MenuIcon::Copy))
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    extension_id.to_string(),
+                                ));
+                            }),
                     )
                     .item(
-                        PopupMenuItem::new("Copy Author Info").on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(authors.to_string()));
-                        }),
+                        PopupMenuItem::new("Copy Author Info")
+                            .icon(workspace::menu_icon(MenuIcon::Person))
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    authors.to_string(),
+                                ));
+                            }),
                     )
                 }),
         )

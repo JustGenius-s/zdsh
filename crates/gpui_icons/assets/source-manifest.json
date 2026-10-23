@@ -15,8 +15,8 @@
   "rtl_names": 77,
   "legacy_mappings": 236,
   "kit_mappings": 102,
-  "payload_bytes": 2069830,
-  "payload_sha256": "7797f2ca91a51b170c0854adc3e4a94fce62ffe3eb1fa131ee708c2191f35b8e",
+  "payload_bytes": 2067762,
+  "payload_sha256": "0f3dfdf4b33c8875a973edd0cf8a7488bdaa74eae7be0fb8f77fedf58fd1b6bf",
   "coordinate_transform": "x = font_x * 24 / unitsPerEm; y = ascent * 24 / unitsPerEm - font_y * 24 / unitsPerEm; no bounding-box fit",
   "region": "Not generated: gpui_icons::region normalizes each glyph's nodes lazily at runtime, as upstream morphicons does.",
   "drawn": {

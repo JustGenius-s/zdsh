@@ -41,6 +41,7 @@ db.workspace = true
 
 git.workspace = true
 gpui.workspace = true
+gpui-icons.workspace = true
 gpui-kit.workspace = true
 icons.workspace = true
 project.workspace = true

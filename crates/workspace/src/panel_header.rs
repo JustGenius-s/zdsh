@@ -2,24 +2,83 @@ use gpui_icons::Icon as KitIcon;
 use std::rc::Rc;
 
 use gpui::{
-    AnyView, App, ClickEvent, CursorStyle, Div, ElementId, InteractiveElement as _, IntoElement,
-    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled, Window, div,
-    prelude::FluentBuilder as _,
+    AnyView, App, ClickEvent, CursorStyle, ElementId, InteractiveElement as _, IntoElement,
+    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled,
+    Transformation, Window, div, prelude::FluentBuilder as _, size,
 };
 use gpui_kit::{
     assets::IconName as KitIconName,
     base::Selectable as _,
     component::{
-        Disableable as _,
+        Disableable as _, Icon as KitMenuIcon, Side,
         button::{Button, ButtonCustomVariant, ButtonVariants as _},
+        menu::{PopupMenu, PopupMenuItem},
     },
 };
 use theme::ActiveTheme as _;
-use ui::{Clickable, IconName, Toggleable, h_flex};
+use ui::{Clickable, IconName, Toggleable, rems_from_px};
 
-/// The row atop a dock panel, naming what the panel shows.
-pub fn panel_header() -> Div {
-    h_flex().w_full().flex_none().h_10().px_2().gap_1()
+/// Cursor's menus are at least this wide, and their submenus a little narrower. GPUI Kit's own
+/// minimum is 8rem, which leaves short menus much narrower.
+const MENU_MIN_WIDTH: f32 = 236.;
+const SUBMENU_MIN_WIDTH: f32 = 200.;
+
+/// Styles a GPUI Kit menu like Cursor's: at least as wide, scaling with the UI font, and with
+/// check marks at the end of their rows.
+pub fn style_menu(menu: PopupMenu, window: &Window) -> PopupMenu {
+    cursor_menu(menu, MENU_MIN_WIDTH, window)
+}
+
+/// Styles a GPUI Kit submenu like [`style_menu`], at the narrower width of Cursor's submenus.
+pub fn style_submenu(menu: PopupMenu, window: &Window) -> PopupMenu {
+    cursor_menu(menu, SUBMENU_MIN_WIDTH, window)
+}
+
+/// GPUI Kit draws every menu icon in a 12px box, smaller than Cursor draws its menu icons, and
+/// leaves 4px between the box and the label.
+const KIT_MENU_ICON_BOX: f32 = 12.;
+const KIT_MENU_ICON_GAP: f32 = 4.;
+/// The box that shows a glyph at Cursor's size, as in the sidebar.
+const MENU_GLYPH_BOX: f32 = 15.2;
+/// Cursor's space between a menu icon's box and its label.
+const MENU_ICON_GAP: f32 = 10.;
+/// Cursor draws menu icons in its secondary color: its text color mixed 66% with transparent.
+const MENU_ICON_OPACITY: f32 = 0.66;
+
+/// A menu item's icon, as large, as far from its label and as muted as Cursor's.
+pub fn menu_icon(icon: impl Into<KitMenuIcon>) -> KitMenuIcon {
+    menu_icon_in_box(icon, MENU_GLYPH_BOX).opacity(MENU_ICON_OPACITY)
+}
+
+/// A menu item's icon in its own color, drawn as large as it would be in a `box_size` box. Only
+/// the drawing is scaled, and margins widen the kit's box to Cursor's slot, so every icon takes
+/// the same room and the labels after them line up.
+pub fn menu_icon_in_box(icon: impl Into<KitMenuIcon>, box_size: f32) -> KitMenuIcon {
+    let scale = box_size / KIT_MENU_ICON_BOX;
+    let inset = (MENU_GLYPH_BOX - KIT_MENU_ICON_BOX) / 2.;
+    icon.into()
+        .transform(Transformation::scale(size(scale, scale)))
+        .ml(rems_from_px(inset))
+        .mr(rems_from_px(inset + MENU_ICON_GAP - KIT_MENU_ICON_GAP))
+}
+
+/// An empty icon slot for a menu row without an icon, so its label lines up with those of the
+/// rows that have one. The kit's own empty slot is narrower.
+pub fn menu_icon_spacer() -> KitMenuIcon {
+    menu_icon_in_box(KitMenuIcon::empty(), MENU_GLYPH_BOX)
+}
+
+/// A section title in a menu whose rows have icons, lined up with the rows' labels.
+pub fn menu_heading(label: impl Into<SharedString>) -> PopupMenuItem {
+    let label = label.into();
+    PopupMenuItem::element(move |_, _| label.clone())
+        .icon(menu_icon_spacer())
+        .disabled(true)
+}
+
+fn cursor_menu(menu: PopupMenu, min_width: f32, window: &Window) -> PopupMenu {
+    menu.min_w(rems_from_px(min_width).to_pixels(window.rem_size()))
+        .check_side(Side::Right)
 }
 
 /// A transparent button whose hover tint matches the workspace's other icon controls.

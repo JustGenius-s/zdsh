@@ -25,7 +25,7 @@ use gpui::{
     Point, PromptLevel, Render, ScrollHandle, Subscription, Task, TaskExt, WeakEntity,
     WeakFocusHandle, Window, actions, anchored, deferred, prelude::*,
 };
-use gpui_icons::Icon as KitIcon;
+use gpui_icons::{Icon as KitIcon, IconName as MenuIcon};
 use gpui_kit::{
     assets::IconName as KitIconName,
     base::{ElementExt as _, POPUP_PRIORITY, Selectable as _, Tab, Tabs},
@@ -3169,6 +3169,7 @@ impl Pane {
             let menu_context = menu_context.clone();
             let extra_actions = item_handle.tab_extra_context_menu_actions(window, cx);
             PopupMenu::build(window, cx, move |mut menu, window, cx| {
+                menu = crate::style_menu(menu, window);
                 let close_active_item_action = CloseActiveItem {
                     save_intent: None,
                     close_pinned: true,
@@ -3198,6 +3199,7 @@ impl Pane {
                     menu = menu
                         .item(tab_menu_entry(
                             "Close",
+                            crate::menu_icon(MenuIcon::X),
                             Some(Box::new(close_active_item_action)),
                             window.handler_for(&pane, move |pane, window, cx| {
                                 pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
@@ -3207,6 +3209,7 @@ impl Pane {
                         .item(
                             tab_menu_entry(
                                 "Close Others",
+                                crate::menu_icon(MenuIcon::SquaresX),
                                 Some(Box::new(close_inactive_items_action.clone())),
                                 window.handler_for(&pane, move |pane, window, cx| {
                                     pane.close_other_items(
@@ -3224,6 +3227,7 @@ impl Pane {
                         .when(has_multibuffer_items, |menu| {
                             menu.item(tab_menu_entry(
                                 "Close Multibuffers",
+                                crate::menu_icon(MenuIcon::Layers),
                                 Some(Box::new(close_multibuffers_action.clone())),
                                 window.handler_for(&pane, move |pane, window, cx| {
                                     pane.close_multibuffer_items(
@@ -3239,6 +3243,7 @@ impl Pane {
                         .item(
                             tab_menu_entry(
                                 "Close Left",
+                                crate::menu_icon(MenuIcon::ArrowBracketToLeft),
                                 Some(Box::new(close_items_to_the_left_action.clone())),
                                 window.handler_for(&pane, move |pane, window, cx| {
                                     pane.close_items_to_the_left_by_id(
@@ -3255,6 +3260,7 @@ impl Pane {
                         .item(
                             tab_menu_entry(
                                 "Close Right",
+                                crate::menu_icon(MenuIcon::ArrowBracketToRight),
                                 Some(Box::new(close_items_to_the_right_action.clone())),
                                 window.handler_for(&pane, move |pane, window, cx| {
                                     pane.close_items_to_the_right_by_id(
@@ -3272,6 +3278,7 @@ impl Pane {
                         .item(
                             tab_menu_entry(
                                 "Close Clean",
+                                crate::menu_icon(MenuIcon::CheckCircle),
                                 Some(Box::new(close_clean_items_action.clone())),
                                 window.handler_for(&pane, move |pane, window, cx| {
                                     pane.close_clean_items(&close_clean_items_action, window, cx)
@@ -3282,6 +3289,7 @@ impl Pane {
                         )
                         .item(tab_menu_entry(
                             "Close All",
+                            crate::menu_icon(MenuIcon::XCircle),
                             Some(Box::new(close_all_items_action.clone())),
                             window.handler_for(&pane, move |pane, window, cx| {
                                 pane.close_all_items(&close_all_items_action, window, cx)
@@ -3294,6 +3302,7 @@ impl Pane {
                             if is_pinned {
                                 this.item(tab_menu_entry(
                                     "Unpin Tab",
+                                    crate::menu_icon(MenuIcon::PinSlash),
                                     Some(TogglePinTab.boxed_clone()),
                                     window.handler_for(&pane, move |pane, window, cx| {
                                         pane.unpin_tab_at(ix, window, cx);
@@ -3302,6 +3311,7 @@ impl Pane {
                             } else {
                                 this.item(tab_menu_entry(
                                     "Pin Tab",
+                                    crate::menu_icon(MenuIcon::Pin),
                                     Some(TogglePinTab.boxed_clone()),
                                     window.handler_for(&pane, move |pane, window, cx| {
                                         pane.pin_tab_at(ix, window, cx);
@@ -3312,13 +3322,17 @@ impl Pane {
                     };
 
                     if capability != Capability::ReadOnly {
-                        let read_only_label = if capability.editable() {
-                            "Make Tab Read-Only"
+                        let (read_only_label, read_only_icon) = if capability.editable() {
+                            ("Make Tab Read-Only", crate::menu_icon(MenuIcon::LockLocked))
                         } else {
-                            "Make Tab Editable"
+                            (
+                                "Make Tab Editable",
+                                crate::menu_icon(MenuIcon::LockUnlocked),
+                            )
                         };
                         menu = menu.separator().item(tab_menu_entry(
                             read_only_label,
+                            read_only_icon,
                             None,
                             window.handler_for(&pane, move |pane, window, cx| {
                                 if let Some(item) = pane.item_for_index(ix) {
@@ -3386,6 +3400,7 @@ impl Pane {
                             .when_some(entry_abs_path, |menu, abs_path| {
                                 menu.item(tab_menu_entry(
                                     "Copy Path",
+                                    crate::menu_icon(MenuIcon::Copy),
                                     Some(Box::new(zed_actions::workspace::CopyPath)),
                                     window.handler_for(&pane, move |_, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
@@ -3397,6 +3412,7 @@ impl Pane {
                             .when_some(relative_path, |menu, relative_path| {
                                 menu.item(tab_menu_entry(
                                     "Copy Relative Path",
+                                    crate::menu_icon(MenuIcon::Clipboard),
                                     Some(Box::new(zed_actions::workspace::CopyRelativePath)),
                                     window.handler_for(&pane, move |this, _, cx| {
                                         let Some(project) = this.project.upgrade() else {
@@ -3416,6 +3432,7 @@ impl Pane {
                                     |menu, project_path| {
                                         menu.item(tab_menu_entry(
                                             "Open File Permalink",
+                                            crate::menu_icon(MenuIcon::LinkExternal),
                                             Some(OpenFilePermalink.boxed_clone()),
                                             window.handler_for(&pane, {
                                                 let project_path = project_path.clone();
@@ -3437,6 +3454,7 @@ impl Pane {
                                         .item(
                                             tab_menu_entry(
                                                 "Copy File Permalink",
+                                                crate::menu_icon(MenuIcon::Link),
                                                 Some(CopyFilePermalink.boxed_clone()),
                                                 window.handler_for(
                                                     &pane,
@@ -3463,6 +3481,7 @@ impl Pane {
                                 menu.when_some(reveal_path, |menu, reveal_path| {
                                     menu.separator().item(tab_menu_entry(
                                         ui::utils::reveal_in_file_manager_label(is_remote),
+                                        crate::menu_icon(MenuIcon::FolderOpen),
                                         Some(Box::new(zed_actions::editor::RevealInFileManager)),
                                         window.handler_for(&pane, move |pane, _, cx| {
                                             if let Some(project) = pane.project.upgrade() {
@@ -3480,6 +3499,7 @@ impl Pane {
                             .when(visible_in_project_panel, |menu| {
                                 menu.item(tab_menu_entry(
                                     "Reveal In Project Panel",
+                                    crate::menu_icon(MenuIcon::ListTodoSubtask),
                                     Some(Box::new(RevealInProjectPanel::default())),
                                     window.handler_for(&pane, move |pane, _, cx| {
                                         pane.project
@@ -3495,6 +3515,7 @@ impl Pane {
                             .when_some(parent_abs_path, |menu, parent_abs_path| {
                                 menu.item(tab_menu_entry(
                                     "Open in Terminal",
+                                    crate::menu_icon(MenuIcon::TerminalRectangle),
                                     Some(Box::new(OpenInTerminal)),
                                     window.handler_for(&pane, move |_, window, cx| {
                                         window.dispatch_action(
@@ -3517,7 +3538,7 @@ impl Pane {
                 if !extra_actions.is_empty() {
                     menu = menu.separator();
                     for (label, action) in extra_actions {
-                        menu = menu.menu(label, action);
+                        menu = menu.menu_with_icon(label, crate::menu_icon_spacer(), action);
                     }
                 }
 
@@ -3820,6 +3841,7 @@ impl Pane {
             .icon(KitIconName::ChevronDown)
             .debug_selector(|| "tab-overflow-menu".into())
             .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, window, cx| {
+                menu = crate::style_menu(menu, window);
                 let Some(pane) = pane.upgrade() else {
                     return menu;
                 };
@@ -4593,8 +4615,11 @@ fn default_render_tab_bar_buttons(
         .icon(KitIconName::Ellipsis)
         .tooltip("More…")
         .debug_selector(|| "ICON-Ellipsis".into())
-        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-            let menu = menu.action_context(focus_handle.clone()).label("Split");
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, _| {
+            let menu = crate::style_menu(menu, window);
+            let menu = menu
+                .action_context(focus_handle.clone())
+                .item(crate::menu_heading("Split"));
             let cannot_split = !can_clone && !can_split_move;
             // Items that can't be cloned into the new pane are moved there instead.
             let mode = if can_split_move {
@@ -4602,15 +4627,27 @@ fn default_render_tab_bar_buttons(
             } else {
                 SplitMode::default()
             };
-            menu.menu_with_disabled(
+            menu.menu_with_icon_and_disabled(
                 "Split Right",
+                crate::menu_icon(MenuIcon::SplitHorizontal),
                 SplitRight { mode }.boxed_clone(),
                 cannot_split,
             )
-            .menu_with_disabled("Split Left", SplitLeft { mode }.boxed_clone(), cannot_split)
-            .menu_with_disabled("Split Up", SplitUp { mode }.boxed_clone(), cannot_split)
-            .menu_with_disabled(
+            .menu_with_icon_and_disabled(
+                "Split Left",
+                crate::menu_icon(MenuIcon::SplitHorizontal),
+                SplitLeft { mode }.boxed_clone(),
+                cannot_split,
+            )
+            .menu_with_icon_and_disabled(
+                "Split Up",
+                crate::menu_icon(MenuIcon::SplitVertical),
+                SplitUp { mode }.boxed_clone(),
+                cannot_split,
+            )
+            .menu_with_icon_and_disabled(
                 "Split Down",
+                crate::menu_icon(MenuIcon::SplitVertical),
                 SplitDown { mode }.boxed_clone(),
                 cannot_split,
             )
@@ -5288,10 +5325,12 @@ pub fn render_item_indicator(item: Box<dyn ItemHandle>, cx: &App) -> Option<Indi
 
 fn tab_menu_entry(
     label: impl Into<SharedString>,
+    icon: gpui_kit::component::Icon,
     action: Option<Box<dyn Action>>,
     handler: impl Fn(&mut Window, &mut App) + 'static,
 ) -> PopupMenuItem {
     PopupMenuItem::new(label)
+        .icon(icon)
         .when_some(action, |item, action| item.action(action))
         .on_click(move |_, window, cx| handler(window, cx))
 }

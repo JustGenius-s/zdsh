@@ -1000,6 +1000,7 @@ mod remote_button {
         ParentElement as _, SharedString, Stateful, Styled as _, Window,
         prelude::FluentBuilder as _,
     };
+    use gpui_icons::IconName as MenuIcon;
     use gpui_kit::component::{
         Disableable as _, Sizable as _,
         button::{Button, DropdownButton},
@@ -1141,14 +1142,42 @@ mod remote_button {
         menu.when_some(keybinding_target, |menu, keybinding_target| {
             menu.action_context(keybinding_target)
         })
-        .menu("Fetch", git::Fetch.boxed_clone())
-        .menu("Fetch From", git::FetchFrom.boxed_clone())
-        .menu("Pull", git::Pull.boxed_clone())
-        .menu("Pull (Rebase)", git::PullRebase.boxed_clone())
+        .menu_with_icon(
+            "Fetch",
+            workspace::menu_icon(MenuIcon::GitFetch),
+            git::Fetch.boxed_clone(),
+        )
+        .menu_with_icon(
+            "Fetch From",
+            workspace::menu_icon(MenuIcon::GitFetch),
+            git::FetchFrom.boxed_clone(),
+        )
+        .menu_with_icon(
+            "Pull",
+            workspace::menu_icon(MenuIcon::GitPull),
+            git::Pull.boxed_clone(),
+        )
+        .menu_with_icon(
+            "Pull (Rebase)",
+            workspace::menu_icon(MenuIcon::GitPull),
+            git::PullRebase.boxed_clone(),
+        )
         .separator()
-        .menu("Push", git::Push.boxed_clone())
-        .menu("Push To", git::PushTo.boxed_clone())
-        .menu("Force Push", git::ForcePush.boxed_clone())
+        .menu_with_icon(
+            "Push",
+            workspace::menu_icon(MenuIcon::GitPush),
+            git::Push.boxed_clone(),
+        )
+        .menu_with_icon(
+            "Push To",
+            workspace::menu_icon(MenuIcon::GitPush),
+            git::PushTo.boxed_clone(),
+        )
+        .menu_with_icon(
+            "Force Push",
+            workspace::menu_icon(MenuIcon::GitPush),
+            git::ForcePush.boxed_clone(),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1206,7 +1235,12 @@ mod remote_button {
             .button(button)
             .dropdown_menu_with_anchor(Anchor::TopRight, {
                 let keybinding_target = keybinding_target.clone();
-                move |menu, _, _| git_action_menu(menu, keybinding_target.clone())
+                move |menu, window, _| {
+                    git_action_menu(
+                        workspace::style_menu(menu, window),
+                        keybinding_target.clone(),
+                    )
+                }
             });
 
         with_tooltip(

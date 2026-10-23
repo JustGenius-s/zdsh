@@ -6,7 +6,7 @@ use crate::{
     thread_metadata_store::{ThreadId, ThreadMetadataStore},
 };
 use agent_client_protocol::schema::v2 as acp_v2;
-use gpui_icons::Icon as KitIcon;
+use gpui_icons::{Icon as KitIcon, IconName as MenuIcon};
 use std::{
     cell::{Cell, RefCell},
     path::Path,
@@ -38,7 +38,7 @@ use gpui::List;
 use gpui::Stateful;
 use gpui::TaskExt;
 use gpui_kit::component::{
-    Root as KitRoot, Side, Sizable as _, Size as KitSize, Theme as KitTheme, WindowExt as _,
+    Root as KitRoot, Sizable as _, Size as KitSize, Theme as KitTheme, WindowExt as _,
     alert::AlertVariant,
     button::{Button as KitButton, ButtonRounded, ButtonVariant, ButtonVariants as _},
     list::ListItem as KitListItem,
@@ -4667,7 +4667,8 @@ impl ThreadView {
         let offer_auto_review =
             permissions == AgentPermissions::AutoReview || thread.read(cx).sandboxing_available(cx);
         let this = cx.weak_entity();
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+        let menu = PopupMenu::build(window, cx, move |menu, window, _| {
+            let menu = workspace::style_menu(menu, window);
             permissions_menu(
                 menu,
                 permissions,
@@ -4743,7 +4744,8 @@ impl ThreadView {
 
     fn confirm_full_access(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.weak_entity();
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+        let menu = PopupMenu::build(window, cx, move |menu, window, _| {
+            let menu = workspace::style_menu(menu, window);
             let allow_and_dont_ask = this.clone();
             menu.item(permissions_confirmation(
                 "Give This Thread Full Access?",
@@ -4770,7 +4772,8 @@ impl ThreadView {
     /// the user whenever the review doesn't allow a request.
     fn confirm_auto_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.weak_entity();
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+        let menu = PopupMenu::build(window, cx, move |menu, window, _| {
+            let menu = workspace::style_menu(menu, window);
             menu.item(permissions_confirmation(
                 "Turn On Auto Review?",
                 "When the agent asks to write to specific paths outside the sandbox, a model \
@@ -5126,10 +5129,7 @@ impl ThreadView {
         let weak_self = cx.weak_entity();
 
         let menu = PopupMenu::build(window, cx, move |mut menu, window, cx| {
-            menu = menu
-                .action_context(focus_handle)
-                .check_side(Side::Right)
-                .min_w(px(200.));
+            menu = workspace::style_menu(menu, window).action_context(focus_handle);
 
             if supports_disabling_thinking {
                 let weak_self = weak_self.clone();
@@ -5158,8 +5158,8 @@ impl ThreadView {
                 let weak_self = weak_self.clone();
                 let selected_effort = selected_effort.clone();
                 let effort_levels = effort_levels.clone();
-                menu = menu.submenu("Effort", window, cx, move |mut menu, _, _| {
-                    menu = menu.check_side(Side::Right);
+                menu = menu.submenu("Effort", window, cx, move |mut menu, window, _| {
+                    menu = workspace::style_submenu(menu, window);
                     for level in &effort_levels {
                         let weak_self = weak_self.clone();
                         let value = level.value.to_string();
@@ -5184,11 +5184,10 @@ impl ThreadView {
                 let selected_model_id = selected_model_id.clone();
                 let hidden_model_ids = hidden_model_ids.clone();
                 let model_selector = model_selector.clone();
-                menu = menu.submenu("Model", window, cx, move |menu, _, _| {
+                menu = menu.submenu("Model", window, cx, move |menu, window, _| {
+                    let menu = workspace::style_submenu(menu, window);
                     Self::push_model_items(
-                        menu.check_side(Side::Right)
-                            .max_h(px(420.))
-                            .scrollable(true),
+                        menu.max_h(px(420.)).scrollable(true),
                         model_list.clone(),
                         selected_model_id.as_ref(),
                         &hidden_model_ids,
@@ -5676,7 +5675,7 @@ fn permissions_menu(
     details: Option<&SandboxDetails>,
     this: &WeakEntity<ThreadView>,
 ) -> PopupMenu {
-    menu = menu.check_side(Side::Right).min_w(px(240.));
+    menu = menu.min_w(px(240.));
     let choices = [
         AgentPermissions::ReadOnly,
         AgentPermissions::Workspace,
@@ -5697,15 +5696,20 @@ fn permissions_menu(
         } else {
             PopupMenuItem::new(label)
         };
-        menu = menu.item(
-            item.checked(permissions == current)
-                .on_click(move |_, window, cx| {
-                    this.update(cx, |this, cx| {
-                        this.select_permissions(permissions, window, cx)
-                    })
-                    .log_err();
-                }),
-        );
+        let icon = match permissions {
+            AgentPermissions::ReadOnly => workspace::menu_icon(MenuIcon::Eye),
+            AgentPermissions::Workspace => workspace::menu_icon(MenuIcon::FolderCheck),
+            AgentPermissions::AutoReview => workspace::menu_icon(MenuIcon::ShieldCheck),
+            AgentPermissions::FullAccess => workspace::menu_icon(MenuIcon::LockUnlocked),
+        };
+        menu = menu.item(item.icon(icon).checked(permissions == current).on_click(
+            move |_, window, cx| {
+                this.update(cx, |this, cx| {
+                    this.select_permissions(permissions, window, cx)
+                })
+                .log_err();
+            },
+        ));
     }
 
     match details {
@@ -5713,13 +5717,21 @@ fn permissions_menu(
             writable,
             thread_grants,
         }) => {
-            menu = push_writable_items(menu.separator().label("Write Access"), writable);
+            menu = push_writable_items(
+                menu.separator()
+                    .item(workspace::menu_heading("Write Access")),
+                writable,
+            );
             if let Some(thread_grants) = thread_grants {
-                menu = push_writable_items(menu.label("Allowed for This Thread"), thread_grants);
+                menu = push_writable_items(
+                    menu.item(workspace::menu_heading("Allowed for This Thread")),
+                    thread_grants,
+                );
             }
-            menu.separator()
-                .item(
-                    PopupMenuItem::new("Sandbox Settings…").on_click(|_, window, cx| {
+            menu.separator().item(
+                PopupMenuItem::new("Sandbox Settings…")
+                    .icon(workspace::menu_icon(MenuIcon::Settings))
+                    .on_click(|_, window, cx| {
                         window.dispatch_action(
                             Box::new(zed_actions::OpenSettingsAt {
                                 path: zed_actions::AGENT_SANDBOX_SETTINGS_PATH.to_string(),
@@ -5728,7 +5740,7 @@ fn permissions_menu(
                             cx,
                         );
                     }),
-                )
+            )
         }
         Some(SandboxDetails::UnsandboxedForThread) => menu
             .separator()
@@ -5774,6 +5786,7 @@ fn permissions_note(note: &'static str) -> PopupMenuItem {
             .text_xs()
             .child(note)
     })
+    .icon(workspace::menu_icon_spacer())
     .disabled(true)
 }
 
@@ -5816,6 +5829,7 @@ fn writable_path_item(path: SharedString) -> PopupMenuItem {
                     .child(path.clone()),
             )
     })
+    .icon(workspace::menu_icon_spacer())
     .disabled(true)
 }
 

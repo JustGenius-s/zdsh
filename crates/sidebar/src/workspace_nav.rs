@@ -5,7 +5,7 @@ use agent_ui::AgentPanel;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Context, Entity, Focusable as _, IntoElement,
     MouseButton, ParentElement, Render, SharedString, Styled, Subscription, WeakEntity, Window,
-    deferred, div, ease_out_quint, prelude::*, px,
+    div, ease_out_quint, prelude::*, px,
 };
 use gpui_icons::IconName;
 use gpui_kit::component::{
@@ -24,7 +24,7 @@ use workspace::{ItemHandle, MultiWorkspace, Workspace, WorkspaceNavigation, item
 
 use crate::Sidebar;
 use crate::sidebar_row::{
-    GROUP_GAP, LIST_INSET, ROW_MIN_HEIGHT, ROW_STACK_GAP, SidebarRow, StatusDot, glyph,
+    GROUP_GAP, LIST_INSET, ROW_MIN_HEIGHT, ROW_STACK_GAP, SidebarRow, StatusDot, file_icon, glyph,
     glyph_button,
 };
 
@@ -51,14 +51,15 @@ const THREAD_STATUSES: [(StatusDot, &str); 6] = [
     (StatusDot::Read, "Done"),
 ];
 
-/// The sidebar at a workspace's left edge, showing that workspace's threads, files and
+/// The sidebar at a workspace's left edge, showing that workspace's threads, files, changes and
 /// terminals.
 pub struct WorkspaceNav {
     workspace: WeakEntity<Workspace>,
     /// The window's thread list, which already tracks every project's threads and their status.
     threads: Option<Entity<Sidebar>>,
     needed_attention: bool,
-    /// The project's file tree, borrowed from the left dock and shown beside the sidebar.
+    /// The project's file tree, borrowed from the left dock and shown at the content block's
+    /// right edge.
     project_files: Option<Entity<ProjectPanel>>,
     files: FilesState,
     /// Counts openings of the file tree, so each one replays its entrance.
@@ -87,6 +88,7 @@ enum FilesState {
 enum Section {
     Threads,
     Files,
+    Changes,
     Terminals,
 }
 
@@ -117,9 +119,13 @@ impl WorkspaceNav {
         let git_store = workspace.project().read(cx).git_store().clone();
         let left_dock = workspace.left_dock().clone();
         let nav = cx.new(|cx| Self::new(&workspace_handle, &git_store, &left_dock, window, cx));
+        let project_files = cx.new(|_| ProjectFilesSide {
+            nav: nav.downgrade(),
+        });
         workspace.set_navigation(
             WorkspaceNavigation {
                 view: nav.clone().into(),
+                trailing_view: project_files.into(),
                 needs_attention: Box::new(move |cx| nav.read(cx).needs_attention(cx)),
             },
             cx,
@@ -157,7 +163,8 @@ impl WorkspaceNav {
     }
 
     /// The file tree lives in the left dock, which actions such as revealing a file open. The
-    /// sidebar shows the tree itself instead, so it closes the dock and opens the tree beside it.
+    /// sidebar shows the tree itself instead, so it closes the dock and opens the tree at the
+    /// content block's right edge.
     fn take_project_files_from_dock(
         &mut self,
         left_dock: Entity<Dock>,
@@ -264,12 +271,6 @@ impl WorkspaceNav {
             .read(cx)
             .project_group_key(cx)
             .display_name(&Default::default());
-        let hint = if pinned {
-            "Pinned beside the sidebar. Unpin to float it again."
-        } else {
-            "Opening a file closes this list. Escape closes it."
-        };
-
         v_flex()
             .id("workspace-project-files")
             .w(rems_from_px(FILES_WIDTH))
@@ -277,7 +278,7 @@ impl WorkspaceNav {
             .flex_none()
             .pt(rems_from_px(LIST_INSET))
             .bg(colors.panel_background)
-            .border_r_1()
+            .border_l_1()
             .border_color(colors.border_variant)
             .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
                 this.close_project_files(window, cx)
@@ -306,11 +307,7 @@ impl WorkspaceNav {
                             .child(div().flex_1())
                             .child(
                                 glyph_button("pin-project-files", IconName::Pin)
-                                    .tooltip(if pinned {
-                                        "Unpin"
-                                    } else {
-                                        "Pin Beside Sidebar"
-                                    })
+                                    .tooltip(if pinned { "Unpin" } else { "Pin as a Column" })
                                     .selected(pinned)
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.toggle_files_pinned(cx)),
@@ -346,18 +343,49 @@ impl WorkspaceNav {
                 ),
             )
             .child(div().flex_1().min_h_0().child(project_files))
-            .child(
-                div()
-                    .w_full()
-                    .px(rems_from_px(LIST_INSET + GROUP_LABEL_PADDING_START))
-                    .py(rems_from_px(LIST_INSET))
-                    .border_t_1()
-                    .border_color(colors.border_variant)
-                    .text_xs()
-                    .text_color(colors.text_placeholder)
-                    .child(hint),
-            )
             .into_any_element()
+    }
+
+    /// Nothing while the tree is closed, a column of its own while pinned, and otherwise the
+    /// tree floating over the center from the content block's right edge.
+    fn render_project_files_side(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return div().into_any_element();
+        };
+        let project_files = (self.files != FilesState::Closed)
+            .then(|| self.connect_project_files(window, cx))
+            .flatten()
+            .map(|project_files| self.render_project_files(project_files, &workspace, cx));
+        match project_files {
+            Some(project_files) if self.files == FilesState::Floating => div()
+                .flex_none()
+                .h_full()
+                .child(
+                    // Drawn after the center and before the content block's rounded edge, so it
+                    // floats over the center and keeps the block's corners.
+                    div()
+                        .id("floating-project-files")
+                        .occlude()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .shadow_lg()
+                        .child(project_files)
+                        .with_animation(
+                            ("project-files-enter", self.files_openings),
+                            Animation::new(FILES_ENTER_DURATION).with_easing(ease_out_quint()),
+                            |files, delta| files.opacity(delta).mr(px(-16. * (1. - delta))),
+                        ),
+                )
+                .into_any_element(),
+            Some(project_files) => project_files,
+            None => div().into_any_element(),
+        }
     }
 
     fn multi_workspace(&self, cx: &App) -> Option<Entity<MultiWorkspace>> {
@@ -477,76 +505,81 @@ impl WorkspaceNav {
                 this.status_filter.clone(),
             )
         };
-        menu.submenu("Ordering", window, cx, {
-            let nav = nav.clone();
-            move |menu, _, _| {
-                [
-                    (ThreadOrder::Updated, "Updated"),
-                    (ThreadOrder::Status, "Status"),
-                ]
-                .into_iter()
-                .fold(menu, |menu, (order, label)| {
-                    let nav = nav.clone();
-                    menu.item(
-                        PopupMenuItem::new(label)
-                            .checked(thread_order == order)
-                            .on_click(move |_, _, cx| {
-                                nav.update(cx, |this, cx| {
-                                    this.thread_order = order;
-                                    cx.notify();
-                                })
-                                .log_err();
-                            }),
-                    )
-                })
-            }
-        })
-        .submenu("Show", window, cx, {
-            let nav = nav.clone();
-            move |menu, _, _| {
+        workspace::style_menu(menu, window)
+            .submenu("Ordering", window, cx, {
                 let nav = nav.clone();
-                menu.item(
-                    PopupMenuItem::new("Updated")
-                        .checked(show_thread_times)
-                        .on_click(move |_, _, cx| {
-                            nav.update(cx, |this, cx| {
-                                this.show_thread_times = !this.show_thread_times;
-                                cx.notify();
-                            })
-                            .log_err();
-                        }),
-                )
-            }
-        })
-        .separator()
-        .label("Filters")
-        .submenu("Status", window, cx, {
-            let nav = nav.clone();
-            move |menu, _, _| {
-                THREAD_STATUSES
+                move |menu, window, _| {
+                    let menu = workspace::style_submenu(menu, window);
+                    [
+                        (ThreadOrder::Updated, "Updated"),
+                        (ThreadOrder::Status, "Status"),
+                    ]
                     .into_iter()
-                    .fold(menu, |menu, (status, label)| {
+                    .fold(menu, |menu, (order, label)| {
                         let nav = nav.clone();
                         menu.item(
                             PopupMenuItem::new(label)
-                                .checked(status_filter.contains(&status))
+                                .checked(thread_order == order)
                                 .on_click(move |_, _, cx| {
                                     nav.update(cx, |this, cx| {
-                                        this.toggle_status_filter(status, cx)
+                                        this.thread_order = order;
+                                        cx.notify();
                                     })
                                     .log_err();
                                 }),
                         )
                     })
-            }
-        })
-        .separator()
-        .item(
-            PopupMenuItem::new("Mark All as Read").on_click(move |_, _, cx| {
-                nav.update(cx, |this, cx| this.mark_threads_read(cx))
-                    .log_err();
-            }),
-        )
+                }
+            })
+            .submenu("Show", window, cx, {
+                let nav = nav.clone();
+                move |menu, window, _| {
+                    let menu = workspace::style_submenu(menu, window);
+                    let nav = nav.clone();
+                    menu.item(
+                        PopupMenuItem::new("Updated")
+                            .checked(show_thread_times)
+                            .on_click(move |_, _, cx| {
+                                nav.update(cx, |this, cx| {
+                                    this.show_thread_times = !this.show_thread_times;
+                                    cx.notify();
+                                })
+                                .log_err();
+                            }),
+                    )
+                }
+            })
+            .separator()
+            .label("Filters")
+            .submenu("Status", window, cx, {
+                let nav = nav.clone();
+                move |menu, window, cx| {
+                    let menu = workspace::style_submenu(menu, window);
+                    THREAD_STATUSES
+                        .into_iter()
+                        .fold(menu, |menu, (status, label)| {
+                            let nav = nav.clone();
+                            menu.item(
+                                PopupMenuItem::new(label)
+                                    .icon(status.menu_icon(cx))
+                                    .checked(status_filter.contains(&status))
+                                    .on_click(move |_, _, cx| {
+                                        nav.update(cx, |this, cx| {
+                                            this.toggle_status_filter(status, cx)
+                                        })
+                                        .log_err();
+                                    }),
+                            )
+                        })
+                }
+            })
+            .separator()
+            .item(
+                PopupMenuItem::new("Mark All as Read").on_click(move |_, _, cx| {
+                    nav.update(cx, |this, cx| this.mark_threads_read(cx))
+                        .log_err();
+                }),
+            )
     }
 
     fn toggle_status_filter(&mut self, status: StatusDot, cx: &mut Context<Self>) {
@@ -600,6 +633,7 @@ impl WorkspaceNav {
         let id = match section {
             Section::Threads => "threads",
             Section::Files => "files",
+            Section::Changes => "changes",
             Section::Terminals => "terminals",
         };
         let group = SharedString::from(format!("workspace-nav-{id}"));
@@ -742,13 +776,13 @@ impl WorkspaceNav {
             .into_any_element()
     }
 
-    /// The files at hand: what this workspace's threads changed, what is open, and what git
-    /// reports as changed.
-    fn file_groups(
+    /// The files this workspace's threads changed, then what git reports as changed, and how many
+    /// files git reports in all.
+    fn changed_files(
         &self,
         workspace: &Entity<Workspace>,
         cx: &App,
-    ) -> (Vec<FileRow>, Vec<FileRow>, Vec<FileRow>, usize) {
+    ) -> (Vec<FileRow>, Vec<FileRow>, usize) {
         let workspace = workspace.read(cx);
         let mut thread_changes: Vec<FileRow> = Vec::new();
         if let Some(agent_panel) = workspace.panel::<AgentPanel>(cx) {
@@ -782,28 +816,6 @@ impl WorkspaceNav {
             }
         }
 
-        let mut open_files: Vec<FileRow> = Vec::new();
-        for pane in workspace.panes() {
-            for item in pane.read(cx).items() {
-                if item.tab_category(cx) != TabCategory::File {
-                    continue;
-                }
-                let Some(path) = item.project_path(cx) else {
-                    continue;
-                };
-                if thread_changes.iter().any(|row| row.path == path)
-                    || open_files.iter().any(|row| row.path == path)
-                {
-                    continue;
-                }
-                open_files.push(FileRow {
-                    path,
-                    item: Some(item.boxed_clone()),
-                    end: FileRowEnd::None,
-                });
-            }
-        }
-
         let mut git_changes = Vec::new();
         let mut git_change_count = 0;
         if let Some(repository) = workspace.project().read(cx).active_repository(cx) {
@@ -834,10 +846,35 @@ impl WorkspaceNav {
             }
         }
 
-        (thread_changes, open_files, git_changes, git_change_count)
+        (thread_changes, git_changes, git_change_count)
     }
 
-    fn render_file_row(&self, row: FileRow, cx: &App) -> impl IntoElement {
+    fn open_files(&self, workspace: &Entity<Workspace>, cx: &App) -> Vec<FileRow> {
+        let mut open_files: Vec<FileRow> = Vec::new();
+        for pane in workspace.read(cx).panes() {
+            for item in pane.read(cx).items() {
+                if item.tab_category(cx) != TabCategory::File {
+                    continue;
+                }
+                let Some(path) = item.project_path(cx) else {
+                    continue;
+                };
+                if open_files.iter().any(|row| row.path == path) {
+                    continue;
+                }
+                open_files.push(FileRow {
+                    path,
+                    item: Some(item.boxed_clone()),
+                    end: FileRowEnd::None,
+                });
+            }
+        }
+        open_files
+    }
+
+    /// `id_prefix` tells apart the rows of a file listed more than once, such as one that is
+    /// both open and changed.
+    fn render_file_row(&self, id_prefix: &str, row: FileRow, cx: &App) -> impl IntoElement {
         let colors = cx.theme().colors();
         let status = cx.theme().status();
         let name: SharedString = row
@@ -879,11 +916,11 @@ impl WorkspaceNav {
         let workspace = self.workspace.clone();
         SidebarRow::new(
             SharedString::from(format!(
-                "nav-file-{}-{}",
+                "{id_prefix}-{}-{}",
                 row.path.worktree_id.to_usize(),
                 row.path.path.as_unix_str()
             )),
-            StatusDot::Read,
+            file_icon(row.path.path.as_std_path(), cx).text_color(colors.icon_muted),
             div().truncate().text_color(colors.text).child(name),
         )
         .when_some(end, |row, end| row.end(end))
@@ -903,9 +940,7 @@ impl WorkspaceNav {
     }
 
     fn render_files(&self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) -> AnyElement {
-        let (thread_changes, open_files, git_changes, git_change_count) =
-            self.file_groups(workspace, cx);
-        let colors = cx.theme().colors();
+        let open_files = self.open_files(workspace, cx);
         let weak_workspace = self.workspace.clone();
         let buttons = vec![
             glyph_button("project-tree", IconName::ListTodoSubtask)
@@ -915,7 +950,8 @@ impl WorkspaceNav {
                 .into_any_element(),
             glyph_button("open-file", IconName::Plus)
                 .tooltip("Open File")
-                .dropdown_menu(move |menu, _, cx| {
+                .dropdown_menu(move |menu, window, cx| {
+                    let menu = workspace::style_menu(menu, window);
                     let Some(workspace) = weak_workspace.upgrade() else {
                         return menu;
                     };
@@ -925,7 +961,6 @@ impl WorkspaceNav {
                 })
                 .into_any_element(),
         ];
-        let hidden_git_changes = git_change_count.saturating_sub(git_changes.len());
 
         v_flex()
             .w_full()
@@ -942,37 +977,52 @@ impl WorkspaceNav {
                 cx,
             ))
             .when(!self.is_collapsed(Section::Files), |group| {
-                let is_empty =
-                    thread_changes.is_empty() && open_files.is_empty() && git_changes.is_empty();
                 group
-                    .when(is_empty, |group| {
-                        group.child(self.render_placeholder(
-                            "nav-no-files",
-                            "No open or changed files",
-                            cx,
-                        ))
+                    .when(open_files.is_empty(), |group| {
+                        group.child(self.render_placeholder("nav-no-files", "No open files", cx))
                     })
-                    .when(!thread_changes.is_empty(), |group| {
-                        group.children(
-                            thread_changes
-                                .into_iter()
-                                .map(|row| self.render_file_row(row, cx)),
-                        )
-                    })
-                    .when(!open_files.is_empty(), |group| {
-                        group.children(
-                            open_files
-                                .into_iter()
-                                .map(|row| self.render_file_row(row, cx)),
-                        )
-                    })
-                    .when(!git_changes.is_empty(), |group| {
-                        group.children(
-                            git_changes
-                                .into_iter()
-                                .map(|row| self.render_file_row(row, cx)),
-                        )
-                    })
+                    .children(
+                        open_files
+                            .into_iter()
+                            .map(|row| self.render_file_row("nav-file", row, cx)),
+                    )
+            })
+            .into_any_element()
+    }
+
+    fn render_changes(&self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) -> AnyElement {
+        let (thread_changes, git_changes, git_change_count) = self.changed_files(workspace, cx);
+        let colors = cx.theme().colors();
+        let hidden_git_changes = git_change_count.saturating_sub(git_changes.len());
+
+        v_flex()
+            .w_full()
+            .mt(rems_from_px(GROUP_GAP))
+            .child(self.render_section_label(
+                Section::Changes,
+                IconName::DiffSingle,
+                "Changes",
+                Vec::new(),
+                cx,
+            ))
+            .when(!self.is_collapsed(Section::Changes), |group| {
+                group
+                    .when(
+                        thread_changes.is_empty() && git_changes.is_empty(),
+                        |group| {
+                            group.child(self.render_placeholder("nav-no-changes", "No changes", cx))
+                        },
+                    )
+                    .children(
+                        thread_changes
+                            .into_iter()
+                            .map(|row| self.render_file_row("nav-thread-change", row, cx)),
+                    )
+                    .children(
+                        git_changes
+                            .into_iter()
+                            .map(|row| self.render_file_row("nav-git-change", row, cx)),
+                    )
                     .when(hidden_git_changes > 0, |group| {
                         group.child(
                             SidebarRow::new(
@@ -1017,7 +1067,8 @@ impl WorkspaceNav {
         let weak_workspace = self.workspace.clone();
         let new_terminal = glyph_button("new-terminal", IconName::Plus)
             .tooltip("New Terminal")
-            .dropdown_menu(move |menu, _, cx| {
+            .dropdown_menu(move |menu, window, cx| {
+                let menu = workspace::style_menu(menu, window);
                 let Some(workspace) = weak_workspace.upgrade() else {
                     return menu;
                 };
@@ -1157,7 +1208,8 @@ impl WorkspaceNav {
             .child(
                 glyph_button("workspace-tools", IconName::Wrench)
                     .tooltip("Workspace Tools")
-                    .dropdown_menu(move |menu, _, cx| {
+                    .dropdown_menu(move |menu, window, cx| {
+                        let menu = workspace::style_menu(menu, window);
                         let Some(workspace) = weak_workspace.upgrade() else {
                             return menu;
                         };
@@ -1168,18 +1220,12 @@ impl WorkspaceNav {
 }
 
 impl Render for WorkspaceNav {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.connect_thread_list(cx);
         let Some(workspace) = self.workspace.upgrade() else {
             return div().into_any_element();
         };
-        let project_files = (self.files != FilesState::Closed)
-            .then(|| self.connect_project_files(window, cx))
-            .flatten()
-            .map(|project_files| self.render_project_files(project_files, &workspace, cx));
-        let floating = self.files == FilesState::Floating;
-        let nav = v_flex()
-            .relative()
+        v_flex()
             .w(rems_from_px(NAV_WIDTH))
             .h_full()
             .flex_none()
@@ -1195,38 +1241,25 @@ impl Render for WorkspaceNav {
                     .pb(rems_from_px(LIST_INSET))
                     .child(self.render_threads(&workspace, cx))
                     .child(self.render_files(&workspace, cx))
+                    .child(self.render_changes(&workspace, cx))
                     .child(self.render_terminals(&workspace, cx)),
             )
-            .child(self.render_footer(&workspace, cx));
-
-        h_flex()
-            .h_full()
-            .map(|row| match project_files {
-                Some(project_files) if floating => row.child(
-                    nav.child(
-                        // Drawn after the center, so it floats over it.
-                        deferred(
-                            div()
-                                .id("floating-project-files")
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .left(rems_from_px(NAV_WIDTH))
-                                .shadow_lg()
-                                .child(project_files)
-                                .with_animation(
-                                    ("project-files-enter", self.files_openings),
-                                    Animation::new(FILES_ENTER_DURATION)
-                                        .with_easing(ease_out_quint()),
-                                    |files, delta| files.opacity(delta).ml(px(-16. * (1. - delta))),
-                                ),
-                        )
-                        .with_priority(1),
-                    ),
-                ),
-                Some(project_files) => row.child(nav).child(project_files),
-                None => row.child(nav),
-            })
+            .child(self.render_footer(&workspace, cx))
             .into_any_element()
+    }
+}
+
+/// The project's file tree at the content block's right edge. The sidebar opens, pins and closes it,
+/// so this view draws what the sidebar's state says.
+struct ProjectFilesSide {
+    nav: WeakEntity<WorkspaceNav>,
+}
+
+impl Render for ProjectFilesSide {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.nav
+            .update(cx, |nav, cx| nav.render_project_files_side(window, cx))
+            .log_err()
+            .unwrap_or_else(|| div().into_any_element())
     }
 }

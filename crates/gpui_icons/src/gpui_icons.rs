@@ -5,4 +5,4 @@ pub mod region;
 mod element;
 
 pub use catalog::{IconName, Variant, glyph};
-pub use element::{Icon, MorphIcon};
+pub use element::{BOX_GLYPH_SCALE, Icon, MorphIcon};

@@ -2,7 +2,6 @@ mod dev_container_suggest;
 pub mod disconnected_overlay;
 mod remote_connections;
 mod remote_servers;
-pub mod sidebar_recent_projects;
 mod ssh_config;
 
 use std::{

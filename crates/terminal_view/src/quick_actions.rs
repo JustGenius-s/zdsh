@@ -424,13 +424,22 @@ impl QuickActionsPage {
                                         .outline()
                                         .disabled(saving)
                                         .label(step.target.label())
-                                        .dropdown_menu(move |menu, _, _| {
+                                        .dropdown_menu(move |menu, window, _| {
+                                            let menu = workspace::style_menu(menu, window);
                                             [Target::Current, Target::New].into_iter().fold(
                                                 menu,
                                                 |menu, target| {
                                                     let page = page.clone();
                                                     menu.item(
                                                         PopupMenuItem::new(target.label())
+                                                            .icon(match target {
+                                                                Target::Current => {
+                                                                    workspace::menu_icon(gpui_icons::IconName::TerminalRectangle)
+                                                                }
+                                                                Target::New => {
+                                                                    workspace::menu_icon(gpui_icons::IconName::Plus)
+                                                                }
+                                                            })
                                                             .checked(target == selected_target)
                                                             .on_click(move |_, _, cx| {
                                                                 page.update(cx, |page, cx| {

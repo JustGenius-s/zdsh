@@ -18,9 +18,9 @@ FONT_SHA256 = "420c80f80c2e1f094b91ae993799c93dcba4afc7372a0ccfe8a29d53c64593a7"
 REPOSITORY = Path(__file__).resolve().parent.parent
 ASSETS = REPOSITORY / "crates/gpui_icons/assets"
 COORDINATE_SIZE = 24.0
-# Cursor glyphs fill their em box and Cursor's UI sizes them down to compensate; zdsh keeps
-# Zed's and Kit's icon boxes, so glyphs are drawn at 0.8 of the box to land on Cursor's sizes.
-DISPLAY_VIEW_BOX = [-3.0, -3.0, 30.0, 30.0]
+# Glyphs fill their em box, as in Cursor's font. Zed's icon boxes are larger than Cursor's, so
+# `ui::Icon` draws glyphs at 0.8 of its box instead of every glyph carrying that inset.
+DISPLAY_VIEW_BOX = [0.0, 0.0, COORDINATE_SIZE, COORDINATE_SIZE]
 
 
 def load_font(path, node):

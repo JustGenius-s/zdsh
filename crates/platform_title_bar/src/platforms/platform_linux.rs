@@ -1,5 +1,6 @@
 use gpui::{
-    Action, AnyElement, Hsla, MAX_BUTTONS_PER_SIDE, MouseButton, WindowButton, prelude::*, svg,
+    Action, AnyElement, Hsla, MAX_BUTTONS_PER_SIDE, MouseButton, Transformation, WindowButton,
+    prelude::*, size, svg,
 };
 use ui::prelude::*;
 
@@ -215,6 +216,12 @@ impl RenderOnce for WindowControl {
             .size_4()
             .flex_none()
             .path(self.icon.icon().path())
+            // The glyph fills its box, and this box is sized like Zed's icons, which draw glyphs
+            // at a share of theirs.
+            .with_transformation(Transformation::scale(size(
+                gpui_icons::BOX_GLYPH_SCALE,
+                gpui_icons::BOX_GLYPH_SCALE,
+            )))
             .text_color(if enabled {
                 self.style.icon
             } else {

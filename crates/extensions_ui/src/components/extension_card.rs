@@ -750,6 +750,7 @@ impl RenderOnce for ExtensionCard {
                                             .dropdown_menu_with_anchor(
                                                 Anchor::TopRight,
                                                 move |menu, window, cx| {
+                                                    let menu = workspace::style_menu(menu, window);
                                                     menu_builder(
                                                         menu,
                                                         id.clone(),

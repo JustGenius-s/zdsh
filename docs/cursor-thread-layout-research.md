@@ -140,7 +140,7 @@ Token 取自 `molten/dist/renderer/assets/boot-BVZrksvb.css`：spacing 以 4px �
 
 截图中分组图标在行首、与会话行的状态点同列，名称与会话标题同列；静态代码中统一分组标题开关会把图标放到其他位置，以截图为准。图标渲染实际约 14px，可能来自 `--ui-sidebar-action-icon-size` 覆盖，zdsh 取 14px 与行图标一致。
 
-zdsh 的 `gpui_icons` 用 24 单位网格画图标，再放进 30 单位的显示 view box（`display_view_box` 为 −3, −3, 30, 30），图形约占 23 单位，可见大小约为盒子的 0.77 倍。要显示 Cursor 截图中约 14.5px 的图标，盒子取 19px；6px 的状态点盒子取 8px。
+zdsh 的 `gpui_icons` 与 Cursor 字体一样让字形铺满 24 单位的 em（`display_view_box` 为 0, 0, 24, 24），图形约占 23 单位，可见大小约为盒子的 0.96 倍。侧栏按 Cursor 的实测尺寸取盒子，不经过 `BOX_GLYPH_SCALE`：显示 Cursor 截图中约 14.5px 的图标，盒子取 15.2px；6px 的状态点盒子取 6.4px。
 
 说明：本节和上一节的数值是直接读安装包 JS 和 CSS 得到的；REA 只用于确认这些片段原样截取、全部可解析，并记录来源和哈希，它的分析结果本身不包含样式数值。
 

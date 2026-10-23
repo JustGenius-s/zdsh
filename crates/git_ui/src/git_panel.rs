@@ -54,11 +54,11 @@ use gpui::{
     TaskExt, TextStyle, Toggled, UniformListScrollHandle, WeakEntity, Window, actions, anchored,
     deferred, div, img, prelude::FluentBuilder as _, px, rems, uniform_list,
 };
-use gpui_icons::Icon as MorphIcon;
+use gpui_icons::{Icon as MorphIcon, IconName as MenuIcon};
 use gpui_kit::{
     base::{CheckboxIndicator, CheckboxState, Scrollbar, ScrollbarAxis},
     component::{
-        Disableable as _, Selectable as _, Side, Sizable as _, Theme as KitTheme, ThemeStyled as _,
+        Disableable as _, Selectable as _, Sizable as _, Theme as KitTheme, ThemeStyled as _,
         button::{Button, ButtonCustomVariant, ButtonVariants as _, DropdownButton},
         h_flex,
         kbd::Kbd,
@@ -334,50 +334,83 @@ fn git_panel_context_menu(
     focus_handle: FocusHandle,
 ) -> PopupMenu {
     menu.action_context(focus_handle)
-        .menu_with_disabled("Stage All", StageAll.boxed_clone(), !has_unstaged_changes)
-        .menu_with_disabled("Unstage All", UnstageAll.boxed_clone(), !has_staged_changes)
-        .menu_with_disabled(
+        .menu_with_icon_and_disabled(
+            "Stage All",
+            workspace::menu_icon(MenuIcon::PlusCircle),
+            StageAll.boxed_clone(),
+            !has_unstaged_changes,
+        )
+        .menu_with_icon_and_disabled(
+            "Unstage All",
+            workspace::menu_icon(MenuIcon::MinusCircle),
+            UnstageAll.boxed_clone(),
+            !has_staged_changes,
+        )
+        .menu_with_icon_and_disabled(
             "Restore All Changes",
+            workspace::menu_icon(MenuIcon::ArrowCcw),
             RestoreTrackedFiles.boxed_clone(),
             !has_staged_tracked_changes,
         )
         .separator()
-        .menu_with_disabled(
+        .menu_with_icon_and_disabled(
             "Stash All",
+            workspace::menu_icon(MenuIcon::ArrowBracketToDown),
             StashAll.boxed_clone(),
             !(has_new_changes || has_tracked_changes),
         )
         // Offer the stash variant that matches how the list is currently grouped,
         // so the menu mirrors the sections the user can actually see.
         .when(group_by == GitPanelGroupBy::Status, |menu| {
-            menu.menu_with_disabled(
+            menu.menu_with_icon_and_disabled(
                 "Stash Tracked",
+                workspace::menu_icon(MenuIcon::ArrowBracketToDown),
                 StashTracked.boxed_clone(),
                 !has_tracked_changes,
             )
         })
         .when(group_by == GitPanelGroupBy::Staging, |menu| {
-            menu.menu_with_disabled(
+            menu.menu_with_icon_and_disabled(
                 "Stash Staged",
+                workspace::menu_icon(MenuIcon::ArrowBracketToDown),
                 StashStaged.boxed_clone(),
                 !has_staged_changes,
             )
         })
-        .menu_with_disabled("Stash Pop", StashPop.boxed_clone(), !has_stash_items)
-        .menu("View Stash", zed_actions::git::ViewStash.boxed_clone())
+        .menu_with_icon_and_disabled(
+            "Stash Pop",
+            workspace::menu_icon(MenuIcon::ArrowBracketFromUp),
+            StashPop.boxed_clone(),
+            !has_stash_items,
+        )
+        .menu_with_icon(
+            "View Stash",
+            workspace::menu_icon(MenuIcon::Eye),
+            zed_actions::git::ViewStash.boxed_clone(),
+        )
         .when(include_copy_paths, |menu| {
             menu.separator()
-                .menu("Copy Path", CopyPath.boxed_clone())
-                .menu("Copy Relative Path", CopyRelativePath.boxed_clone())
+                .menu_with_icon(
+                    "Copy Path",
+                    workspace::menu_icon(MenuIcon::Copy),
+                    CopyPath.boxed_clone(),
+                )
+                .menu_with_icon(
+                    "Copy Relative Path",
+                    workspace::menu_icon(MenuIcon::Clipboard),
+                    CopyRelativePath.boxed_clone(),
+                )
         })
         .separator()
-        .menu_with_disabled(
+        .menu_with_icon_and_disabled(
             "Discard Tracked Changes",
+            workspace::menu_icon(MenuIcon::ArrowCcw),
             RestoreTrackedFiles.boxed_clone(),
             !has_staged_tracked_changes,
         )
-        .menu_with_disabled(
+        .menu_with_icon_and_disabled(
             "Trash Untracked Files",
+            workspace::menu_icon(MenuIcon::Trash),
             TrashUntrackedFiles.boxed_clone(),
             !has_new_changes,
         )
@@ -6191,12 +6224,14 @@ impl GitPanel {
         let signoff = self.signoff_enabled;
         let skip_hooks = self.skip_hooks_enabled;
 
-        move |menu, _, _| {
+        move |menu, window, _| {
+            let menu = workspace::style_menu(menu, window);
             menu.action_context(keybinding_target.clone())
                 .when(has_previous_commit, |menu| {
                     let git_panel = git_panel.clone();
                     menu.item(
                         PopupMenuItem::new("Amend")
+                            .icon(workspace::menu_icon(MenuIcon::PencilSquare))
                             .checked(amend)
                             .action(Box::new(Amend))
                             .on_click(move |_, _, cx| {
@@ -6210,6 +6245,7 @@ impl GitPanel {
                 })
                 .item(
                     PopupMenuItem::new("Signoff")
+                        .icon(workspace::menu_icon(MenuIcon::PenNib))
                         .checked(signoff)
                         .action(Box::new(Signoff)),
                 )
@@ -6221,6 +6257,7 @@ impl GitPanel {
                                 .child("--no-verify"),
                         )
                     })
+                    .icon(workspace::menu_icon_spacer())
                     .checked(skip_hooks)
                     .action(Box::new(SkipHooks)),
                 )
@@ -6472,120 +6509,285 @@ impl GitPanel {
             > 1;
 
         move |menu, window, cx| {
+            let menu = workspace::style_menu(menu, window);
             menu.action_context(focus_handle.clone())
-                .menu("Pull", git::Pull.boxed_clone())
-                .menu("Push", git::Push.boxed_clone())
-                .menu("Clone", git::Clone.boxed_clone())
-                .menu("Checkout to…", zed_actions::git::Switch.boxed_clone())
-                .menu("Fetch", git::Fetch.boxed_clone())
+                .menu_with_icon(
+                    "Pull",
+                    workspace::menu_icon(MenuIcon::GitPull),
+                    git::Pull.boxed_clone(),
+                )
+                .menu_with_icon(
+                    "Push",
+                    workspace::menu_icon(MenuIcon::GitPush),
+                    git::Push.boxed_clone(),
+                )
+                .menu_with_icon(
+                    "Clone",
+                    workspace::menu_icon(MenuIcon::CloudArrowDown),
+                    git::Clone.boxed_clone(),
+                )
+                .menu_with_icon(
+                    "Checkout to…",
+                    workspace::menu_icon(MenuIcon::GitBranch),
+                    zed_actions::git::Switch.boxed_clone(),
+                )
+                .menu_with_icon(
+                    "Fetch",
+                    workspace::menu_icon(MenuIcon::GitFetch),
+                    git::Fetch.boxed_clone(),
+                )
                 .separator()
-                .submenu("Commit", window, cx, {
-                    move |menu, _, _| {
-                        menu.menu("Commit", git::Commit.boxed_clone())
-                            .menu_with_disabled(
+                .submenu_with_icon(
+                    Some(workspace::menu_icon(MenuIcon::GitCommit)),
+                    "Commit",
+                    window,
+                    cx,
+                    {
+                        move |menu, window, _| {
+                            let menu = workspace::style_submenu(menu, window);
+                            menu.menu_with_icon(
+                                "Commit",
+                                workspace::menu_icon(MenuIcon::GitCommit),
+                                git::Commit.boxed_clone(),
+                            )
+                            .menu_with_icon_and_disabled(
                                 "Undo Last Commit",
+                                workspace::menu_icon(MenuIcon::ArrowBendUpLeft),
                                 git::Uncommit.boxed_clone(),
                                 !has_previous_commit,
                             )
                             .separator()
-                            .menu(
+                            .menu_with_icon(
                                 "Generate Commit Message",
+                                workspace::menu_icon(MenuIcon::Sparkle),
                                 git::GenerateCommitMessage.boxed_clone(),
                             )
-                            .menu("Open Commit Modal", git::ExpandCommitEditor.boxed_clone())
-                    }
-                })
-                .submenu("Changes", window, cx, move |menu, _, _| {
-                    menu.menu("View Changes", Diff.boxed_clone())
+                            .menu_with_icon(
+                                "Open Commit Modal",
+                                workspace::menu_icon(MenuIcon::CornersOut),
+                                git::ExpandCommitEditor.boxed_clone(),
+                            )
+                        }
+                    },
+                )
+                .submenu_with_icon(
+                    Some(workspace::menu_icon(MenuIcon::DiffSingle)),
+                    "Changes",
+                    window,
+                    cx,
+                    move |menu, window, _| {
+                        let menu = workspace::style_submenu(menu, window);
+                        menu.menu_with_icon(
+                            "View Changes",
+                            workspace::menu_icon(MenuIcon::Eye),
+                            Diff.boxed_clone(),
+                        )
                         .separator()
-                        .menu_with_disabled(
+                        .menu_with_icon_and_disabled(
                             "Stage All Changes",
+                            workspace::menu_icon(MenuIcon::PlusCircle),
                             StageAll.boxed_clone(),
                             !has_unstaged_changes,
                         )
-                        .menu_with_disabled(
+                        .menu_with_icon_and_disabled(
                             "Unstage All Changes",
+                            workspace::menu_icon(MenuIcon::MinusCircle),
                             UnstageAll.boxed_clone(),
                             !has_staged_changes,
                         )
                         .separator()
-                        .menu_with_disabled(
+                        .menu_with_icon_and_disabled(
                             "Discard Tracked Changes",
+                            workspace::menu_icon(MenuIcon::ArrowCcw),
                             RestoreTrackedFiles.boxed_clone(),
                             !has_staged_tracked_changes,
                         )
-                        .menu_with_disabled(
+                        .menu_with_icon_and_disabled(
                             "Trash Untracked Files",
+                            workspace::menu_icon(MenuIcon::Trash),
                             TrashUntrackedFiles.boxed_clone(),
                             !has_new_changes,
                         )
-                })
-                .submenu("Pull, Push", window, cx, |menu, _, _| {
-                    menu.menu("Pull", git::Pull.boxed_clone())
-                        .menu("Pull (Rebase)", git::PullRebase.boxed_clone())
+                    },
+                )
+                .submenu_with_icon(
+                    Some(workspace::menu_icon(MenuIcon::ArrowsDownUp)),
+                    "Pull, Push",
+                    window,
+                    cx,
+                    |menu, window, _| {
+                        let menu = workspace::style_submenu(menu, window);
+                        menu.menu_with_icon(
+                            "Pull",
+                            workspace::menu_icon(MenuIcon::GitPull),
+                            git::Pull.boxed_clone(),
+                        )
+                        .menu_with_icon(
+                            "Pull (Rebase)",
+                            workspace::menu_icon(MenuIcon::GitPull),
+                            git::PullRebase.boxed_clone(),
+                        )
                         .separator()
-                        .menu("Push", git::Push.boxed_clone())
-                        .menu("Push To…", git::PushTo.boxed_clone())
-                        .menu("Force Push", git::ForcePush.boxed_clone())
+                        .menu_with_icon(
+                            "Push",
+                            workspace::menu_icon(MenuIcon::GitPush),
+                            git::Push.boxed_clone(),
+                        )
+                        .menu_with_icon(
+                            "Push To…",
+                            workspace::menu_icon(MenuIcon::GitPush),
+                            git::PushTo.boxed_clone(),
+                        )
+                        .menu_with_icon(
+                            "Force Push",
+                            workspace::menu_icon(MenuIcon::GitPush),
+                            git::ForcePush.boxed_clone(),
+                        )
                         .separator()
-                        .menu("Fetch", git::Fetch.boxed_clone())
-                        .menu("Fetch From…", git::FetchFrom.boxed_clone())
-                })
-                .submenu("Branch", window, cx, |menu, _, _| {
-                    menu.menu("Switch Branch…", zed_actions::git::Switch.boxed_clone())
-                        .menu("Copy Branch Name", git::CopyBranchName.boxed_clone())
-                })
-                .submenu("Remotes", window, cx, |menu, _, _| {
-                    menu.menu("Add Remote…", zed_actions::git::CreateRemote.boxed_clone())
-                })
-                .submenu("Stash", window, cx, move |menu, _, _| {
-                    menu.menu_with_disabled(
-                        "Stash All",
-                        StashAll.boxed_clone(),
-                        !(has_new_changes || has_tracked_changes),
-                    )
-                    .menu_with_disabled(
-                        "Stash Staged",
-                        StashStaged.boxed_clone(),
-                        !has_staged_changes,
-                    )
-                    .menu_with_disabled("Pop Stash", StashPop.boxed_clone(), !has_stash_items)
-                    .menu("View Stash…", zed_actions::git::ViewStash.boxed_clone())
-                })
-                .submenu("Tags", window, cx, |menu, _, _| {
-                    menu.menu("Create Tag…", git::CreateTagAtHead.boxed_clone())
-                })
-                .submenu("Worktrees", window, cx, |menu, _, _| {
-                    menu.menu("Worktrees…", zed_actions::git::Worktree.boxed_clone())
-                })
+                        .menu_with_icon(
+                            "Fetch",
+                            workspace::menu_icon(MenuIcon::GitFetch),
+                            git::Fetch.boxed_clone(),
+                        )
+                        .menu_with_icon(
+                            "Fetch From…",
+                            workspace::menu_icon(MenuIcon::GitFetch),
+                            git::FetchFrom.boxed_clone(),
+                        )
+                    },
+                )
+                .submenu_with_icon(
+                    Some(workspace::menu_icon(MenuIcon::GitBranch)),
+                    "Branch",
+                    window,
+                    cx,
+                    |menu, window, _| {
+                        let menu = workspace::style_submenu(menu, window);
+                        menu.menu_with_icon(
+                            "Switch Branch…",
+                            workspace::menu_icon(MenuIcon::GitBranch),
+                            zed_actions::git::Switch.boxed_clone(),
+                        )
+                        .menu_with_icon(
+                            "Copy Branch Name",
+                            workspace::menu_icon(MenuIcon::Copy),
+                            git::CopyBranchName.boxed_clone(),
+                        )
+                    },
+                )
+                .submenu_with_icon(
+                    Some(workspace::menu_icon(MenuIcon::Globe)),
+                    "Remotes",
+                    window,
+                    cx,
+                    |menu, window, _| {
+                        let menu = workspace::style_submenu(menu, window);
+                        menu.menu_with_icon(
+                            "Add Remote…",
+                            workspace::menu_icon(MenuIcon::Plus),
+                            zed_actions::git::CreateRemote.boxed_clone(),
+                        )
+                    },
+                )
+                .submenu_with_icon(
+                    Some(workspace::menu_icon(MenuIcon::Stack)),
+                    "Stash",
+                    window,
+                    cx,
+                    move |menu, window, _| {
+                        let menu = workspace::style_submenu(menu, window);
+                        menu.menu_with_icon_and_disabled(
+                            "Stash All",
+                            workspace::menu_icon(MenuIcon::ArrowBracketToDown),
+                            StashAll.boxed_clone(),
+                            !(has_new_changes || has_tracked_changes),
+                        )
+                        .menu_with_icon_and_disabled(
+                            "Stash Staged",
+                            workspace::menu_icon(MenuIcon::ArrowBracketToDown),
+                            StashStaged.boxed_clone(),
+                            !has_staged_changes,
+                        )
+                        .menu_with_icon_and_disabled(
+                            "Pop Stash",
+                            workspace::menu_icon(MenuIcon::ArrowBracketFromUp),
+                            StashPop.boxed_clone(),
+                            !has_stash_items,
+                        )
+                        .menu_with_icon(
+                            "View Stash…",
+                            workspace::menu_icon(MenuIcon::Eye),
+                            zed_actions::git::ViewStash.boxed_clone(),
+                        )
+                    },
+                )
+                .submenu_with_icon(
+                    Some(workspace::menu_icon(MenuIcon::Tag)),
+                    "Tags",
+                    window,
+                    cx,
+                    |menu, window, _| {
+                        let menu = workspace::style_submenu(menu, window);
+                        menu.menu_with_icon(
+                            "Create Tag…",
+                            workspace::menu_icon(MenuIcon::Tag),
+                            git::CreateTagAtHead.boxed_clone(),
+                        )
+                    },
+                )
+                .submenu_with_icon(
+                    Some(workspace::menu_icon(MenuIcon::GitFork)),
+                    "Worktrees",
+                    window,
+                    cx,
+                    |menu, window, _| {
+                        let menu = workspace::style_submenu(menu, window);
+                        menu.menu_with_icon(
+                            "Worktrees…",
+                            workspace::menu_icon(MenuIcon::GitFork),
+                            zed_actions::git::Worktree.boxed_clone(),
+                        )
+                    },
+                )
                 .separator()
-                .submenu("View & Sort", window, cx, {
-                    let focus_handle = focus_handle.clone();
-                    move |menu, _, _| {
-                        let view_option =
-                            |label: &'static str, chosen: bool, action: Box<dyn Action>| {
-                                let focus_handle = focus_handle.clone();
-                                PopupMenuItem::new(label).checked(chosen).on_click(
-                                    move |_, window, cx| {
-                                        // List and Tree both toggle, so the chosen one must do nothing.
-                                        if !chosen {
-                                            focus_handle.dispatch_action(
-                                                action.as_ref(),
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                    },
-                                )
-                            };
-                        menu.check_side(Side::Right)
-                            .item(view_option(
+                .submenu_with_icon(
+                    Some(workspace::menu_icon(MenuIcon::Sliders)),
+                    "View & Sort",
+                    window,
+                    cx,
+                    {
+                        let focus_handle = focus_handle.clone();
+                        move |menu, window, _| {
+                            let menu = workspace::style_submenu(menu, window);
+                            let view_option =
+                                |label: &'static str,
+                                 icon: gpui_kit::component::Icon,
+                                 chosen: bool,
+                                 action: Box<dyn Action>| {
+                                    let focus_handle = focus_handle.clone();
+                                    PopupMenuItem::new(label)
+                                        .icon(icon)
+                                        .checked(chosen)
+                                        .on_click(move |_, window, cx| {
+                                            // List and Tree both toggle, so the chosen one must do nothing.
+                                            if !chosen {
+                                                focus_handle.dispatch_action(
+                                                    action.as_ref(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                        })
+                                };
+                            menu.item(view_option(
                                 "View as List",
+                                workspace::menu_icon(MenuIcon::ListBullets),
                                 !tree_view,
                                 Box::new(ToggleTreeView),
                             ))
                             .item(view_option(
                                 "View as Tree",
+                                workspace::menu_icon(MenuIcon::ListTodoSubtask),
                                 tree_view,
                                 Box::new(ToggleTreeView),
                             ))
@@ -6593,20 +6795,24 @@ impl GitPanel {
                                 menu.separator()
                                     .item(view_option(
                                         "Sort by Path",
+                                        workspace::menu_icon(MenuIcon::SortAscending),
                                         sort_by == GitPanelSortBy::Path,
                                         Box::new(SetSortByPath),
                                     ))
                                     .item(view_option(
                                         "Sort by Name",
+                                        workspace::menu_icon(MenuIcon::TextAa),
                                         sort_by == GitPanelSortBy::Name,
                                         Box::new(SetSortByName),
                                     ))
                             })
-                    }
-                })
+                        }
+                    },
+                )
                 .when(has_multiple_repositories, |menu| {
-                    menu.menu(
+                    menu.menu_with_icon(
                         "Switch Repository…",
+                        workspace::menu_icon(MenuIcon::SourceControl),
                         zed_actions::git::SelectRepo.boxed_clone(),
                     )
                 })
@@ -8215,47 +8421,88 @@ impl GitPanel {
         };
         let stage_title = SharedString::from(stage_title.to_string());
         let restore_title = SharedString::from(restore_title.to_string());
-        PopupMenu::build(window, cx, |context_menu, _, _| {
+        PopupMenu::build(window, cx, |context_menu, window, _| {
+            let context_menu = workspace::style_menu(context_menu, window);
             context_menu
                 .action_context(self.focus_handle.clone())
-                .menu(stage_title, ToggleStaged.boxed_clone())
-                .menu(restore_title, RestoreFile::default().boxed_clone())
+                .menu_with_icon(
+                    stage_title,
+                    workspace::menu_icon(MenuIcon::PlusMinus),
+                    ToggleStaged.boxed_clone(),
+                )
+                .menu_with_icon(
+                    restore_title,
+                    workspace::menu_icon(MenuIcon::ArrowCcw),
+                    RestoreFile::default().boxed_clone(),
+                )
                 .separator()
-                .menu("Unstaged Changes", ViewUnstagedChanges.boxed_clone())
-                .menu("Staged Changes", ViewStagedChanges.boxed_clone())
+                .menu_with_icon(
+                    "Unstaged Changes",
+                    workspace::menu_icon(MenuIcon::DiffSingle),
+                    ViewUnstagedChanges.boxed_clone(),
+                )
+                .menu_with_icon(
+                    "Staged Changes",
+                    workspace::menu_icon(MenuIcon::DiffSingle),
+                    ViewStagedChanges.boxed_clone(),
+                )
                 .separator()
-                .menu(copy_path_title, CopyPath.boxed_clone())
-                .menu(copy_relative_path_title, CopyRelativePath.boxed_clone())
+                .menu_with_icon(
+                    copy_path_title,
+                    workspace::menu_icon(MenuIcon::Copy),
+                    CopyPath.boxed_clone(),
+                )
+                .menu_with_icon(
+                    copy_relative_path_title,
+                    workspace::menu_icon(MenuIcon::Clipboard),
+                    CopyRelativePath.boxed_clone(),
+                )
                 .separator()
-                .menu_with_disabled(
+                .menu_with_icon_and_disabled(
                     if is_bulk && plural {
                         "Add Files to .gitignore"
                     } else {
                         "Add to .gitignore"
                     },
+                    workspace::menu_icon(MenuIcon::EyeSlash),
                     git::AddToGitignore.boxed_clone(),
                     !all_created,
                 )
-                .menu_with_disabled(
+                .menu_with_icon_and_disabled(
                     if is_bulk && plural {
                         "Add Files to .git/info/exclude"
                     } else {
                         "Add to .git/info/exclude"
                     },
+                    workspace::menu_icon(MenuIcon::EyeSlash),
                     git::AddToGitInfoExclude.boxed_clone(),
                     !all_created,
                 )
                 .when(is_file_or_bulk, |context_menu| {
                     context_menu
                         .separator()
-                        .menu(open_diff_title, menu::Confirm.boxed_clone())
-                        .menu(open_file_diff_title, menu::SecondaryConfirm.boxed_clone())
-                        .menu(view_file_title, ViewFile.boxed_clone())
+                        .menu_with_icon(
+                            open_diff_title,
+                            workspace::menu_icon(MenuIcon::DiffSingle),
+                            menu::Confirm.boxed_clone(),
+                        )
+                        .menu_with_icon(
+                            open_file_diff_title,
+                            workspace::menu_icon(MenuIcon::DiffSingleArrowRightUp),
+                            menu::SecondaryConfirm.boxed_clone(),
+                        )
+                        .menu_with_icon(
+                            view_file_title,
+                            workspace::menu_icon(MenuIcon::File),
+                            ViewFile.boxed_clone(),
+                        )
                 })
                 .when(is_file_or_bulk && has_tracked, |context_menu| {
-                    context_menu
-                        .separator()
-                        .menu(view_file_history_title, Box::new(git::FileHistory))
+                    context_menu.separator().menu_with_icon(
+                        view_file_history_title,
+                        workspace::menu_icon(MenuIcon::History),
+                        Box::new(git::FileHistory),
+                    )
                 })
         })
     }
@@ -8326,7 +8573,8 @@ impl GitPanel {
 
         let group_by = PANEL_GROUP_BY;
         let focus_handle = self.focus_handle.clone();
-        let context_menu = PopupMenu::build(window, cx, move |menu, _, _| {
+        let context_menu = PopupMenu::build(window, cx, move |menu, window, _| {
+            let menu = workspace::style_menu(menu, window);
             git_panel_context_menu(
                 menu,
                 has_tracked_changes,
@@ -13475,7 +13723,8 @@ mod tests {
         panel.update_in(cx, |panel, window, cx| {
             assert!(panel.commit_editor.read(cx).is_focused(window));
 
-            let context_menu = PopupMenu::build(window, cx, |menu, _, _| {
+            let context_menu = PopupMenu::build(window, cx, |menu, window, _| {
+                let menu = workspace::style_menu(menu, window);
                 menu.action_context(panel.focus_handle.clone())
                     .menu("Stage All", StageAll.boxed_clone())
             });

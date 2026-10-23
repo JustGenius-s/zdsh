@@ -419,15 +419,19 @@ impl ThreadView {
                                 .children(icon.map(|icon| agent_choice_icon(&icon)))
                                 .child(Label::new(label)),
                         )
-                        .dropdown_menu_with_anchor(gpui::Anchor::TopLeft, move |menu, _, _| {
-                            agent_menu(
-                                menu,
-                                &choices,
-                                &current_agent,
-                                panel.clone(),
-                                conversation.clone(),
-                            )
-                        }),
+                        .dropdown_menu_with_anchor(
+                            gpui::Anchor::TopLeft,
+                            move |menu, window, _| {
+                                let menu = workspace::style_menu(menu, window);
+                                agent_menu(
+                                    menu,
+                                    &choices,
+                                    &current_agent,
+                                    panel.clone(),
+                                    conversation.clone(),
+                                )
+                            },
+                        ),
                 )
                 .into_any_element(),
         )
@@ -1785,11 +1789,15 @@ fn agent_menu(
         );
     }
     menu.separator().item(
-        PopupMenuItem::new("Add More Agents")
-            .icon(KitIcon::empty().path(IconName::Plus.path()))
-            .on_click(|_, window, cx| {
-                window.dispatch_action(Box::new(zed_actions::AcpRegistry), cx)
-            }),
+        // Agent rows draw their icons inside the row, since external agents' icons are files the
+        // kit's menu icon can't load, so this row draws its icon the same way to line up.
+        PopupMenuItem::element(|_, _| {
+            h_flex()
+                .gap_2()
+                .child(agent_choice_icon(&AgentChoiceIcon::Builtin(IconName::Plus)))
+                .child(Label::new("Add More Agents"))
+        })
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(zed_actions::AcpRegistry), cx)),
     )
 }
 
