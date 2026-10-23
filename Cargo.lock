@@ -16304,6 +16304,7 @@ dependencies = [
  "command_palette_hooks",
  "db",
  "fs",
+ "git",
  "gpui-kit",
  "gpui-pre",
  "icons",

@@ -306,10 +306,8 @@ impl TitleBar {
         let multi_workspace = self.multi_workspace.as_ref()?.upgrade()?;
         let multi_workspace = multi_workspace.read(cx);
         let groups = multi_workspace.project_groups(cx);
-        if groups.is_empty() {
-            return None;
-        }
-        let active_key = multi_workspace.project_group_key_for_workspace(multi_workspace.workspace(), cx);
+        let active_key =
+            multi_workspace.project_group_key_for_workspace(multi_workspace.workspace(), cx);
         let active_index = groups.iter().position(|group| group.key == active_key);
         let accents = cx.theme().accents().clone();
         let attention_color = cx.theme().status().warning;
@@ -317,50 +315,75 @@ impl TitleBar {
             .iter()
             .enumerate()
             .map(|(index, group)| {
-            let is_active = active_index == Some(index);
-            let needs_attention = !is_active
-                && group
-                    .workspaces
-                    .iter()
-                    .any(|workspace| workspace.read(cx).needs_attention(cx));
-            Tab::new()
-                .label(group.key.display_name(&Default::default()))
-                .prefix(
-                    div()
-                        .size(px(7.))
-                        .rounded(px(2.))
-                        .bg(accents.color_for_index(index as u32)),
-                )
-                .when(needs_attention, |tab| {
-                    tab.suffix(div().size(px(6.)).rounded_full().bg(attention_color))
-                })
+                let is_active = active_index == Some(index);
+                let needs_attention = !is_active
+                    && group
+                        .workspaces
+                        .iter()
+                        .any(|workspace| workspace.read(cx).needs_attention(cx));
+                Tab::new()
+                    .label(group.key.display_name(&Default::default()))
+                    .prefix(
+                        div()
+                            .size(px(7.))
+                            .rounded(px(2.))
+                            .bg(accents.color_for_index(index as u32)),
+                    )
+                    .when(needs_attention, |tab| {
+                        tab.suffix(div().size(px(6.)).rounded_full().bg(attention_color))
+                    })
             })
             .collect::<Vec<_>>();
-        let keys = groups.into_iter().map(|group| group.key).collect::<Vec<_>>();
+        let keys = groups
+            .into_iter()
+            .map(|group| group.key)
+            .collect::<Vec<_>>();
         let weak_multi_workspace = self.multi_workspace.clone()?;
         Some(
             h_flex()
                 .flex_1()
                 .min_w_0()
+                .gap_1()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .when(!tabs.is_empty(), |row| {
+                    row.child(
+                        TabBar::new("project-pills")
+                            .segmented()
+                            .small()
+                            .when_some(active_index, |tab_bar, index| tab_bar.selected_index(index))
+                            .children(tabs)
+                            .on_click(move |index, window, cx| {
+                                let Some(key) = keys.get(*index).cloned() else {
+                                    return;
+                                };
+                                weak_multi_workspace
+                                    .update(cx, |multi_workspace, cx| {
+                                        if let Some(sidebar) = multi_workspace.sidebar() {
+                                            sidebar.activate_project_group(key, window, cx);
+                                        }
+                                    })
+                                    .log_err();
+                            }),
+                    )
+                })
                 .child(
-                    TabBar::new("project-pills")
-                        .segmented()
+                    KitButton::new("new-project")
+                        .ghost()
                         .small()
-                        .when_some(active_index, |tab_bar, index| tab_bar.selected_index(index))
-                        .children(tabs)
-                        .on_click(move |index, window, cx| {
-                            let Some(key) = keys.get(*index).cloned() else {
-                                return;
-                            };
-                            weak_multi_workspace
-                                .update(cx, |multi_workspace, cx| {
-                                    if let Some(sidebar) = multi_workspace.sidebar() {
-                                        sidebar.activate_project_group(key, window, cx);
-                                    }
-                                })
-                                .log_err();
+                        .icon(gpui_kit::assets::IconName::Plus)
+                        .label("New")
+                        .dropdown_menu(|menu, _, _| {
+                            menu.menu("Open Folder…", Box::new(workspace::Open::default()))
+                                .menu("Clone Repository…", Box::new(git::Clone))
+                                .menu(
+                                    "Connect to SSH Host…",
+                                    Box::new(zed_actions::OpenRemote::default()),
+                                )
+                                .menu(
+                                    "Open in Dev Container…",
+                                    Box::new(zed_actions::OpenDevContainer),
+                                )
                         }),
                 )
                 .into_any_element(),
@@ -377,10 +400,7 @@ impl TitleBar {
             .dropdown_menu(move |menu, _, cx| {
                 let menu = menu
                     .menu("Settings", Box::new(zed_actions::OpenSettings))
-                    .menu(
-                        "Extensions",
-                        Box::new(zed_actions::Extensions::default()),
-                    )
+                    .menu("Extensions", Box::new(zed_actions::Extensions::default()))
                     .menu("Keymap", Box::new(zed_actions::OpenKeymap))
                     .separator();
                 theme_menu(menu, fs.clone(), cx)
