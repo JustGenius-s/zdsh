@@ -866,6 +866,7 @@ unicase = "2.6"
 unicode-bidi = { version = "0.3.18", default-features = false, features = [
     "hardcoded-data",
 ] }
+unicode-linebreak = "0.1.5"
 unicode-script = "0.5.7"
 unicode-segmentation = "1.10"
 unicode-width = "0.2"

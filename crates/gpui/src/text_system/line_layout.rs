@@ -12,7 +12,8 @@ use std::{
     },
 };
 
-use super::LineWrapper;
+use unicode_linebreak::{BreakClass, break_property, linebreaks};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// A laid out and styled line of text
 #[derive(Default, Debug)]
@@ -197,75 +198,100 @@ impl LineLayout {
         max_lines: Option<usize>,
     ) -> SmallVec<[WrapBoundary; 1]> {
         let mut boundaries = SmallVec::new();
-        let mut first_non_whitespace_ix = None;
-        let mut last_candidate_ix = None;
-        let mut last_candidate_x = px(0.);
+        let mut line_breaks = linebreaks(text).peekable();
+        let mut previous_class = None;
+        let mut has_non_whitespace = false;
+        let is_word_class = |class| {
+            matches!(
+                class,
+                BreakClass::Alphabetic
+                    | BreakClass::HebrewLetter
+                    | BreakClass::Numeric
+                    | BreakClass::Ambiguous
+                    | BreakClass::ComplexContext
+            )
+        };
+        let mut opportunities = text
+            .grapheme_indices(true)
+            .filter_map(|(index, grapheme)| {
+                while line_breaks
+                    .peek()
+                    .is_some_and(|(offset, _)| *offset < index)
+                {
+                    line_breaks.next();
+                }
+                let preferred = line_breaks
+                    .peek()
+                    .is_some_and(|(offset, _)| *offset == index);
+                let class = break_property(grapheme.chars().next()? as u32);
+                // Emergency wrapping must not undo punctuation or grapheme constraints.
+                let emergency = previous_class.is_some_and(is_word_class) && is_word_class(class);
+                previous_class = Some(class);
+                let eligible = has_non_whitespace && (preferred || emergency);
+                has_non_whitespace |= !grapheme.chars().all(char::is_whitespace);
+                eligible.then_some((index, preferred))
+            })
+            .peekable();
+        let mut last_preferred = None;
+        let mut last_emergency = None;
         let mut last_boundary = WrapBoundary {
             run_ix: 0,
             glyph_ix: 0,
         };
         let mut last_boundary_x = px(0.);
-        let mut prev_ch = '\0';
         let mut glyphs = self
             .runs
             .iter()
             .enumerate()
             .flat_map(move |(run_ix, run)| {
                 run.glyphs.iter().enumerate().map(move |(glyph_ix, glyph)| {
-                    let character = text[glyph.index..].chars().next().unwrap();
                     (
                         WrapBoundary { run_ix, glyph_ix },
-                        character,
+                        glyph.index,
                         glyph.position.x,
                     )
                 })
             })
             .peekable();
 
-        while let Some((boundary, ch, x)) = glyphs.next() {
-            if ch == '\n' {
-                continue;
+        while let Some((boundary, index, x)) = glyphs.next() {
+            while opportunities
+                .peek()
+                .is_some_and(|(offset, _)| *offset < index)
+            {
+                opportunities.next();
             }
-
-            // Here is very similar to `LineWrapper::wrap_line` to determine text wrapping,
-            // but there are some differences, so we have to duplicate the code here.
-            if LineWrapper::is_word_char(ch) {
-                if prev_ch == ' ' && ch != ' ' && first_non_whitespace_ix.is_some() {
-                    last_candidate_ix = Some(boundary);
-                    last_candidate_x = x;
+            if opportunities
+                .peek()
+                .is_some_and(|(offset, _)| *offset == index)
+                && let Some((_, preferred)) = opportunities.next()
+                && boundary > last_boundary
+            {
+                last_emergency = Some((boundary, x));
+                if preferred {
+                    last_preferred = Some((boundary, x));
                 }
-            } else {
-                if ch != ' ' && first_non_whitespace_ix.is_some() {
-                    last_candidate_ix = Some(boundary);
-                    last_candidate_x = x;
-                }
             }
-
-            if ch != ' ' && first_non_whitespace_ix.is_none() {
-                first_non_whitespace_ix = Some(boundary);
-            }
-
             let next_x = glyphs.peek().map_or(self.width, |(_, _, x)| *x);
-            let width = next_x - last_boundary_x;
-
-            if width > wrap_width && boundary > last_boundary {
-                // When used line_clamp, we should limit the number of lines.
+            while next_x - last_boundary_x > wrap_width {
+                let Some((boundary, x)) = last_preferred.or(last_emergency) else {
+                    break;
+                };
                 if let Some(max_lines) = max_lines
                     && boundaries.len() >= max_lines.saturating_sub(1)
                 {
-                    break;
+                    return boundaries;
                 }
-
-                if let Some(last_candidate_ix) = last_candidate_ix.take() {
-                    last_boundary = last_candidate_ix;
-                    last_boundary_x = last_candidate_x;
-                } else {
-                    last_boundary = boundary;
-                    last_boundary_x = x;
+                last_boundary = boundary;
+                last_boundary_x = x;
+                boundaries.push(boundary);
+                if last_preferred.is_some_and(|(candidate, _)| candidate <= boundary) {
+                    last_preferred = None;
                 }
-                boundaries.push(last_boundary);
+                if last_emergency.is_some_and(|(candidate, _)| candidate <= boundary) {
+                    last_emergency = None;
+                }
             }
-            prev_ch = ch;
         }
 
         boundaries
