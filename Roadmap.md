@@ -46,6 +46,14 @@ Shipped behavior is [docs/zdsh.md](docs/zdsh.md).
   - [x] 去掉 New Thread 按钮和 New Terminal 按钮
   - [x] 去掉下拉菜单，不允许在 Thread Panel 切换项目
 
+- [x] 按「侧栏交互方案」重写整体布局（[REA 数值](docs/cursor-thread-layout-research.md)）
+  - [x] 标题栏改为工作区胶囊 + 新建 + 设置菜单，⌃1–9 切换，tab 回到 pane
+  - [x] 移除左侧 rail 和右侧 tab 侧栏，每个工作区一个左侧栏：会话 / 文件工作集 / 终端 / 改动
+  - [x] 项目目录改为侧栏旁的浮层，可固定为常驻列
+  - [x] Git 改动改为中心 Changes tab
+  - [x] 起始页重做
+  - [x] 切换工作区时内容区滑入
+
 - [ ] 全局优化
   - [ ] 以 cursor 为准重新创建图标合集，迁移 morphicons 算法，所有需要变化的图标都使用 morphicon（[已实现，待手动验收](docs/cursor-morphicons-research.md)）
   - [x] 优化全局选中文本的样式，现在这个配色太古老

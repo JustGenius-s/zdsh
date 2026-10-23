@@ -1615,6 +1615,9 @@ pub struct Workspace {
     toast_layer: Entity<ToastLayer>,
     titlebar_item: Option<AnyView>,
     navigation: Option<WorkspaceNavigation>,
+    /// How many times the window has switched to this workspace, and whether the last switch slid
+    /// it in from the right.
+    entrance: Option<(usize, bool)>,
     titlebar_focus_handle: FocusHandle,
     region_focus_handles: RegionFocusHandles,
     notifications: Notifications,
@@ -2109,6 +2112,7 @@ impl Workspace {
             toast_layer,
             titlebar_item: None,
             navigation: None,
+            entrance: None,
             titlebar_focus_handle: cx.focus_handle(),
             region_focus_handles: RegionFocusHandles::new(cx),
             notifications: Notifications::default(),
@@ -9792,71 +9796,83 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .child(
-                        h_flex()
-                            .flex_1()
-                            .min_h_0()
-                            .w_full()
-                            .items_stretch()
-                            .when(!translucent_chrome, |this| {
-                                this.bg(colors.title_bar_background)
-                            })
-                            .children(self.render_navigation(cx))
-                            .child(
-                                div()
-                                    .id("workspace")
-                                    .when(!translucent_chrome, |this| this.bg(colors.background))
-                                    .relative()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .mb_1()
-                                    // Room for the block's edge, which is drawn over its content.
-                                    .p_px()
-                                    .rounded(content_block_radius)
-                                    .flex()
-                                    .flex_col()
-                                    .overflow_hidden()
-                                    .child({
-                                        let this = cx.entity();
-                                        canvas(
-                                            move |bounds, window, cx| {
-                                                this.update(cx, |this, cx| {
-                                                    let bounds_changed = this.bounds != bounds;
-                                                    this.bounds = bounds;
+                        self.with_entrance(
+                            h_flex()
+                                .flex_1()
+                                .min_h_0()
+                                .w_full()
+                                .items_stretch()
+                                .when(!translucent_chrome, |this| {
+                                    this.bg(colors.title_bar_background)
+                                })
+                                .children(self.render_navigation(cx))
+                                .child(
+                                    div()
+                                        .id("workspace")
+                                        .when(!translucent_chrome, |this| {
+                                            this.bg(colors.background)
+                                        })
+                                        .relative()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .mb_1()
+                                        // Room for the block's edge, which is drawn over its content.
+                                        .p_px()
+                                        .rounded(content_block_radius)
+                                        .flex()
+                                        .flex_col()
+                                        .overflow_hidden()
+                                        .child({
+                                            let this = cx.entity();
+                                            canvas(
+                                                move |bounds, window, cx| {
+                                                    this.update(cx, |this, cx| {
+                                                        let bounds_changed = this.bounds != bounds;
+                                                        this.bounds = bounds;
 
-                                                    if bounds_changed {
-                                                        this.left_dock.update(cx, |dock, cx| {
-                                                            dock.clamp_panel_size(
-                                                                bounds.size.width,
-                                                                window,
+                                                        if bounds_changed {
+                                                            this.left_dock.update(
                                                                 cx,
-                                                            )
-                                                        });
+                                                                |dock, cx| {
+                                                                    dock.clamp_panel_size(
+                                                                        bounds.size.width,
+                                                                        window,
+                                                                        cx,
+                                                                    )
+                                                                },
+                                                            );
 
-                                                        this.right_dock.update(cx, |dock, cx| {
-                                                            dock.clamp_panel_size(
-                                                                bounds.size.width,
-                                                                window,
+                                                            this.right_dock.update(
                                                                 cx,
-                                                            )
-                                                        });
+                                                                |dock, cx| {
+                                                                    dock.clamp_panel_size(
+                                                                        bounds.size.width,
+                                                                        window,
+                                                                        cx,
+                                                                    )
+                                                                },
+                                                            );
 
-                                                        this.bottom_dock.update(cx, |dock, cx| {
-                                                            dock.clamp_panel_size(
-                                                                bounds.size.height,
-                                                                window,
+                                                            this.bottom_dock.update(
                                                                 cx,
-                                                            )
-                                                        });
-                                                    }
-                                                })
-                                            },
-                                            |_, _, _, _| {},
-                                        )
-                                        .absolute()
-                                        .size_full()
-                                    })
-                                    .when(self.zoomed.is_none(), |this| {
-                                        this.on_drag_move(cx.listener(
+                                                                |dock, cx| {
+                                                                    dock.clamp_panel_size(
+                                                                        bounds.size.height,
+                                                                        window,
+                                                                        cx,
+                                                                    )
+                                                                },
+                                                            );
+                                                        }
+                                                    })
+                                                },
+                                                |_, _, _, _| {},
+                                            )
+                                            .absolute()
+                                            .size_full()
+                                        })
+                                        .when(self.zoomed.is_none(), |this| {
+                                            this.on_drag_move(cx.listener(
                                             move |workspace,
                                                   e: &DragMoveEvent<DraggedDock>,
                                                   window,
@@ -9897,9 +9913,9 @@ impl Render for Workspace {
                                                 }
                                             },
                                         ))
-                                    })
-                                    .child({
-                                        match bottom_dock_layout {
+                                        })
+                                        .child({
+                                            match bottom_dock_layout {
                                     BottomDockLayout::Full => div()
                                         .flex()
                                         .flex_col()
@@ -10143,10 +10159,10 @@ impl Render for Workspace {
                                             cx,
                                         )),
                                 }
-                                    })
-                                    .children(self.zoomed.as_ref().and_then(|view| {
-                                        let zoomed_view = view.upgrade()?;
-                                        let zoomed_element = match zoomed_paddings {
+                                        })
+                                        .children(self.zoomed.as_ref().and_then(|view| {
+                                            let zoomed_view = view.upgrade()?;
+                                            let zoomed_element = match zoomed_paddings {
                                             (None, None) => zoomed_view.into_any_element(),
                                             (left, right) => h_flex()
                                                 .size_full()
@@ -10176,22 +10192,23 @@ impl Render for Workspace {
                                                 })
                                                 .into_any_element(),
                                         };
-                                        let overlay = div()
-                                            .occlude()
-                                            .absolute()
-                                            .overflow_hidden()
-                                            .border_color(colors.border)
-                                            .bg(if translucent_chrome {
-                                                colors.background.alpha(1.0)
-                                            } else {
-                                                colors.background
-                                            })
-                                            .child(zoomed_element)
-                                            .inset_0()
-                                            .shadow_lg();
+                                            let overlay = div()
+                                                .occlude()
+                                                .absolute()
+                                                .overflow_hidden()
+                                                .border_color(colors.border)
+                                                .bg(if translucent_chrome {
+                                                    colors.background.alpha(1.0)
+                                                } else {
+                                                    colors.background
+                                                })
+                                                .child(zoomed_element)
+                                                .inset_0()
+                                                .shadow_lg();
 
-                                        let overlay =
-                                            if WorkspaceSettings::get_global(cx).zoomed_padding {
+                                            let overlay = if WorkspaceSettings::get_global(cx)
+                                                .zoomed_padding
+                                            {
                                                 match self.zoomed_position {
                                                     Some(DockPosition::Left) => {
                                                         overlay.right_2().border_r_1()
@@ -10212,28 +10229,29 @@ impl Render for Workspace {
                                             } else {
                                                 overlay
                                             };
-                                        Some(overlay)
-                                    }))
-                                    .children(self.render_notifications(window, cx))
-                                    .map(|this| {
-                                        if translucent_chrome {
-                                            this.child(
-                                                div()
-                                                    .absolute()
-                                                    .inset_0()
-                                                    .rounded(content_block_radius)
-                                                    .border_1()
-                                                    .border_color(colors.border),
-                                            )
-                                        } else {
-                                            this.children(content_block_edge(
-                                                content_block_radius,
-                                                colors.title_bar_background,
-                                                colors.border,
-                                            ))
-                                        }
-                                    }),
-                            ),
+                                            Some(overlay)
+                                        }))
+                                        .children(self.render_notifications(window, cx))
+                                        .map(|this| {
+                                            if translucent_chrome {
+                                                this.child(
+                                                    div()
+                                                        .absolute()
+                                                        .inset_0()
+                                                        .rounded(content_block_radius)
+                                                        .border_1()
+                                                        .border_color(colors.border),
+                                                )
+                                            } else {
+                                                this.children(content_block_edge(
+                                                    content_block_radius,
+                                                    colors.title_bar_background,
+                                                    colors.border,
+                                                ))
+                                            }
+                                        }),
+                                ),
+                        ),
                     )
                     .child(self.toast_layer.clone()),
             )

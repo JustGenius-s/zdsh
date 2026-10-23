@@ -4,13 +4,13 @@ How zdsh behaves differently from Zed.
 
 ## Window backdrop
 
-On macOS, themes without an explicit `background.appearance` use a blurred window backdrop with the native Sidebar material. Its system tint and contrast layers are preserved beneath the workspace tint. Both rails and the right-hand tab sidebar use the same additional sidebar layer; docked panels use a stronger layer for readability. Other platforms keep the theme's existing background behavior.
+On macOS, themes without an explicit `background.appearance` use a blurred window backdrop with the native Sidebar material. Its system tint and contrast layers are preserved beneath the workspace tint. The workspace sidebar uses an additional sidebar layer; docked panels use a stronger layer for readability. Other platforms keep the theme's existing background behavior.
 
 The default window tint is 42% pure black for dark themes and 16% pure white for light themes. A `title_bar.background` color with alpha below 100% overrides both the tint color and its opacity. For example, use `"title_bar.background": "#00000099"` in a theme override for a 60% black tint.
 
-Rails and the tab sidebar add the theme's panel color at 36% opacity in dark themes or 42% in light themes. Docked side panels use that color at 72% or 84%, respectively. Central panes use the toolbar color at 72% or 84%; nested Agent views remain transparent so that layer is painted only once. Editors and terminals paint their own opaque background, and zoom overlays stay opaque to cover the underlying panes.
+The workspace sidebar adds the theme's panel color at 36% opacity in dark themes or 42% in light themes. Docked side panels use that color at 72% or 84%, respectively. Central panes use the toolbar color at 72% or 84%; nested Agent views remain transparent so that layer is painted only once. Editors and terminals paint their own opaque background, and zoom overlays stay opaque to cover the underlying panes.
 
-Z Dark uses `#181818` for editor, terminal, and popup surfaces, `#141414` beneath conversations, and `#212121` with a `#313131` border for message and composer cards. State highlights use translucent `#f0f0f0`: top tabs use 6%, rail and workspace icon controls use 8%, and secondary buttons use 8% normally and 14% on hover. Sidebar rows use about 6% on hover and 8% when selected. The final glass color also depends on the wallpaper and macOS material.
+Z Dark uses `#181818` for editor, terminal, and popup surfaces, `#141414` beneath conversations, and `#212121` with a `#313131` border for message and composer cards. State highlights use translucent `#f0f0f0`: top tabs use 6%, workspace icon controls use 8%, and secondary buttons use 8% normally and 14% on hover. Sidebar rows use about 6% on hover and 8% when selected. The final glass color also depends on the wallpaper and macOS material.
 
 Text selections use a shared neutral overlay across editors, Agent responses, terminals, and GPUI Kit inputs: `#f0f0f033` (20% light gray) in Z Dark and `#17171726` (about 15% dark gray) in Z Light. Text and syntax colors remain visible over the selection. Unfocused editors retain their existing reduced selection opacity. Other themes and remote collaborators keep their own selection colors.
 
@@ -28,7 +28,7 @@ To return to an opaque window, add this to your settings (or set `background.app
 
 Each Agent conversation opens in a central editor tab. The project file tree can stay open beside it. This applies to the Zed Agent and external ACP agents; terminal entries open in separate central terminal tabs.
 
-Use the New Thread action, the **Agent** category menu in the right sidebar, or thread history to open a conversation. New Thread always creates an Agent conversation. Opening an already open conversation activates its tab. Drag tabs to reorder them or move them into a split pane to work beside code. Each conversation has one tab; splitting does not duplicate the conversation.
+Use the New Thread action, the **+** beside **Threads** in the workspace sidebar, or thread history to open a conversation. New Thread always creates an Agent conversation. Opening an already open conversation activates its tab. Drag tabs to reorder them or move them into a split pane to work beside code. Each conversation has one tab; splitting does not duplicate the conversation.
 
 The tab displays its title and connection, generation, approval, or error status. Its toolbar uses the same row height, padding, theme background, and separator colors as file and Git toolbars and provides the agent picker and chat options. Toolbar sizing follows the global UI font size independently of the Agent conversation font size. Files can still be dragged into the conversation as context.
 
@@ -44,7 +44,7 @@ The `+` button in the composer picks a mode, starts a file mention, switches mod
 
 Switching tabs keeps work running. Closing a conversation tab requests cancellation and releases its session, except when native background tasks or their completion delivery still own it. Those conversations continue without an open Agent tab. Saved conversations remain available through the agent's history support. Central Agent tab positions are not restored when restarting zdsh.
 
-While a thread is still empty, the agent selector above the message editor switches it to **Zed Agent** or any installed external agent. Once the thread has messages, its agent stays fixed. To open a terminal, use **New Terminal** from the right sidebar's **Terminal** category menu. The agent selector only lists agents.
+While a thread is still empty, the agent selector above the message editor switches it to **Zed Agent** or any installed external agent. Once the thread has messages, its agent stays fixed. To open a terminal, use the **+** beside **Terminals** in the workspace sidebar. The agent selector only lists agents.
 
 Context, provider usage, completion, and composer menus float above an ongoing conversation's composer or below an empty one. Opening them does not shrink the transcript or its navigation. The context indicator remains visible before the first request: native conversations show an estimate from their context and model limit; an external agent that has not reported usage shows an unavailable value. Completed turns fold their final thinking block together with earlier work while keeping the answer visible. A new user message has 32 px of space above it.
 
@@ -78,13 +78,27 @@ The **Debug** pill opens a bounded **Reproduction Steps** tray with Markdown con
 
 A session-local collector accepts JSON events on a loopback address. Its configuration and NDJSON log are stored under `.zed/debug/<session-id>/` and reused when the conversation is reopened; generated files are Git-ignored. Individual HTTP events are limited to 64 KiB and the log to 16 MiB. If the saved port is occupied, the collector keeps the session token, saves a new address, and informs the user and agent that probes need updating. Collector health, startup and file errors are exposed with a retry action. Subagents share their parent investigation's collector. External ACP agents retain their own modes; this workflow does not provide a remote or cloud collector.
 
-## Sidebar and file navigation
+## Layout
 
-The right sidebar keeps **Agent**, **Terminal**, **File**, and **Action** categories available. With no tabs it becomes an icon rail; category menus create the corresponding tabs. In the expanded sidebar, category menu indicators appear on hover. Agent tabs show connection, generation, approval, and error status; terminal tabs show command or task execution status. File tabs use their file icons, respecting icon settings and falling back to a category icon when needed.
+The title bar holds a pill for each project open in the window. Click a pill or press `ctrl-1` through `ctrl-9` to switch projects; the window slides the project in from the side of its pill. A dot on a pill marks a project with a thread waiting for your approval. **New** opens a folder, clones a repository, connects to an SSH host or opens a dev container. The gear menu opens Settings, Extensions and Keymap and picks the appearance (System, Light or Dark), color theme and icon theme. Each pane shows its own tabs above its content.
 
-The Threads panel uses compact, single-line rows with aligned project and status icons. Full titles and worktree details remain available on hover; timestamps share their space with hover and keyboard actions. Its filter menu opens History, shows archived threads, and imports threads. History uses the same row layout, grouped by Today, Yesterday, Last 7 Days, Last 30 Days, and Older. The Archived checkbox switches between unarchived and archived records; Search opens the existing Agents search.
+Each project has a sidebar at its left edge, 272px wide at the default UI font size:
 
-The panel has no New Thread, New Terminal, project-switch dropdown, or workspace-creation controls. Its empty state does not offer Open Project or Clone Repository. Use the right category menus to create tabs and the file panel header to switch projects or worktrees. Layout sizes follow the configured UI font. The static Cursor comparison and its limits are recorded in [the Threads layout research](cursor-thread-layout-research.md).
+- The header shows the project's name and branch, a **Workspace Tools** menu with Diagnostics and the Debugger, and Search.
+- **Threads** lists the project's threads, newest first, with their status: a spinner while running, an orange dot and **Approve** while waiting for permission, and how long ago each was last used. Click a thread to open its tab. **+** starts a thread.
+- **Files** lists the files at hand: **Thread Changes** (files the project's threads edited, with lines added and removed), **Open** (other files open in tabs) and **Git Changes** (the repository's first changed files, with **All N Changes** for the rest). **+** creates or opens a file.
+- **Terminals** lists the terminal tabs with their command or task status. **+** opens a terminal or runs a quick action.
+- The footer shows how many files the repository has changed and opens the Changes tab (`ctrl-shift-g`).
+
+Group titles follow Cursor's sidebar: the UI font size, aligned with the row icons, with buttons that show on hover. Sizes follow the configured UI font. The Cursor measurements are recorded in [the Threads layout research](cursor-thread-layout-research.md).
+
+The tree button beside **Files**, `cmd-shift-e`, and actions that reveal a file open the project's file tree beside the sidebar. It floats over the center and closes when a file opens or on Escape; pin it to keep it in a column of its own. **Find a File…** opens file search. The left dock no longer shows the file tree.
+
+The **Changes** tab shows the git panel's change lists, history and commit box beside the diff of the picked file. Opening the git panel from any action opens this tab instead of a dock.
+
+A workspace without a project shows a start page with buttons to open a folder, clone a repository, connect to an SSH host or open a dev container, and up to five recent projects, marking those already open in the window. You can also drag a folder into the window.
+
+The thread switcher (`agents_sidebar::ToggleThreadSwitcher`) and thread history keep working without the former Threads panel.
 
 The file panel's project and worktree dropdowns use GPUI Kit search lists, and its context menu uses the Kit popup menu. Project selection includes other projects already open in the window. Worktree search retains creation, switching, opening in another window, removal from the window, and deletion with confirmation. Indentation guides stay hidden until an entry is selected.
 
@@ -166,7 +180,7 @@ The optional WIT interface is `zdsh:agent@0.1.0`; historical Zed WIT definitions
 
 ## Terminal tabs
 
-All standalone terminals open as central tabs beside your files. Choose **New Terminal** from the right sidebar's **Terminal** category menu or use `workspace::NewTerminal`. **Open in Terminal** uses the selected folder or the selected file's parent directory. Task execution, debugger terminals, and external-agent login commands also open central tabs.
+All standalone terminals open as central tabs beside your files. Choose **New Terminal** from the **+** beside **Terminals** in the workspace sidebar or use `workspace::NewTerminal`. **Open in Terminal** uses the selected folder or the selected file's parent directory. Task execution, debugger terminals, and external-agent login commands also open central tabs.
 
 Use `terminal::Focus` to focus the most recent terminal, creating one if necessary. Existing bindings for `workspace::NewCenterTerminal` remain supported. Replace custom bindings for `terminal_panel::Toggle` or `terminal_panel::ToggleFocus` with `terminal::Focus`.
 
@@ -174,7 +188,7 @@ Use `workspace::NewTerminal` to create additional terminal tabs. Move or split t
 
 Command suggestions and history navigation load the current shell's `HISTFILE`, including custom paths configured by Zsh or Bash startup files. The history is refreshed in the background at each shell prompt and combined with commands from the current tab. Commands submitted through the input area or quick actions are added to shell history and flushed to the configured file; internal shell-integration commands and commands beginning with whitespace are not saved. With no `HISTFILE` configured, suggestions still use the current tab's in-memory history.
 
-The **Terminal** category menu in the right sidebar lists saved command sequences. Choose **Manage quick actions…** to open their management tab, or use `terminal::OpenTerminalQuickActions`. Add, edit, and delete actions there; saved actions are shared across workspaces in the current user data directory. Each command targets the current terminal or a new terminal using its working directory. The current target starts as the most recently active terminal and follows any terminal created by an earlier step; when no terminal is open, one is created. Commands require shell integration and wait for the target shell to be ready. **Stop remaining steps** cancels queued steps without interrupting commands already submitted. Switching tabs preserves an editing draft; closing the management tab discards unsaved edits.
+The **+** beside **Terminals** in the workspace sidebar lists saved command sequences. Choose **Manage quick actions…** to open their management tab, or use `terminal::OpenTerminalQuickActions`. Add, edit, and delete actions there; saved actions are shared across workspaces in the current user data directory. Each command targets the current terminal or a new terminal using its working directory. The current target starts as the most recently active terminal and follows any terminal created by an earlier step; when no terminal is open, one is created. Commands require shell integration and wait for the target shell to be ready. **Stop remaining steps** cancels queued steps without interrupting commands already submitted. Switching tabs preserves an editing draft; closing the management tab discards unsaved edits.
 
 Terminal tabs restore through the workspace layout. Existing terminal-panel sessions are imported as central tabs, preserving working directories and custom titles; panel splits become tabs. Running processes and command output are not restored.
 

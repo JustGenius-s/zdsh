@@ -1447,6 +1447,13 @@ impl MultiWorkspace {
 
         let old_active_workspace = self.workspace().clone();
         let old_active_was_retained = self.active_workspace_is_retained();
+        let group_keys = self.project_group_keys();
+        let old_position = group_keys
+            .iter()
+            .position(|key| *key == old_active_workspace.read(cx).project_group_key(cx));
+        let new_position = group_keys
+            .iter()
+            .position(|key| *key == workspace.read(cx).project_group_key(cx));
         let should_retain_workspaces = self.multi_workspace_enabled(cx);
 
         if should_retain_workspaces && !old_active_was_retained {
@@ -1483,6 +1490,7 @@ impl MultiWorkspace {
         // workspace (which is now the chrome owner per `owns_window_chrome`).
         workspace.update(cx, |workspace, cx| {
             workspace.refresh_window_state(window, cx);
+            workspace.play_entrance(new_position > old_position, cx);
         });
 
         cx.emit(MultiWorkspaceEvent::ActiveWorkspaceChanged { source_workspace });

@@ -1,8 +1,11 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use agent_settings::AgentSettings;
 use fs::Fs;
-use gpui::{Action, AnyView, App, Context, Focusable as _, IntoElement, Styled, div};
+use gpui::{
+    Action, Animation, AnimationExt as _, AnyElement, AnyView, App, Context, Div, Focusable as _,
+    IntoElement, Styled, div, ease_out_quint, px,
+};
 use gpui::{ParentElement as _, prelude::FluentBuilder as _};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use settings::{Settings as _, update_settings_file};
@@ -11,6 +14,10 @@ use theme_settings::{ThemeAppearanceMode, ThemeSelection, ThemeSettings};
 use ui::IconName;
 
 use crate::{ItemHandle, Workspace, item::TabCategory};
+
+const ENTRANCE_DURATION: Duration = Duration::from_millis(560);
+/// How far a workspace slides in when the window switches to it.
+const ENTRANCE_OFFSET: f32 = 48.;
 
 /// The sidebar at a workspace's left edge. The app provides it because its contents (threads,
 /// terminals, git changes) live in crates the workspace doesn't depend on.
@@ -33,6 +40,33 @@ impl Workspace {
     pub fn add_rail_item(&mut self, item: RailItem, cx: &mut Context<Self>) {
         self.rail_items.push(item);
         cx.notify();
+    }
+
+    /// Slides the workspace in, from the right when its project's pill is right of the one the
+    /// window switched from.
+    pub fn play_entrance(&mut self, from_right: bool, cx: &mut Context<Self>) {
+        let count = self.entrance.map_or(1, |(count, _)| count + 1);
+        self.entrance = Some((count, from_right));
+        cx.notify();
+    }
+
+    pub(crate) fn with_entrance(&self, content: Div) -> AnyElement {
+        let Some((count, from_right)) = self.entrance else {
+            return content.into_any_element();
+        };
+        let direction = if from_right { 1. } else { -1. };
+        content
+            .relative()
+            .with_animation(
+                ("workspace-entrance", count),
+                Animation::new(ENTRANCE_DURATION).with_easing(ease_out_quint()),
+                move |content, delta| {
+                    content
+                        .left(px(direction * ENTRANCE_OFFSET * (1. - delta)))
+                        .opacity(0.4 + 0.6 * delta)
+                },
+            )
+            .into_any_element()
     }
 
     pub(crate) fn render_navigation(&self, cx: &App) -> Option<impl IntoElement + use<>> {
