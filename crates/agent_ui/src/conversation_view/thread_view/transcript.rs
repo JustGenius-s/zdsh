@@ -1669,9 +1669,10 @@ impl RenderOnce for ActivityRow {
                         .id("chevron")
                         .flex_none()
                         .ml(px(3.))
-                        .text_color(shades.tertiary)
+                        .text_color(shades.secondary)
+                        .group_hover(group.clone(), |style| style.text_color(shades.primary))
                         .when(!expanded, |this| this.visible_on_hover(group.clone()))
-                        .child(kit_icon(chevron).with_size(KitSize::XSmall)),
+                        .child(kit_icon(chevron).with_size(KitSize::Medium)),
                 )
             })
             .when(self.failed, |this| {
