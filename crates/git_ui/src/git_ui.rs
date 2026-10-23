@@ -42,8 +42,8 @@ use crate::{
 };
 
 pub mod branch_diff;
-pub mod changes_view;
 pub mod branch_picker;
+pub mod changes_view;
 mod commit_context_menu;
 mod commit_modal;
 pub mod commit_tooltip;

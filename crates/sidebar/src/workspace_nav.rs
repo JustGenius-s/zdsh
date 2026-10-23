@@ -12,13 +12,11 @@ use gpui_kit::component::{Selectable as _, h_flex, kbd::Kbd, menu::DropdownMenu 
 use icons::IconName;
 use project::{ProjectPath, git_store::GitStore};
 use project_panel::ProjectPanel;
-use workspace::dock::Dock;
 use theme::ActiveTheme;
 use ui::{Color, rems_from_px};
 use util::ResultExt as _;
-use workspace::{
-    ItemHandle, MultiWorkspace, Workspace, WorkspaceNavigation, item::TabCategory,
-};
+use workspace::dock::Dock;
+use workspace::{ItemHandle, MultiWorkspace, Workspace, WorkspaceNavigation, item::TabCategory};
 
 use crate::Sidebar;
 use crate::sidebar_row::{
@@ -82,8 +80,7 @@ impl WorkspaceNav {
         // The workspace is mid-update here, so the sidebar can't read it yet.
         let git_store = workspace.project().read(cx).git_store().clone();
         let left_dock = workspace.left_dock().clone();
-        let nav =
-            cx.new(|cx| Self::new(&workspace_handle, &git_store, &left_dock, window, cx));
+        let nav = cx.new(|cx| Self::new(&workspace_handle, &git_store, &left_dock, window, cx));
         workspace.set_navigation(
             WorkspaceNavigation {
                 view: nav.clone().into(),
@@ -161,7 +158,8 @@ impl WorkspaceNav {
             &project_files,
             window,
             |this, _, event: &project_panel::Event, window, cx| match event {
-                project_panel::Event::OpenedEntry { .. } | project_panel::Event::SplitEntry { .. } => {
+                project_panel::Event::OpenedEntry { .. }
+                | project_panel::Event::SplitEntry { .. } => {
                     if this.files == FilesState::Floating {
                         this.close_project_files(window, cx);
                     }
@@ -273,11 +271,15 @@ impl WorkspaceNav {
                             .child(div().flex_1())
                             .child(
                                 sidebar_icon_button("pin-project-files", IconName::Pin)
-                                    .tooltip(if pinned { "Unpin" } else { "Pin Beside Sidebar" })
+                                    .tooltip(if pinned {
+                                        "Unpin"
+                                    } else {
+                                        "Pin Beside Sidebar"
+                                    })
                                     .selected(pinned)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.toggle_files_pinned(cx)
-                                    })),
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.toggle_files_pinned(cx)),
+                                    ),
                             )
                             .child(
                                 sidebar_icon_button("close-project-files", IconName::Close)
@@ -289,24 +291,28 @@ impl WorkspaceNav {
                     ),
             )
             .child(
-                div().w_full().px(rems_from_px(LIST_INSET)).pb(rems_from_px(6_f32)).child(
-                    SidebarRow::new(
-                        "filter-project-files",
-                        sidebar_icon(IconName::MagnifyingGlass).text_color(colors.icon_muted),
-                        div()
-                            .truncate()
-                            .text_color(colors.text_placeholder)
-                            .child("Find a File…"),
-                    )
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(
-                            Box::new(zed_actions::unified_search::Toggle {
-                                tab: Some(zed_actions::unified_search::SearchTab::Files),
-                            }),
-                            cx,
+                div()
+                    .w_full()
+                    .px(rems_from_px(LIST_INSET))
+                    .pb(rems_from_px(6_f32))
+                    .child(
+                        SidebarRow::new(
+                            "filter-project-files",
+                            sidebar_icon(IconName::MagnifyingGlass).text_color(colors.icon_muted),
+                            div()
+                                .truncate()
+                                .text_color(colors.text_placeholder)
+                                .child("Find a File…"),
                         )
-                    }),
-                ),
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(
+                                Box::new(zed_actions::unified_search::Toggle {
+                                    tab: Some(zed_actions::unified_search::SearchTab::Files),
+                                }),
+                                cx,
+                            )
+                        }),
+                    ),
             )
             .child(div().flex_1().min_h_0().child(project_files))
             .child(
@@ -786,12 +792,20 @@ impl WorkspaceNav {
             .when(!open_files.is_empty(), |group| {
                 group
                     .child(self.render_file_group_label("Open", cx))
-                    .children(open_files.into_iter().map(|row| self.render_file_row(row, cx)))
+                    .children(
+                        open_files
+                            .into_iter()
+                            .map(|row| self.render_file_row(row, cx)),
+                    )
             })
             .when(!git_changes.is_empty(), |group| {
                 group
                     .child(self.render_file_group_label("Git Changes", cx))
-                    .children(git_changes.into_iter().map(|row| self.render_file_row(row, cx)))
+                    .children(
+                        git_changes
+                            .into_iter()
+                            .map(|row| self.render_file_row(row, cx)),
+                    )
             })
             .when(hidden_git_changes > 0, |group| {
                 group.child(
@@ -821,7 +835,10 @@ impl WorkspaceNav {
             .filter(|item| item.tab_category(cx) == TabCategory::Terminal)
             .map(|item| item.boxed_clone())
             .collect::<Vec<_>>();
-        let active_item_id = workspace.read(cx).active_item(cx).map(|item| item.item_id());
+        let active_item_id = workspace
+            .read(cx)
+            .active_item(cx)
+            .map(|item| item.item_id());
         let colors = cx.theme().colors();
         let weak_workspace = self.workspace.clone();
         let new_terminal = sidebar_icon_button("new-terminal", IconName::Plus)
@@ -921,13 +938,15 @@ impl WorkspaceNav {
                 SidebarRow::new(
                     "workspace-changes",
                     sidebar_icon(IconName::GitBranch).text_color(colors.icon_muted),
-                    div()
-                        .truncate()
-                        .text_color(colors.text_muted)
-                        .child(label),
+                    div().truncate().text_color(colors.text_muted).child(label),
                 )
                 .when_some(shortcut, |row, shortcut| {
-                    row.end(div().text_xs().text_color(colors.text_muted).child(shortcut))
+                    row.end(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(shortcut),
+                    )
                 })
                 .on_click(|_, window, cx| {
                     window.dispatch_action(Box::new(zed_actions::git_panel::ToggleFocus), cx)
@@ -971,25 +990,28 @@ impl Render for WorkspaceNav {
         h_flex()
             .h_full()
             .map(|row| match project_files {
-                Some(project_files) if floating => row.child(nav.child(
-                    // Drawn after the center, so it floats over it.
-                    deferred(
-                        div()
-                            .id("floating-project-files")
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left(rems_from_px(NAV_WIDTH))
-                            .shadow_lg()
-                            .child(project_files)
-                            .with_animation(
-                                ("project-files-enter", self.files_openings),
-                                Animation::new(FILES_ENTER_DURATION).with_easing(ease_out_quint()),
-                                |files, delta| files.opacity(delta).ml(px(-16. * (1. - delta))),
-                            ),
-                    )
-                    .with_priority(1),
-                )),
+                Some(project_files) if floating => row.child(
+                    nav.child(
+                        // Drawn after the center, so it floats over it.
+                        deferred(
+                            div()
+                                .id("floating-project-files")
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(rems_from_px(NAV_WIDTH))
+                                .shadow_lg()
+                                .child(project_files)
+                                .with_animation(
+                                    ("project-files-enter", self.files_openings),
+                                    Animation::new(FILES_ENTER_DURATION)
+                                        .with_easing(ease_out_quint()),
+                                    |files, delta| files.opacity(delta).ml(px(-16. * (1. - delta))),
+                                ),
+                        )
+                        .with_priority(1),
+                    ),
+                ),
                 Some(project_files) => row.child(nav).child(project_files),
                 None => row.child(nav),
             })

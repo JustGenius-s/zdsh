@@ -6710,7 +6710,8 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(ListEntry::Thread(thread)) = self.contents.entries.get(entry_index).cloned() else {
+        let Some(ListEntry::Thread(thread)) = self.contents.entries.get(entry_index).cloned()
+        else {
             return;
         };
         self.selection = None;

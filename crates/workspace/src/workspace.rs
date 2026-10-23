@@ -13,9 +13,9 @@ mod panel_header;
 pub mod path_list {
     pub use util::path_list::{PathList, SerializedPathList};
 }
+mod navigation;
 pub mod path_link;
 mod persistence;
-mod navigation;
 pub mod searchable;
 pub mod security_modal;
 pub mod shared_screen;
@@ -39,9 +39,9 @@ pub use multi_workspace::{
     ProjectGroup, ProjectGroupKey, RemovalIntent, SerializedProjectGroupState, Sidebar,
     SidebarEvent, SidebarHandle, SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar,
 };
+pub use navigation::{RailItem, WorkspaceNavigation, theme_menu};
 pub use panel_header::{KitIconButton, PickerTrigger, ghost_button_style, panel_header};
 pub use path_list::{PathList, SerializedPathList};
-pub use navigation::{RailItem, WorkspaceNavigation, theme_menu};
 pub use remote::{
     RemoteConnectionIdentity, remote_connection_identity, same_remote_connection_identity,
 };

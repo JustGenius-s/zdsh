@@ -58,7 +58,9 @@ actions!(
 );
 
 /// Activates the project at a position in the title bar, counting from zero.
-#[derive(Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema, Default, gpui::Action)]
+#[derive(
+    Clone, PartialEq, Debug, serde::Deserialize, schemars::JsonSchema, Default, gpui::Action,
+)]
 #[action(namespace = multi_workspace)]
 pub struct ActivateProject(pub usize);
 
@@ -2159,15 +2161,15 @@ impl Render for MultiWorkspace {
                             }
                         },
                     ))
-                    .on_action(
-                        cx.listener(|this: &mut Self, action: &ActivateProject, window, cx| {
+                    .on_action(cx.listener(
+                        |this: &mut Self, action: &ActivateProject, window, cx| {
                             if let Some(key) = this.project_group_keys().get(action.0).cloned()
                                 && let Some(sidebar) = &this.sidebar
                             {
                                 sidebar.activate_project_group(key, window, cx);
                             }
-                        }),
-                    )
+                        },
+                    ))
                     .on_action(cx.listener(|this: &mut Self, _: &NextProject, window, cx| {
                         if let Some(sidebar) = &this.sidebar {
                             sidebar.cycle_project(true, window, cx);

@@ -5,11 +5,7 @@ use gpui::{
 use gpui_kit::component::h_flex;
 use theme::ActiveTheme as _;
 use ui::{Icon, IconName};
-use workspace::{
-    Item, Panel as _, Workspace,
-    dock::Dock,
-    item::ItemEvent,
-};
+use workspace::{Item, Panel as _, Workspace, dock::Dock, item::ItemEvent};
 
 use crate::{git_panel::GitPanel, project_diff::ProjectDiff};
 
@@ -57,8 +53,8 @@ impl ChangesView {
             return;
         };
         let workspace_handle = cx.entity();
-        let project_diff =
-            cx.new(|cx| ProjectDiff::new(workspace.project().clone(), workspace_handle, window, cx));
+        let project_diff = cx
+            .new(|cx| ProjectDiff::new(workspace.project().clone(), workspace_handle, window, cx));
         if let Some(repository) = workspace.project().read(cx).active_repository(cx) {
             project_diff.update(cx, |project_diff, cx| {
                 project_diff.set_repo(Some(repository), cx)
