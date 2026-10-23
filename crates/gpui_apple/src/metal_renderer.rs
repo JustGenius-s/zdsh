@@ -195,15 +195,9 @@ impl MetalRenderer {
             // SAFETY: The constant is extern, from Core Graphics
             let display_p3_name = unsafe { kCGColorSpaceDisplayP3 };
             if let Some(display_p3_color_space) = CGColorSpace::create_with_name(display_p3_name) {
-                // SAFETY: `layer` is a CAMetalLayer and the color space remains valid for the call.
-                // 'metal-rs' does not expose CAMetalLayer's typed `colorspace` setter.
-                // Could be replaced with a native binding via objc2-* in future
-                unsafe {
-                    let _: () = objc2::msg_send![
-                        objc2_layer,
-                        setColorspace: display_p3_color_space.as_ptr().cast::<c_void>()
-                    ];
-                }
+                // SAFETY: Both bindings represent CGColorSpace; its owner outlives this call.
+                let objc2_color_space = unsafe { &*display_p3_color_space.as_ptr().cast() };
+                objc2_layer.setColorspace(Some(objc2_color_space));
             } else {
                 log::error!("unable to create the Display P3 color space");
             }
