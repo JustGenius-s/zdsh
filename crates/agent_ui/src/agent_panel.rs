@@ -23,10 +23,10 @@ use zed_actions::{
     },
 };
 
-use crate::ExpandMessageEditor;
 use crate::agent_connection_store::AgentConnectionStore;
 use crate::completion_provider::{AgentContextSelection, AgentContextSource};
 use crate::conversation_item::ConversationItem;
+use crate::conversation_overlay::ConversationOverlay;
 use crate::terminal_thread_metadata_store::{
     TerminalThreadMetadata, TerminalThreadMetadataStore, compose_terminal_thread_title,
     normalize_terminal_custom_title,
@@ -45,6 +45,10 @@ use crate::{
         reset_full_access_warning,
     },
     ui::{AgentNotification, AgentNotificationEvent},
+};
+use crate::{
+    DismissConversationOverlay, ExpandConversationOverlay, ExpandMessageEditor,
+    ToggleConversationOverlay,
 };
 use agent_settings::AgentSettings;
 use anyhow::{Context as _, Result, anyhow};
@@ -344,6 +348,42 @@ pub fn init(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {
             workspace
+                .register_action(
+                    |workspace, action: &ToggleConversationOverlay, window, cx| {
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            let overlay = panel.read(cx).conversation_overlay.clone();
+                            let action = action.clone();
+                            window.defer(cx, move |window, cx| {
+                                overlay
+                                    .update(cx, |overlay, cx| overlay.toggle(&action, window, cx));
+                            });
+                        }
+                    },
+                )
+                .register_action(
+                    |workspace, action: &ExpandConversationOverlay, window, cx| {
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            let overlay = panel.read(cx).conversation_overlay.clone();
+                            let action = action.clone();
+                            window.defer(cx, move |window, cx| {
+                                overlay
+                                    .update(cx, |overlay, cx| overlay.expand(&action, window, cx));
+                            });
+                        }
+                    },
+                )
+                .register_action(
+                    |workspace, action: &DismissConversationOverlay, window, cx| {
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            let overlay = panel.read(cx).conversation_overlay.clone();
+                            let action = action.clone();
+                            window.defer(cx, move |window, cx| {
+                                overlay
+                                    .update(cx, |overlay, cx| overlay.dismiss(&action, window, cx));
+                            });
+                        }
+                    },
+                )
                 // The thread list shows in the left dock, which the window's multi-workspace
                 // opens. It is updated afterwards, as opening the dock reaches this workspace.
                 .register_action(|workspace, _: &ToggleWorkspaceSidebar, window, cx| {
@@ -1154,6 +1194,7 @@ pub struct AgentPanel {
     draft_thread: Option<Entity<ConversationView>>,
     retained_threads: HashMap<ThreadId, Entity<ConversationView>>,
     conversation_items: HashMap<ThreadId, WeakEntity<ConversationItem>>,
+    conversation_overlay: Entity<ConversationOverlay>,
     terminals: HashMap<TerminalId, AgentTerminal>,
     background_terminals: HashMap<TerminalId, Entity<acp_thread::Terminal>>,
     pending_terminal_spawn: Option<TerminalId>,
@@ -1481,12 +1522,25 @@ impl AgentPanel {
         })
     }
 
-    pub(crate) fn new(workspace: &Workspace, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(workspace: &Workspace, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let fs = workspace.app_state().fs.clone();
         let project = workspace.project();
         let language_registry = project.read(cx).languages().clone();
         let workspace_id = workspace.database_id();
+        let overlay = cx.new(|cx| ConversationOverlay::new(workspace, cx));
         let workspace = workspace.weak_handle();
+        window.defer(cx, {
+            let workspace = workspace.clone();
+            let overlay = overlay.clone();
+            move |_, cx| {
+                overlay.update(cx, |overlay, cx| overlay.sync(cx));
+                workspace
+                    .update(cx, |workspace, cx| {
+                        workspace.set_center_overlay(Some(overlay.into()), cx);
+                    })
+                    .log_err();
+            }
+        });
 
         let context_server_registry =
             cx.new(|cx| ContextServerRegistry::new(project.read(cx).context_server_store(), cx));
@@ -1554,6 +1608,7 @@ impl AgentPanel {
             persist_selected_agent_task: Task::ready(()),
             retained_threads: HashMap::default(),
             conversation_items: HashMap::default(),
+            conversation_overlay: overlay,
             terminals: HashMap::default(),
             background_terminals: HashMap::default(),
             pending_terminal_spawn: None,
@@ -1587,6 +1642,15 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
+        if let Some(panel) = workspace.panel::<Self>(cx) {
+            let overlay = panel.read(cx).conversation_overlay.clone();
+            if overlay.read(cx).is_available() {
+                window.defer(cx, move |window, cx| {
+                    overlay.update(cx, |overlay, cx| overlay.activate(window, cx));
+                });
+                return;
+            }
+        }
         if workspace
             .panel::<Self>(cx)
             .is_some_and(|panel| panel.read(cx).enabled(cx))
@@ -1601,6 +1665,15 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
+        if let Some(panel) = workspace.panel::<Self>(cx) {
+            let overlay = panel.read(cx).conversation_overlay.clone();
+            if overlay.read(cx).is_available() {
+                window.defer(cx, move |window, cx| {
+                    overlay.update(cx, |overlay, cx| overlay.activate(window, cx));
+                });
+                return;
+            }
+        }
         if workspace
             .panel::<Self>(cx)
             .is_some_and(|panel| panel.read(cx).enabled(cx))
@@ -4654,7 +4727,15 @@ impl AgentPanel {
             cx.subscribe_in(
                 &tv,
                 window,
-                |this, _view, event: &AcpThreadViewEvent, _window, cx| match event {
+                |this, view, event: &AcpThreadViewEvent, window, cx| match event {
+                    AcpThreadViewEvent::FollowupSubmitted => {
+                        let overlay = this.conversation_overlay.clone();
+                        let thread_id = view.entity_id();
+                        window.defer(cx, move |window, cx| {
+                            overlay
+                                .update(cx, |overlay, cx| overlay.submitted(thread_id, window, cx));
+                        });
+                    }
                     AcpThreadViewEvent::Interacted => {
                         let Some(thread_id) = this.active_thread_id(cx) else {
                             return;

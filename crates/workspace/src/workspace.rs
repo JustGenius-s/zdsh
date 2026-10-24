@@ -1604,6 +1604,7 @@ pub struct Workspace {
     zoomed_position: Option<DockPosition>,
     maximized_pane: Option<WeakEntity<Pane>>,
     center: PaneGroup,
+    center_overlay: Option<AnyView>,
     left_dock: Entity<Dock>,
     bottom_dock: Entity<Dock>,
     right_dock: Entity<Dock>,
@@ -2104,6 +2105,7 @@ impl Workspace {
             maximized_pane: None,
             previous_dock_drag_coordinates: None,
             center,
+            center_overlay: None,
             panes: vec![center_pane.clone()],
             panes_by_item: Default::default(),
             active_pane: center_pane.clone(),
@@ -8990,6 +8992,11 @@ impl Workspace {
         )
     }
 
+    pub fn set_center_overlay(&mut self, view: Option<AnyView>, cx: &mut Context<Self>) {
+        self.center_overlay = view;
+        cx.notify();
+    }
+
     fn render_center(
         &self,
         render_cx: &PaneRenderContext,
@@ -9016,10 +9023,13 @@ impl Workspace {
                 this.track_focus(&self.region_focus_handles.editor)
             })
             .h_full()
+            .relative()
             .flex_1()
             .min_w_0()
+            .min_h_0()
             .when_some(background, |this, background| this.bg(background))
             .child(center)
+            .children(self.center_overlay.clone())
     }
 
     pub fn for_window(window: &Window, cx: &App) -> Option<Entity<Workspace>> {

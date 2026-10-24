@@ -10,6 +10,7 @@ mod config_options;
 mod context;
 mod context_server_configuration;
 mod conversation_item;
+mod conversation_overlay;
 pub(crate) mod conversation_view;
 mod diagnostics;
 pub mod draft_prompt_store;
@@ -301,6 +302,12 @@ actions!(
         CycleFavoriteModels,
         /// Expands the message editor to full size.
         ExpandMessageEditor,
+        /// Shows or hides the conversation above the follow-up input on other tabs.
+        ToggleConversationOverlay,
+        /// Hides the floating input without canceling the conversation.
+        DismissConversationOverlay,
+        /// Returns the floating conversation to its thread tab.
+        ExpandConversationOverlay,
         /// Archives the currently selected thread.
         ArchiveSelectedThread,
         /// Removes the currently selected thread.

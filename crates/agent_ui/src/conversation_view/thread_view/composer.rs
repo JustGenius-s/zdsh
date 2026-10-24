@@ -12,6 +12,7 @@ use gpui_kit::{
     component::{
         Disableable as _, IndexPath, Size as KitSize, Theme as KitTheme,
         button::{Button as KitButton, ButtonRounded, ButtonVariant},
+        label::Label as KitLabel,
         list::{List as KitList, ListDelegate, ListEvent, ListItem as KitListItem, ListState},
         menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
         switch::Switch as KitSwitch,
@@ -40,6 +41,7 @@ impl ThreadView {
             return (div().into_any_element(), None);
         }
 
+        let is_overlay = self.overlay_presentation.is_some();
         let editor_expanded = self.editor_expanded;
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
         let debug_panel = self.render_debug_panel(window, cx);
@@ -101,36 +103,47 @@ impl ThreadView {
                     .max_h(window.viewport_size().height * 0.6)
                     .overflow_y_scroll()
                     .children(floating_cards),
-                is_empty_thread,
+                is_empty_thread && self.overlay_presentation.is_none(),
             )
         });
-        let agent_selector = is_empty_thread
+        let agent_selector = (is_empty_thread && !is_overlay)
             .then(|| self.render_agent_selector(cx))
             .flatten();
         // The chips always sit right above the input. They float over the transcript only when
         // nothing is stacked between the two; otherwise they'd end up above those cards.
         let changes_chips = self.render_changes_chips(cx);
         let float_changes_chips =
-            !is_empty_thread && !cards_above_composer && questionnaires.is_empty();
-        let (changes_chips, floating_changes_chips) = if float_changes_chips {
+            !is_overlay && !is_empty_thread && !cards_above_composer && questionnaires.is_empty();
+        let (mut changes_chips, floating_changes_chips) = if float_changes_chips {
             (None, changes_chips)
         } else {
             (changes_chips, None)
         };
-        let composer = if is_empty_thread || self.update_composer_stacked(cx) {
+        let overlay_header = is_overlay.then(|| {
+            h_flex()
+                .w_full()
+                .min_w_0()
+                .flex_wrap()
+                .justify_between()
+                .gap_2()
+                .child(self.render_overlay_status(cx))
+                .children(changes_chips.take())
+        });
+        let composer = if (is_empty_thread && !is_overlay) || self.update_composer_stacked(cx) {
             self.render_composer_card(cx)
         } else {
             self.render_composer_pill(cx)
         };
-        let permissions_control = self.render_permissions_control(cx);
-        let footer = self.render_composer_footer(permissions_control, cx);
+        let footer = (!is_overlay).then(|| {
+            let permissions_control = self.render_permissions_control(cx);
+            self.render_composer_footer(permissions_control, cx)
+        });
 
         let composer = v_flex()
             .flex_none()
             .w_full()
             .px_4()
-            .pt_2()
-            .pb_2()
+            .when(!is_overlay, |this| this.pt_2().pb_2())
             .items_center()
             .on_action(cx.listener(Self::handle_message_editor_move_up))
             .on_action(cx.listener(Self::expand_message_editor))
@@ -156,12 +169,57 @@ impl ThreadView {
                     .children(agent_selector)
                     .children(changes_chips)
                     .children(questionnaires)
+                    .children(overlay_header)
                     .child(composer)
-                    .child(footer)
+                    .children(footer)
                     .children(floating_menu),
             )
             .into_any();
         (composer, floating_changes_chips)
+    }
+
+    pub(crate) fn overlay_status_label(&self, cx: &App) -> SharedString {
+        let thread = self.thread.read(cx);
+        if thread.is_waiting_for_confirmation() {
+            "Waiting for approval".into()
+        } else if thread.status() != ThreadStatus::Idle {
+            "Working".into()
+        } else if let Some(duration) = self.turn_fields.last_turn_duration {
+            let seconds = (duration.as_secs() + u64::from(duration.subsec_nanos() > 0)).max(1);
+            let duration = if seconds < 60 {
+                format!("{seconds}s")
+            } else if seconds < 3600 {
+                match seconds % 60 {
+                    0 => format!("{}m", seconds / 60),
+                    remainder => format!("{}m {remainder}s", seconds / 60),
+                }
+            } else {
+                match seconds % 3600 / 60 {
+                    0 => format!("{}h", seconds / 3600),
+                    minutes => format!("{}h {minutes}m", seconds / 3600),
+                }
+            };
+            format!("Worked for {duration}").into()
+        } else {
+            "Conversation".into()
+        }
+    }
+
+    fn render_overlay_status(&self, cx: &Context<Self>) -> PillButton {
+        PillButton::new("overlay-conversation-status")
+            .variant(ButtonVariant::Secondary)
+            .outline()
+            .backdrop(composer_surface(cx).0)
+            .size(KitSize::Medium)
+            .toggle_state(self.overlay_presentation == Some(true))
+            .child(KitLabel::new(self.overlay_status_label(cx)).ui_text(
+                UiTextSize::Body,
+                UiTextTone::Secondary,
+                cx,
+            ))
+            .on_click(|_, window, cx| {
+                window.dispatch_action(crate::ToggleConversationOverlay.boxed_clone(), cx);
+            })
     }
 
     /// Stacking widens the input, which can undo the soft wrap that triggered it, so the composer
@@ -172,9 +230,10 @@ impl ThreadView {
         }
         if !self.composer_stacked {
             self.composer_stacked = self.editor_expanded
-                || self
-                    .message_editor
-                    .update(cx, |message_editor, cx| message_editor.spans_lines(cx));
+                || (!self.overlay_width_animating
+                    && self
+                        .message_editor
+                        .update(cx, |message_editor, cx| message_editor.spans_lines(cx)));
         }
         self.composer_stacked
     }
@@ -183,6 +242,7 @@ impl ThreadView {
         let editor_expanded = self.editor_expanded;
         let (background, border) = composer_surface(cx);
         h_flex()
+            .relative()
             .w_full()
             .min_w_0()
             .when(editor_expanded, |this| this.flex_1().min_h_0())
@@ -193,6 +253,9 @@ impl ThreadView {
             .border_1()
             .border_color(border)
             .bg(background)
+            .when(self.overlay_presentation.is_some(), |this| {
+                this.child(self.measure_overlay_input_shape(px(22.)))
+            })
             .child(self.render_add_menu_button(cx))
             .children(self.render_mode_chip(self.message_editor.clone(), cx))
             .child(
@@ -214,6 +277,7 @@ impl ThreadView {
         let editor_expanded = self.editor_expanded;
         let (background, border) = composer_surface(cx);
         v_flex()
+            .relative()
             .w_full()
             .min_w_0()
             .when(editor_expanded, |this| this.flex_1().min_h_0())
@@ -223,6 +287,9 @@ impl ThreadView {
             .border_1()
             .border_color(border)
             .bg(background)
+            .when(self.overlay_presentation.is_some(), |this| {
+                this.child(self.measure_overlay_input_shape(px(16.)))
+            })
             .child(
                 div()
                     .w_full()
@@ -249,6 +316,21 @@ impl ThreadView {
                     .child(self.render_trailing_controls(cx)),
             )
             .into_any_element()
+    }
+
+    fn measure_overlay_input_shape(&self, corner_radius: Pixels) -> impl IntoElement {
+        let shape = self.overlay_input_shape.clone();
+        canvas(
+            move |bounds, _, _| {
+                shape.set(Some(crate::conversation_overlay::OverlayInputShape {
+                    height: bounds.size.height,
+                    corner_radius,
+                }));
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full()
     }
 
     pub(super) fn render_message_edit_card(
@@ -895,7 +977,11 @@ impl ThreadView {
                 .variant(ButtonVariant::Secondary)
                 .outline()
                 .backdrop(cx.theme().colors().surface_background)
-                .size(KitSize::Medium)
+                .size(if self.overlay_presentation.is_some() {
+                    KitSize::Small
+                } else {
+                    KitSize::Medium
+                })
                 .toggle_state(self.edits_expanded)
                 .child(Label::new("Changes"))
                 .child(Label::new(format!("+{}", stats.lines_added)).color(Color::Success))

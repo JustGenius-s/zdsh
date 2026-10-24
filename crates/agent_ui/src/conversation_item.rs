@@ -21,6 +21,7 @@ pub(crate) struct ConversationItem {
     conversation: Entity<ConversationView>,
     panel: WeakEntity<AgentPanel>,
     focus_handle: FocusHandle,
+    overlay_expanded: Option<bool>,
     _conversation_subscriptions: [Subscription; 2],
     _subscriptions: Vec<Subscription>,
 }
@@ -72,6 +73,7 @@ impl ConversationItem {
             conversation,
             panel,
             focus_handle,
+            overlay_expanded: None,
             _subscriptions: subscriptions,
         }
     }
@@ -99,6 +101,56 @@ impl ConversationItem {
         self.conversation.entity_id()
     }
 
+    pub(crate) fn overlay_thread(
+        &self,
+        cx: &App,
+    ) -> Option<Entity<crate::conversation_view::ThreadView>> {
+        self.conversation.read(cx).root_thread_view()
+    }
+
+    pub(crate) fn overlay_needs_attention(&self, cx: &App) -> bool {
+        let view = self.conversation.read(cx);
+        view.has_pending_request_elicitations(cx)
+            || view.as_connected().is_some_and(|connected| {
+                connected.has_thread_error(cx)
+                    || connected.threads.values().any(|thread| {
+                        thread
+                            .read(cx)
+                            .thread
+                            .read(cx)
+                            .is_waiting_for_confirmation()
+                    })
+            })
+    }
+
+    pub(crate) fn overlay_composer_focus_handle(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Option<FocusHandle> {
+        if self.focus_handle.contains_focused(window, cx)
+            && let Some(thread) = self.conversation.read(cx).active_thread()
+        {
+            Some(thread.read(cx).message_editor.focus_handle(cx))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn set_overlay_presentation(
+        &mut self,
+        expanded: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlay_expanded == expanded {
+            return;
+        }
+        self.overlay_expanded = expanded;
+        self.conversation
+            .update(cx, |view, cx| view.set_overlay_presentation(expanded, cx));
+        cx.notify();
+    }
+
     /// Shows `conversation` in this tab in place of the one it shows, as when an empty draft
     /// switches to another agent.
     pub(crate) fn replace_conversation(
@@ -108,6 +160,9 @@ impl ConversationItem {
     ) {
         self._conversation_subscriptions = Self::subscribe_to_conversation(&conversation, cx);
         self.conversation = conversation;
+        self.conversation.update(cx, |view, cx| {
+            view.set_overlay_presentation(self.overlay_expanded, cx)
+        });
         cx.emit(ItemEvent::UpdateTab);
         cx.notify();
     }
@@ -228,17 +283,26 @@ impl Render for ConversationItem {
             })
             .log_err();
         let theme = ThemeSettings::get_global(cx);
+        let floating = self.overlay_expanded.is_some();
         WithRemSize::new(theme.agent_ui_font_size(cx))
-            .size_full()
+            .w_full()
+            .when(!floating, |this| this.h_full())
             .font_family(theme.agent_ui_font_family().clone())
             .child(
                 v_flex()
-                    .key_context("AgentPanel")
+                    .key_context(if floating {
+                        "AgentPanel ConversationOverlay"
+                    } else {
+                        "AgentPanel"
+                    })
                     .track_focus(&self.focus_handle)
                     .relative()
-                    .size_full()
+                    .w_full()
+                    .when(!floating, |this| this.h_full())
                     .min_h_0()
-                    .bg(cx.theme().colors().toolbar_background)
+                    .when(!floating, |this| {
+                        this.bg(cx.theme().colors().toolbar_background)
+                    })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
@@ -285,14 +349,14 @@ impl Render for ConversationItem {
                     .child(
                         h_flex()
                             .relative()
-                            .flex_1()
+                            .w_full()
+                            .when(!floating, |this| this.flex_1().overflow_hidden())
                             .min_h_0()
                             .min_w_0()
-                            .overflow_hidden()
                             .child(
                                 div()
                                     .relative()
-                                    .h_full()
+                                    .when(!floating, |this| this.h_full())
                                     .flex_1()
                                     .min_w_0()
                                     .child(self.conversation.clone())

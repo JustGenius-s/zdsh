@@ -1200,7 +1200,13 @@ impl ThreadView {
                                 .text_color(UiTextTone::Muted.color(cx))
                                 .accessibility_label("Show command in conversation")
                                 .tooltip("Show command in conversation")
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if this.overlay_presentation == Some(false) {
+                                        window.dispatch_action(
+                                            crate::ToggleConversationOverlay.boxed_clone(),
+                                            cx,
+                                        );
+                                    }
                                     this.list_state.scroll_to(ListOffset {
                                         item_ix: entry_ix,
                                         offset_in_item: px(0.),

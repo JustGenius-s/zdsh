@@ -227,6 +227,7 @@ impl ThreadFeedbackState {
 
 pub enum AcpThreadViewEvent {
     Interacted,
+    FollowupSubmitted,
 }
 
 impl EventEmitter<AcpThreadViewEvent> for ThreadView {}
@@ -552,6 +553,10 @@ struct MessageEditSession {
 
 pub struct ThreadView {
     pub(crate) root_thread_id: ThreadId,
+    overlay_presentation: Option<bool>,
+    overlay_width_animating: bool,
+    overlay_bounds: Rc<Cell<Option<gpui::Bounds<Pixels>>>>,
+    overlay_input_shape: Rc<Cell<Option<crate::conversation_overlay::OverlayInputShape>>>,
     pub session_id: acp_v2::SessionId,
     pub parent_session_id: Option<acp_v2::SessionId>,
     pub thread: Entity<AcpThread>,
@@ -1102,6 +1107,10 @@ impl ThreadView {
         let current_submission = thread.read(cx).latest_submission_id();
         let mut this = Self {
             root_thread_id,
+            overlay_presentation: None,
+            overlay_width_animating: false,
+            overlay_bounds: Rc::new(Cell::new(None)),
+            overlay_input_shape: Rc::default(),
             session_id,
             parent_session_id,
             focus_handle: cx.focus_handle(),
@@ -1301,7 +1310,11 @@ impl ThreadView {
             MessageEditorEvent::SendImmediately => self.interrupt_and_send(window, cx),
             MessageEditorEvent::Cancel => {
                 if !self.close_thread_search(window, cx) {
-                    self.cancel_generation(cx);
+                    if self.overlay_presentation.is_some() {
+                        window.dispatch_action(crate::DismissConversationOverlay.boxed_clone(), cx);
+                    } else {
+                        self.cancel_generation(cx);
+                    }
                 }
             }
             MessageEditorEvent::Focus => {
@@ -2568,11 +2581,13 @@ impl ThreadView {
             })?;
             let submission_id = send.id;
 
-            let _ = this.update(cx, |this, cx| {
+            this.update(cx, |this, cx| {
                 this.current_submission = Some(submission_id);
                 this.sync_generating_indicator(cx);
+                cx.emit(AcpThreadViewEvent::FollowupSubmitted);
                 cx.notify();
-            });
+            })
+            .log_err();
 
             let res = send.await;
             let turn_time_ms = turn_start_time.elapsed().as_millis();
@@ -2999,6 +3014,7 @@ impl ThreadView {
                 message_editor.update(cx, |message_editor, cx| {
                     message_editor.clear(window, cx);
                 });
+                cx.emit(AcpThreadViewEvent::FollowupSubmitted);
                 cx.notify();
             })?;
             Ok(())
@@ -4425,6 +4441,98 @@ impl ThreadView {
         )
     }
 
+    pub(super) fn set_overlay_presentation(
+        &mut self,
+        expanded: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlay_presentation != expanded {
+            self.overlay_presentation = expanded;
+            if expanded.is_none() {
+                self.overlay_width_animating = false;
+            }
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_overlay_width_animating(
+        &mut self,
+        animating: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlay_width_animating == animating {
+            return;
+        }
+        if animating {
+            self.overlay_width_animating = true;
+            cx.notify();
+        } else {
+            // The editor still reports the preceding frame's wrapping until the final
+            // width has been laid out. Resume wrap detection on the following frame.
+            let thread = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                if let Some(thread) = thread.upgrade() {
+                    thread.update(cx, |thread, cx| {
+                        if thread.overlay_width_animating {
+                            thread.overlay_width_animating = false;
+                            cx.notify();
+                        }
+                    });
+                }
+            });
+        }
+    }
+
+    pub(crate) fn overlay_input_shape(
+        &self,
+    ) -> Option<crate::conversation_overlay::OverlayInputShape> {
+        self.overlay_input_shape.get()
+    }
+
+    fn render_overlay_header(&self, cx: &Context<Self>) -> Div {
+        let title = ThreadMetadataStore::try_global(cx)
+            .and_then(|store| {
+                store
+                    .read(cx)
+                    .entry(self.root_thread_id)
+                    .and_then(|metadata| metadata.title_override.clone())
+            })
+            .or_else(|| self.thread.read(cx).title())
+            .unwrap_or_else(|| DEFAULT_THREAD_TITLE.into());
+        gpui_kit::base::h_flex()
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .h_9()
+            .px_3()
+            .gap_2()
+            .ui_text(UiTextSize::Body, UiTextTone::Secondary, cx)
+            .child(div().flex_1().min_w_0().overflow_hidden().child(title))
+            .child(
+                KitButton::new("expand-conversation-overlay")
+                    .ghost()
+                    .xsmall()
+                    .icon(KitIcon::empty().path(IconName::Maximize.path()))
+                    .accessibility_label("Open conversation in tab")
+                    .tooltip("Open conversation in tab")
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(crate::ExpandConversationOverlay.boxed_clone(), cx);
+                    }),
+            )
+            .child(
+                KitButton::new("collapse-conversation-overlay")
+                    .ghost()
+                    .xsmall()
+                    .icon(KitIcon::empty().path(IconName::Dash.path()))
+                    .accessibility_label("Hide conversation")
+                    .tooltip("Hide conversation")
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(crate::ToggleConversationOverlay.boxed_clone(), cx);
+                    }),
+            )
+    }
+
     fn has_pending_command_approval(&self, cx: &App) -> bool {
         if self.is_subagent() {
             return false;
@@ -4458,12 +4566,18 @@ impl ThreadView {
         let thread = self.thread.read(cx);
         let (entry_ix, tool_call) = thread.tool_call(&tool_call_id)?;
 
-        let scroll_icon = if self.list_state.item_is_above_viewport(entry_ix)? {
-            IconName::ArrowUp
-        } else if self.list_state.item_is_below_viewport(entry_ix)? {
-            IconName::ArrowDown
-        } else {
-            return None;
+        let above_viewport = self.list_state.item_is_above_viewport(entry_ix);
+        let below_viewport = self.list_state.item_is_below_viewport(entry_ix);
+        let scroll_icon = match (above_viewport, below_viewport) {
+            (Some(true), _) => IconName::ArrowUp,
+            (_, Some(true)) => IconName::ArrowDown,
+            _ if self.overlay_presentation == Some(false)
+                || (self.overlay_presentation.is_some()
+                    && (above_viewport.is_none() || below_viewport.is_none())) =>
+            {
+                IconName::ArrowUp
+            }
+            _ => return None,
         };
 
         let focus_handle = self.focus_handle(cx);
@@ -4531,7 +4645,13 @@ impl ThreadView {
                     .size(KitSize::XSmall)
                     .icon(scroll_icon)
                     .label("Scroll")
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.overlay_presentation == Some(false) {
+                            window.dispatch_action(
+                                crate::ToggleConversationOverlay.boxed_clone(),
+                                cx,
+                            );
+                        }
                         this.list_state.scroll_to(ListOffset {
                             item_ix: entry_ix,
                             offset_in_item: px(0.0),
@@ -6464,6 +6584,9 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.overlay_presentation == Some(false) {
+            window.dispatch_action(crate::ToggleConversationOverlay.boxed_clone(), cx);
+        }
         if self.thread_search_bar.is_none() {
             let thread = self.thread.clone();
             let view = cx.entity().downgrade();
@@ -8978,8 +9101,10 @@ impl Render for ThreadView {
         // renders (settings, connection state, feature flags).
         self.sync_local_commands(cx);
 
+        let overlay_presentation = self.overlay_presentation;
+        let is_overlay = overlay_presentation.is_some();
         let has_messages = self.has_visible_conversation(cx);
-        let has_docked_composer = has_messages && !self.is_subagent();
+        let has_docked_composer = (has_messages || is_overlay) && !self.is_subagent();
         let list_state = self.list_state.clone();
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
         let in_composer_column = |alert: AlertCard| composer_column(alert, max_content_width);
@@ -9030,9 +9155,12 @@ impl Render for ThreadView {
         );
         above_composer.extend(self.render_request_elicitations(cx));
 
-        let (message_editor, changes_chips) =
-            self.render_message_editor(!above_composer.is_empty(), window, cx);
-        let (centered_message_editor, docked_message_editor) = if has_messages {
+        let (message_editor, changes_chips) = self.render_message_editor(
+            !above_composer.is_empty() || overlay_presentation == Some(false),
+            window,
+            cx,
+        );
+        let (centered_message_editor, mut docked_message_editor) = if has_messages || is_overlay {
             (None, Some(message_editor))
         } else {
             (Some(message_editor), None)
@@ -9045,61 +9173,128 @@ impl Render for ThreadView {
             .then(|| self.render_transcript_bottom_overlay(changes_chips, window, cx))
             .flatten();
 
-        let conversation = v_flex()
-            .flex_1()
-            .min_h_0()
-            .when(self.resumed_without_history, |this| {
-                this.child(in_composer_column(Self::render_resume_notice()))
-            })
-            .map(|this| {
-                if has_messages {
-                    this.flex_1()
-                        .size_full()
-                        .relative()
-                        .child(self.render_entries(has_tool_row, cx))
-                        .when_some(sticky_prompt, |this, sticky_prompt| {
-                            this.child(
-                                h_flex()
-                                    .absolute()
-                                    .top_0()
-                                    .left_0()
-                                    .right_0()
-                                    .justify_center()
-                                    .child(
-                                        div()
-                                            .when_some(max_content_width, |this, max_width| {
-                                                this.max_w(max_width)
-                                            })
-                                            .w_full()
-                                            .px_4()
-                                            .pt_2()
-                                            .child(sticky_prompt),
-                                    ),
+        let conversation = (overlay_presentation != Some(false)).then(|| {
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .when(self.resumed_without_history, |this| {
+                    this.child(in_composer_column(Self::render_resume_notice()))
+                })
+                .map(|this| {
+                    if has_messages {
+                        this.flex_1()
+                            .size_full()
+                            .relative()
+                            .child(self.render_entries(has_tool_row, cx))
+                            .when_some(sticky_prompt, |this, sticky_prompt| {
+                                this.child(
+                                    h_flex()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .right_0()
+                                        .justify_center()
+                                        .child(
+                                            div()
+                                                .when_some(max_content_width, |this, max_width| {
+                                                    this.max_w(max_width)
+                                                })
+                                                .w_full()
+                                                .px_4()
+                                                .pt_2()
+                                                .child(sticky_prompt),
+                                        ),
+                                )
+                            })
+                            .children(transcript_bottom_overlay)
+                            // A conversation reads like a document whose right edge is usually
+                            // empty, so the thumb floats instead of taking a gutter.
+                            .custom_scrollbars(
+                                Scrollbars::new(ScrollAxes::Vertical)
+                                    .overlay()
+                                    .tracked_scroll_handle(&list_state),
+                                window,
+                                cx,
                             )
-                        })
-                        .children(transcript_bottom_overlay)
-                        // A conversation reads like a document whose right edge is usually
-                        // empty, so the thumb floats instead of taking a gutter.
-                        .custom_scrollbars(
-                            Scrollbars::new(ScrollAxes::Vertical)
-                                .overlay()
-                                .tracked_scroll_handle(&list_state),
-                            window,
-                            cx,
+                            .child(self.render_conversation_navigation(window, cx))
+                            .into_any()
+                    } else {
+                        this.child(
+                            v_flex()
+                                .flex_1()
+                                .min_h_0()
+                                .justify_center()
+                                .children(centered_message_editor),
                         )
-                        .child(self.render_conversation_navigation(window, cx))
                         .into_any()
-                } else {
+                    }
+                })
+        });
+
+        let search_bar = self
+            .thread_search_visible
+            .then(|| self.thread_search_bar.clone())
+            .flatten();
+        let conversation_content = match overlay_presentation {
+            None => conversation.map(IntoElement::into_any_element),
+            Some(true) => {
+                let (background, border) = composer::composer_surface(cx);
+                let available_height = self
+                    .overlay_bounds
+                    .get()
+                    .map(|bounds| bounds.top() - rems(4.).to_pixels(window.rem_size()))
+                    .unwrap_or(window.viewport_size().height - px(220.));
+                let height =
+                    (window.viewport_size().height * 0.7).min(available_height.max(px(0.)));
+                Some(
+                    gpui_kit::base::v_flex()
+                        .mx_4()
+                        .mb_2()
+                        .h(height)
+                        .min_h_0()
+                        .rounded(rems(0.75))
+                        .border_1()
+                        .border_color(border)
+                        .bg(background)
+                        .shadow_lg()
+                        .overflow_hidden()
+                        .occlude()
+                        .child(self.render_overlay_header(cx))
+                        .children(self.render_subagent_titlebar(cx))
+                        .children(search_bar.clone())
+                        .children(conversation)
+                        .into_any_element(),
+                )
+            }
+            Some(false) => None,
+        };
+
+        let composer_content = is_overlay.then(|| {
+            v_flex()
+                .relative()
+                .w_full()
+                .min_w_0()
+                .flex_none()
+                .when(is_overlay, |this| {
+                    let overlay_bounds = self.overlay_bounds.clone();
+                    let view_id = cx.entity_id();
                     this.child(
-                        v_flex()
-                            .flex_1()
-                            .min_h_0()
-                            .justify_center()
-                            .children(centered_message_editor),
+                        gpui::canvas(
+                            move |bounds, _, cx| {
+                                let previous = overlay_bounds.replace(Some(bounds));
+                                if previous.is_none_or(|previous| previous.top() != bounds.top()) {
+                                    cx.notify(view_id);
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
                     )
-                    .into_any()
-                }
-            });
+                })
+                .children(std::mem::take(&mut above_composer))
+                .children(docked_message_editor.take())
+        });
 
         v_flex()
             .key_context("AcpThread")
@@ -9119,8 +9314,12 @@ impl Render for ThreadView {
                     }
                 }),
             )
-            .on_action(cx.listener(|this, _: &menu::Cancel, _, cx| {
-                if this.parent_session_id.is_none() {
+            .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
+                if this.overlay_presentation.is_some() {
+                    if !this.close_thread_search(window, cx) {
+                        window.dispatch_action(crate::DismissConversationOverlay.boxed_clone(), cx);
+                    }
+                } else if this.parent_session_id.is_none() {
                     this.cancel_generation(cx);
                 }
             }))
@@ -9133,7 +9332,14 @@ impl Render for ThreadView {
             .on_action(
                 cx.listener(|this, _: &editor::actions::Cancel, window, cx| {
                     if !this.close_thread_search(window, cx) {
-                        cx.propagate();
+                        if this.overlay_presentation.is_some() {
+                            window.dispatch_action(
+                                crate::DismissConversationOverlay.boxed_clone(),
+                                cx,
+                            );
+                        } else {
+                            cx.propagate();
+                        }
                     }
                 }),
             )
@@ -9408,19 +9614,21 @@ impl Render for ThreadView {
                     });
                 }
             }))
-            .size_full()
+            .relative()
+            .w_full()
+            .min_w_0()
+            .when(!is_overlay, |this| this.h_full())
             .when(!has_docked_composer, |this| this.pb_2())
-            .when(!cx.theme().has_translucent_chrome(), |this| {
-                this.bg(cx.theme().colors().toolbar_background)
-            })
-            .children(self.render_subagent_titlebar(cx))
-            .when_some(
-                self.thread_search_visible
-                    .then(|| self.thread_search_bar.clone())
-                    .flatten(),
-                |this, bar| this.child(bar),
+            .when(
+                !is_overlay && !cx.theme().has_translucent_chrome(),
+                |this| this.bg(cx.theme().colors().toolbar_background),
             )
-            .child(conversation)
+            .when(!is_overlay, |this| {
+                this.children(self.render_subagent_titlebar(cx))
+                    .children(search_bar)
+            })
+            .children(conversation_content)
+            .children(composer_content)
             .children(above_composer)
             .children(docked_message_editor)
     }

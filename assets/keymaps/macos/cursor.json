@@ -59,6 +59,14 @@
     },
   },
   {
+    "context": "ConversationOverlay || (ConversationOverlay > Editor)",
+    "use_key_equivalents": true,
+    "bindings": {
+      "cmd-i": "agent::ToggleFocus",
+      "cmd-shift-i": "agent::ToggleFocus",
+    },
+  },
+  {
     "context": "Editor && editor_agent_diff",
     "use_key_equivalents": true,
     "bindings": {

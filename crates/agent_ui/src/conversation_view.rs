@@ -797,6 +797,7 @@ pub struct ConversationView {
     pub(crate) thread_id: ThreadId,
     pub(crate) root_session_id: Option<acp_v2::SessionId>,
     server_state: ServerState,
+    overlay_presentation: Option<bool>,
     pending_selections: Vec<AgentContextSelection>,
     pending_paths: Vec<project::ProjectPath>,
     pending_worktrees: Vec<Entity<project::Worktree>>,
@@ -817,6 +818,37 @@ pub struct ConversationView {
 }
 
 impl ConversationView {
+    pub(crate) fn set_overlay_presentation(
+        &mut self,
+        expanded: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlay_presentation == expanded {
+            return;
+        }
+        self.overlay_presentation = expanded;
+        self.sync_overlay_presentation(cx);
+        cx.notify();
+    }
+
+    fn sync_overlay_presentation(&self, cx: &mut Context<Self>) {
+        if let Some(connected) = self.as_connected() {
+            let visible_session = if self.overlay_presentation.is_some() {
+                self.root_session_id.as_ref()
+            } else {
+                connected.active_id.as_ref()
+            };
+            for (session_id, view) in &connected.threads {
+                let presentation = (Some(session_id) == visible_session)
+                    .then_some(self.overlay_presentation)
+                    .flatten();
+                view.update(cx, |view, cx| {
+                    view.set_overlay_presentation(presentation, cx)
+                });
+            }
+        }
+    }
+
     pub fn has_auth_methods(&self) -> bool {
         self.as_connected().map_or(false, |connected| {
             connected
@@ -835,6 +867,10 @@ impl ConversationView {
 
     pub fn active_thread(&self) -> Option<&Entity<ThreadView>> {
         match &self.server_state {
+            ServerState::Connected(connected) if self.overlay_presentation.is_some() => self
+                .root_session_id
+                .as_ref()
+                .and_then(|id| connected.threads.get(id)),
             ServerState::Connected(connected) => connected.active_view(),
             _ => None,
         }
@@ -906,11 +942,16 @@ impl ConversationView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let expand_overlay = self.overlay_presentation.is_some()
+            && self.root_session_id.as_ref() != Some(&session_id);
         let Some(connected) = self.as_connected_mut() else {
             return;
         };
 
         connected.navigate_to_thread(session_id);
+        if expand_overlay {
+            window.dispatch_action(crate::ExpandConversationOverlay.boxed_clone(), cx);
+        }
         if let Some(view) = self.active_thread() {
             view.read(cx).activation_focus_handle(cx).focus(window, cx);
         }
@@ -1109,6 +1150,7 @@ impl ConversationView {
             workspace,
             project: project.clone(),
             thread_store,
+            overlay_presentation: None,
             thread_id,
             root_session_id: resume_session_id.clone(),
             server_state: Self::initial_state(
@@ -1211,6 +1253,16 @@ impl ConversationView {
     fn request_elicitation_store(&self) -> Option<Entity<ElicitationStore>> {
         self.request_elicitation_connection()?
             .request_elicitations()
+    }
+
+    pub(crate) fn has_pending_request_elicitations(&self, cx: &App) -> bool {
+        self.request_elicitation_store().is_some_and(|store| {
+            store
+                .read(cx)
+                .elicitations()
+                .iter()
+                .any(|elicitation| matches!(elicitation.status, ElicitationStatus::Pending { .. }))
+        })
     }
 
     /// Drops the cached connection for this agent (so the next request spawns a
@@ -3845,6 +3897,8 @@ impl ConversationView {
 
 impl Render for ConversationView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_overlay_presentation(cx);
+        let is_overlay = self.overlay_presentation.is_some();
         self.sync_request_elicitation_states(window, cx);
         let request_elicitation_connection = self.request_elicitation_connection();
         let active_thread_renders_request_elicitations =
@@ -3856,8 +3910,9 @@ impl Render for ConversationView {
                     .clone()
                     .unwrap_or_else(|| "Loading…".into());
                 v_flex()
-                    .flex_1()
-                    .size_full()
+                    .w_full()
+                    .when(!is_overlay, |this| this.flex_1().h_full())
+                    .when(is_overlay, |this| this.py_4())
                     .items_center()
                     .justify_center()
                     .child(
@@ -3872,8 +3927,8 @@ impl Render for ConversationView {
                     .into_any()
             }
             ServerState::LoadError { error: e, .. } => v_flex()
-                .flex_1()
-                .size_full()
+                .w_full()
+                .when(!is_overlay, |this| this.flex_1().h_full())
                 .items_center()
                 .justify_end()
                 .child(self.render_load_error(e, window, cx))
@@ -3887,8 +3942,8 @@ impl Render for ConversationView {
                     },
                 ..
             }) => v_flex()
-                .flex_1()
-                .size_full()
+                .w_full()
+                .when(!is_overlay, |this| this.flex_1().h_full())
                 .justify_end()
                 .child(self.render_auth_required_state(
                     connection,
@@ -3898,8 +3953,8 @@ impl Render for ConversationView {
                     cx,
                 ))
                 .into_any_element(),
-            ServerState::Connected(connected) => {
-                if let Some(view) = connected.active_view() {
+            ServerState::Connected(_) => {
+                if let Some(view) = self.active_thread() {
                     view.clone().into_any_element()
                 } else {
                     debug_panic!("This state should never be reached");
@@ -3910,11 +3965,19 @@ impl Render for ConversationView {
 
         v_flex()
             .track_focus(&self.focus_handle)
-            .size_full()
-            .when(!cx.theme().has_translucent_chrome(), |this| {
-                this.bg(cx.theme().colors().toolbar_background)
-            })
-            .child(v_flex().flex_1().min_h_0().child(content))
+            .w_full()
+            .min_w_0()
+            .when(!is_overlay, |this| this.h_full())
+            .when(
+                !is_overlay && !cx.theme().has_translucent_chrome(),
+                |this| this.bg(cx.theme().colors().toolbar_background),
+            )
+            .child(
+                v_flex()
+                    .min_h_0()
+                    .when(!is_overlay, |this| this.flex_1())
+                    .child(content),
+            )
             .when(!active_thread_renders_request_elicitations, |this| {
                 this.children(request_elicitation_connection.as_ref().map_or_else(
                     Vec::new,
