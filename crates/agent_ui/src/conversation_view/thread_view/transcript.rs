@@ -2,11 +2,13 @@ use super::composer::{PillButton, composer_surface};
 use super::tool_calls::markdown_line;
 use super::*;
 use crate::entry_view_state::{ActivityGroup, TurnFold, is_hidden_canceled_tool_call};
+use chrono::{DateTime, Local, Utc};
 use gpui::{AnyView, FontWeight, TextStyleRefinement, point, transparent_white};
 use gpui_icons::Icon as KitIcon;
 use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::{
-    Colorize as _, Size as KitSize, Theme as KitTheme, alert::AlertVariant, shimmer::ShimmerText,
+    Colorize as _, Disableable as _, Size as KitSize, Theme as KitTheme, alert::AlertVariant,
+    shimmer::ShimmerText,
 };
 use markdown::{HeadingLevelStyles, ListMarkerStyle};
 use std::time::Duration;
@@ -486,11 +488,15 @@ impl ThreadView {
                 .entries()
                 .iter()
                 .rposition(|entry| matches!(entry, AgentThreadEntry::AssistantMessage(_)));
+            let has_assistant_footer = last_assistant_index.is_some_and(|index| {
+                Self::entry_is_finalized_turn_end(thread.read(cx).entries(), index)
+                    .unwrap_or(!is_generating)
+            });
 
             v_flex()
                 .w_full()
                 .child(primary)
-                .when(!is_assistant, |this| {
+                .when(!is_assistant && !has_assistant_footer, |this| {
                     this.child(self.render_thread_controls(
                         &thread,
                         entry_ix,
@@ -741,72 +747,109 @@ impl ThreadView {
         user_message_index: Option<usize>,
         cx: &Context<Self>,
     ) -> impl IntoElement {
-        let is_generating = matches!(thread.read(cx).status(), ThreadStatus::Generating);
-        let needs_confirmation = thread.read(cx).is_waiting_for_confirmation()
-            || self.has_pending_request_elicitation(cx);
+        let thread_state = thread.read(cx);
+        let is_generating = matches!(thread_state.status(), ThreadStatus::Generating);
+        let needs_confirmation =
+            thread_state.is_waiting_for_confirmation() || self.has_pending_request_elicitation(cx);
 
-        if is_thread_bottom && (is_generating || needs_confirmation) {
+        let user_message_index = user_message_index
+            .filter(|&index| {
+                matches!(thread_state.entries().get(index), Some(AgentThreadEntry::UserMessage(message)) if !message.indented)
+            })
+            .or_else(|| {
+                thread_state
+                    .entries()
+                    .iter()
+                    .take(entry_ix.saturating_add(1))
+                    .rposition(|entry| {
+                        matches!(entry, AgentThreadEntry::UserMessage(message) if !message.indented)
+                    })
+            });
+        let timestamp = user_message_index.and_then(|index| thread_state.turn_timestamp(index));
+        let is_latest_turn = !thread_state
+            .entries()
+            .iter()
+            .skip(entry_ix.saturating_add(1))
+            .any(|entry| {
+                matches!(entry, AgentThreadEntry::UserMessage(message) if !message.indented)
+            });
+        if is_latest_turn && (is_generating || needs_confirmation) {
             return Empty.into_any_element();
         }
 
-        let button_size = KitSize::Size(turn_footer_button_size(cx));
-
         let copy_response_button = copy_response_index.map(|response_index| {
-            PillButton::new(("copy_agent_response", entry_ix))
-                .size(button_size)
-                .icon(if self.copied_response_index == Some(response_index) {
-                    IconName::Check
+            let copied = self.copied_response_index == Some(response_index);
+            turn_action_button(
+                ("copy_agent_response", entry_ix),
+                if copied {
+                    MenuIcon::Check
                 } else {
-                    IconName::Copy
-                })
-                .tooltip(Tooltip::text("Copy This Agent Response"))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    let entries = this.thread.read(cx).entries();
-                    if let Some(text) = Self::get_agent_message_content(entries, response_index, cx)
-                    {
-                        cx.write_to_clipboard(ClipboardItem::new_string(text));
-                        this.copied_response_index = Some(response_index);
-                        this.show_success_toast("Response copied", window, cx);
-                        this.copied_response_reset = Some(cx.spawn(async move |this, cx| {
-                            cx.background_executor().timer(Duration::from_secs(2)).await;
-                            this.update(cx, |this, cx| {
-                                this.copied_response_index = None;
-                                cx.notify();
-                            })
-                            .log_err();
-                        }));
-                        cx.notify();
-                    }
-                }))
+                    MenuIcon::Copy
+                },
+                if copied { "Copied" } else { "Copy Message" },
+                false,
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                if this.copied_response_index == Some(response_index) {
+                    return;
+                }
+                let entries = this.thread.read(cx).entries();
+                if let Some(text) = Self::get_agent_message_content(entries, response_index, cx) {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    this.copied_response_index = Some(response_index);
+                    this.show_success_toast("Message copied to clipboard", window, cx);
+                    this.copied_response_reset = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(Duration::from_secs(2)).await;
+                        this.update(cx, |this, cx| {
+                            this.copied_response_index = None;
+                            cx.notify();
+                        })
+                        .log_err();
+                    }));
+                    cx.notify();
+                }
+            }))
         });
 
         let fork_response = copy_response_index
             .filter(|_| self.as_native_thread(cx).is_some() && !self.is_subagent())
             .map(|response_index| {
-                PillButton::new(("fork-response", entry_ix))
-                    .size(button_size)
-                    .icon(IconName::GitBranch)
-                    .disabled(is_generating || needs_confirmation)
-                    .tooltip(Tooltip::text("Fork Conversation Here"))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.fork_at_response(response_index, window, cx);
-                    }))
+                let forking = self.forking_response_index == Some(response_index);
+                turn_action_button(
+                    ("fork-response", entry_ix),
+                    MenuIcon::Split,
+                    if forking { "Forking Chat" } else { "Fork Chat" },
+                    forking,
+                    cx,
+                )
+                .disabled(
+                    thread_state.status() != ThreadStatus::Idle
+                        || needs_confirmation
+                        || (self.forking_response_index.is_some() && !forking),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.fork_at_response(response_index, window, cx);
+                }))
             });
 
-        let show_stats = is_thread_bottom && AgentSettings::get_global(cx).show_turn_stats;
-
-        let last_turn_clock = show_stats
+        let show_stats = AgentSettings::get_global(cx).show_turn_stats;
+        let turn_duration = show_stats
             .then(|| {
                 user_message_index
-                    .and_then(|index| self.thread.read(cx).turn_duration(index))
-                    .or(self.turn_fields.last_turn_duration)
+                    .and_then(|index| thread_state.turn_duration(index))
+                    .or_else(|| {
+                        is_thread_bottom
+                            .then_some(self.turn_fields.last_turn_duration)
+                            .flatten()
+                    })
                     .filter(|&duration| duration > STOPWATCH_THRESHOLD)
                     .map(duration_alt_display)
             })
             .flatten();
-
-        let last_turn_tokens = last_turn_clock
-            .is_some()
+        let last_turn_tokens = (show_stats && is_thread_bottom && turn_duration.is_some())
             .then(|| {
                 self.turn_fields
                     .last_turn_tokens
@@ -814,69 +857,15 @@ impl ThreadView {
                     .map(|tokens| format!("{} tokens", crate::humanize_token_count(tokens)))
             })
             .flatten();
-
-        let feedback_buttons = is_thread_bottom
-            .then(|| {
-                (self.is_subagent() && self.is_thread_feedback_enabled(cx)).then(|| {
-                    let feedback = self.thread_feedback.feedback;
-                    let tooltip_meta =
-                        "Rating the thread sends all of your current conversation to the Zed team.";
-
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            PillButton::new("feedback-thumbs-up")
-                                .size(button_size)
-                                .icon(IconName::ThumbsUp)
-                                .toggle_state(feedback == Some(ThreadFeedback::Positive))
-                                .tooltip(move |window, cx| match feedback {
-                                    Some(ThreadFeedback::Positive) => {
-                                        Tooltip::text("Thanks for your feedback!")(window, cx)
-                                    }
-                                    _ => Tooltip::with_meta(
-                                        "Helpful Response",
-                                        None,
-                                        tooltip_meta,
-                                        cx,
-                                    ),
-                                })
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.handle_feedback_click(ThreadFeedback::Positive, window, cx);
-                                })),
-                        )
-                        .child(
-                            PillButton::new("feedback-thumbs-down")
-                                .size(button_size)
-                                .icon(IconName::ThumbsDown)
-                                .toggle_state(feedback == Some(ThreadFeedback::Negative))
-                                .tooltip(move |window, cx| match feedback {
-                                    Some(ThreadFeedback::Negative) => Tooltip::text(
-                                        "We appreciate your feedback and will use it to improve in the future.",
-                                    )(
-                                        window, cx
-                                    ),
-                                    _ => Tooltip::with_meta(
-                                        "Not Helpful Response",
-                                        None,
-                                        tooltip_meta,
-                                        cx,
-                                    ),
-                                })
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.handle_feedback_click(ThreadFeedback::Negative, window, cx);
-                                })),
-                        )
-                })
-            })
-            .flatten();
+        let legacy_duration = timestamp.is_none().then(|| turn_duration.clone()).flatten();
 
         TurnFooter::new(
             ("turn-footer", entry_ix),
-            last_turn_tokens.into_iter().chain(last_turn_clock),
+            last_turn_tokens.into_iter().chain(legacy_duration),
         )
-        .children(feedback_buttons)
         .children(copy_response_button)
         .children(fork_response)
+        .timestamp(timestamp, turn_duration, is_latest_turn)
         .into_any_element()
     }
 
@@ -1727,12 +1716,39 @@ impl RenderOnce for TranscriptDivider {
     }
 }
 
+fn turn_action_button(
+    id: impl Into<ElementId>,
+    icon: MenuIcon,
+    label: &'static str,
+    loading: bool,
+    cx: &App,
+) -> KitButton {
+    KitButton::new(id)
+        .custom(workspace::ghost_button_style(cx))
+        .with_size(KitSize::Small)
+        .size(rems(24. / 16.))
+        .px_0()
+        .rounded(ButtonRounded::Medium)
+        .loading(loading)
+        .accessibility_label(label)
+        .tooltip(label)
+        .child(
+            KitIcon::new(if loading { MenuIcon::Spinner } else { icon })
+                .size(rems(13. / 16.))
+                .glyph_scale(1.)
+                .spinning(loading),
+        )
+}
+
 /// The quiet row under a finished turn, with its stats and actions such as copying the response.
 #[derive(IntoElement)]
 pub(super) struct TurnFooter {
     id: ElementId,
     stats: Vec<String>,
     children: Vec<AnyElement>,
+    timestamp: Option<DateTime<Utc>>,
+    duration: Option<String>,
+    is_latest_turn: bool,
 }
 
 impl TurnFooter {
@@ -1741,7 +1757,22 @@ impl TurnFooter {
             id: id.into(),
             stats: stats.into_iter().collect(),
             children: Vec::new(),
+            timestamp: None,
+            duration: None,
+            is_latest_turn: false,
         }
+    }
+
+    fn timestamp(
+        mut self,
+        timestamp: Option<DateTime<Utc>>,
+        duration: Option<String>,
+        is_latest_turn: bool,
+    ) -> Self {
+        self.timestamp = timestamp;
+        self.duration = duration;
+        self.is_latest_turn = is_latest_turn;
+        self
     }
 }
 
@@ -1751,32 +1782,94 @@ impl ParentElement for TurnFooter {
     }
 }
 
-/// Sizes the turn footer's icon buttons so their icons match the transcript's text, since
-/// GPUI Kit draws a button's icon at three quarters of the button's size.
-fn turn_footer_button_size(cx: &App) -> Pixels {
-    ThemeSettings::get_global(cx).agent_ui_font_size(cx) / 0.75
-}
-
 impl RenderOnce for TurnFooter {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let button_size = turn_footer_button_size(cx);
-        let icon_padding = (button_size - button_size * 0.75) / 2.;
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let icon_padding = rems((24. - 13.) / 32.).to_pixels(window.rem_size());
+        let timestamp = self.timestamp.map(|message_at| {
+            let timestamp = window.use_keyed_state(self.id.clone(), cx, |_, _| TurnTimestamp {
+                timestamp: message_at,
+                duration: self.duration.clone(),
+                refresh_task: None,
+            });
+            timestamp.update(cx, |timestamp, cx| {
+                if timestamp.timestamp != message_at || timestamp.duration != self.duration {
+                    timestamp.timestamp = message_at;
+                    timestamp.duration = self.duration;
+                    cx.notify();
+                }
+            });
+            div()
+                .pl(rems(6. / 16.))
+                .when(!self.is_latest_turn, |this| {
+                    this.opacity(0.)
+                        .group_hover("turn-actions", |style| style.opacity(1.))
+                })
+                .child(timestamp)
+        });
         h_flex()
             .id(self.id)
+            .group("turn-actions")
             .w_full()
             .pt_2()
             // Lines the icons, rather than the buttons around them, up with the text.
             .pl(TEXT_INSET - icon_padding)
             .pr(TEXT_INSET)
-            .gap_2()
-            .text_xs()
-            .text_color(text_shades(cx).tertiary)
-            .opacity(0.5)
-            .hover(|style| style.opacity(1.))
+            .gap(rems(2. / 16.))
+            .ui_text(UiTextSize::Compact, UiTextTone::Muted, cx)
             .children(self.children)
+            .children(timestamp)
             .when(!self.stats.is_empty(), |this| {
                 this.child(div().px_1().child(self.stats.join(" · ")))
             })
+    }
+}
+
+struct TurnTimestamp {
+    timestamp: DateTime<Utc>,
+    duration: Option<String>,
+    refresh_task: Option<Task<()>>,
+}
+
+impl Render for TurnTimestamp {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.refresh_task.is_none() {
+            self.refresh_task = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_secs(60))
+                        .await;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        let seconds = (Utc::now() - self.timestamp).num_seconds().max(0);
+        let label = match seconds {
+            0..60 => "Just now".to_string(),
+            60..3600 => format!("{}m ago", seconds / 60),
+            3600..86400 => format!("{}h ago", seconds / 3600),
+            86400..2592000 => format!("{}d ago", seconds / 86400),
+            2592000..31536000 => format!("{}mo ago", seconds / 2592000),
+            _ => format!("{}y ago", seconds / 31536000),
+        };
+        let mut title = self
+            .timestamp
+            .with_timezone(&Local)
+            .format("%b %-d, %Y, %-I:%M %p")
+            .to_string();
+        if let Some(duration) = &self.duration {
+            title.push_str(&format!("\nWorked for {duration}"));
+        }
+        div()
+            .id("turn-message-time")
+            .ui_text(UiTextSize::Compact, UiTextTone::Muted, cx)
+            .whitespace_nowrap()
+            .aria_label(format!("Message sent {title}"))
+            .tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(title.clone()).build(window, cx)
+            })
+            .child(label)
     }
 }
 

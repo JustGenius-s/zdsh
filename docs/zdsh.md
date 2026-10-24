@@ -36,7 +36,7 @@ Use the double speech bubble button in the conversation toolbar to open **Thread
 
 On wide panes, history sits to the right of the conversation with a draggable divider. On narrow panes, it overlays the right side of the conversation; click outside it or use the toolbar button to close it. The existing Toggle Threads Sidebar and Focus Sidebar shortcuts target this tab-local history. From a file tab, they open a conversation tab first. History starts collapsed after restarting zdsh.
 
-The conversation uses the toolbar background. In an empty conversation the composer is centered in the tab; once the conversation has messages, it docks at the bottom. It follows the configured content width and retains model, mode, thinking, context, and send controls.
+The conversation uses the toolbar background. In an empty conversation the composer is centered in the tab; once the conversation has messages, it docks at the bottom. The transcript, composer and floating controls share `agent.max_content_width`, which defaults to 904px and shrinks with the available panel width. Explicit width settings and `agent.limit_content_width: false` remain effective. The composer retains model, mode, thinking, context, and send controls.
 
 Agent response text wraps at Unicode line-break opportunities, keeping Chinese closing punctuation with the preceding text and opening punctuation with the following text. Long words can wrap between grapheme clusters without splitting combined characters or emoji. At exceptionally narrow widths, an inseparable punctuation group may extend beyond the available width. This changes visual wrapping only; authored newlines, source text, selection, and copied content are preserved.
 
@@ -118,6 +118,8 @@ zdsh runs without a Zed account. Configure a provider in the Settings Editor to 
 Zed-hosted models, Zed cloud search, subscriptions, contacts, channels, calls, and shared editing are unavailable. The desktop does not restore Zed login sessions or read or delete existing Zed account credentials. The titlebar menu still provides settings, themes, and extensions.
 
 Existing explicit Zed-hosted model selections require you to choose another model; zdsh does not replace them with a different paid provider. SSH, local development tools, extension downloads, and telemetry are independent of Zed account access.
+
+Completed conversation turns offer **Copy Message** and, for native conversations, **Fork Chat**, followed by the reply's timestamp. Copy takes the final nonempty reply without thinking or tool output and briefly shows a check. Fork creates a new conversation through that reply and shows a spinner while saving. Timestamps prefer the final message's start time, falling back to turn completion, and refresh every minute; hover for the full local date and recorded duration. The latest time remains visible, while earlier times appear on hover. Times persist through reopening and Fork; older conversations without a recorded time leave it absent. Rating buttons are omitted.
 
 ## Profiles
 

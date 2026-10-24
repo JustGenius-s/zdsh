@@ -1,6 +1,7 @@
 use std::{cell::RefCell, collections::HashMap, time::Duration};
 
 use anyhow::{Context as _, Result};
+use chrono::{DateTime, Utc};
 use db::kvp::KeyValueStore;
 use futures::{FutureExt as _, future::Shared};
 use gpui::{App, AppContext as _, Context, Global, SharedString, Task};
@@ -114,6 +115,10 @@ struct SavedTimings {
     turns: HashMap<String, u64>,
     #[serde(default)]
     thoughts: HashMap<String, u64>,
+    #[serde(default)]
+    completed_at: HashMap<String, DateTime<Utc>>,
+    #[serde(default)]
+    response_started_at: HashMap<String, DateTime<Utc>>,
 }
 
 impl Default for SavedTimings {
@@ -122,6 +127,8 @@ impl Default for SavedTimings {
             version: 1,
             turns: HashMap::new(),
             thoughts: HashMap::new(),
+            completed_at: HashMap::new(),
+            response_started_at: HashMap::new(),
         }
     }
 }
@@ -135,6 +142,8 @@ pub(crate) struct ThreadTimings {
     replaying_history: bool,
     observed_turn: bool,
     observed_content: bool,
+    observed_entry_count: usize,
+    response_started_at: Option<(usize, DateTime<Utc>)>,
 }
 
 impl ThreadTimings {
@@ -168,6 +177,8 @@ impl ThreadTimings {
             replaying_history: false,
             observed_turn: false,
             observed_content: false,
+            observed_entry_count: 0,
+            response_started_at: None,
         })
     }
 
@@ -231,10 +242,16 @@ impl AcpThread {
             .enumerate()
             .take(through_entry.saturating_add(1))
         {
-            if let Some(key) = self.turn_timing_key(index)
-                && let Some(duration) = timings.saved.turns.get(&key)
-            {
-                saved.turns.insert(key, *duration);
+            if let Some(key) = self.turn_timing_key(index) {
+                if let Some(duration) = timings.saved.turns.get(&key) {
+                    saved.turns.insert(key.clone(), *duration);
+                }
+                if let Some(completed_at) = timings.saved.completed_at.get(&key) {
+                    saved.completed_at.insert(key.clone(), *completed_at);
+                }
+                if let Some(started_at) = timings.saved.response_started_at.get(&key) {
+                    saved.response_started_at.insert(key, *started_at);
+                }
             }
             if let AgentThreadEntry::AssistantMessage(message) = entry {
                 for chunk_index in 0..message.chunks.len() {
@@ -266,6 +283,8 @@ impl AcpThread {
                 timings.streaming_thought = None;
                 timings.observed_turn = false;
                 timings.observed_content = false;
+                timings.observed_entry_count = self.entries.len();
+                timings.response_started_at = None;
             }
         }
     }
@@ -277,6 +296,8 @@ impl AcpThread {
             timings.observed_turn = !timings.replaying_history;
             timings.observed_content = timings.observed_turn && has_prompt;
             timings.streaming_thought = None;
+            timings.observed_entry_count = self.entries.len();
+            timings.response_started_at = None;
         }
     }
 
@@ -285,6 +306,20 @@ impl AcpThread {
             && timings.observed_turn
         {
             timings.observed_content = true;
+            if let Some((entry_index, _)) = self
+                .entries
+                .iter()
+                .enumerate()
+                .skip(timings.observed_entry_count)
+                .rev()
+                .find(|(_, entry)| {
+                    matches!(entry, AgentThreadEntry::AssistantMessage(message)
+                        if !message.indented && !message.is_subagent_output)
+                })
+            {
+                timings.response_started_at = Some((entry_index, Utc::now()));
+            }
+            timings.observed_entry_count = self.entries.len();
             self.sync_thought_timing(cx);
         }
     }
@@ -372,6 +407,16 @@ impl AcpThread {
             .map(Duration::from_millis)
     }
 
+    pub fn turn_timestamp(&self, entry_index: usize) -> Option<DateTime<Utc>> {
+        let key = self.turn_timing_key(entry_index)?;
+        let saved = &self.timings.as_ref()?.saved;
+        saved
+            .response_started_at
+            .get(&key)
+            .or_else(|| saved.completed_at.get(&key))
+            .copied()
+    }
+
     pub fn thought_duration(&self, entry_index: usize, chunk_index: usize) -> Option<Duration> {
         let key = self.thought_timing_key(entry_index, chunk_index)?;
         self.timings
@@ -433,17 +478,29 @@ impl AcpThread {
             return;
         };
         timings.observed_turn = false;
+        let response_started_at = timings.response_started_at.take();
         if !timings.observed_content {
             return;
         }
         let prompt_index = self.entries.iter().rposition(
             |entry| matches!(entry, AgentThreadEntry::UserMessage(message) if !message.indented),
         );
-        if let Some(duration) = self.activity.duration()
-            && let Some(key) = prompt_index.and_then(|index| self.turn_timing_key(index))
+        if let Some(key) = prompt_index.and_then(|index| self.turn_timing_key(index))
             && let Some(timings) = self.timings.as_mut()
         {
-            timings.saved.turns.insert(key, duration_millis(duration));
+            if let Some(duration) = self.activity.duration() {
+                timings
+                    .saved
+                    .turns
+                    .insert(key.clone(), duration_millis(duration));
+            }
+            if let Some((_, started_at)) = response_started_at {
+                timings
+                    .saved
+                    .response_started_at
+                    .insert(key.clone(), started_at);
+            }
+            timings.saved.completed_at.insert(key, Utc::now());
             self.save_timings(cx);
         }
     }
@@ -475,6 +532,14 @@ impl AcpThread {
             timings.observed_turn = false;
             timings.observed_content = false;
             timings.streaming_thought = None;
+            timings.response_started_at = None;
+        }
+        timings.observed_entry_count = timings.observed_entry_count.min(entry_index);
+        if timings
+            .response_started_at
+            .is_some_and(|(index, _)| index >= entry_index)
+        {
+            timings.response_started_at = None;
         }
         if timings
             .streaming_thought
@@ -485,6 +550,8 @@ impl AcpThread {
         let mut changed = false;
         for key in turn_keys {
             changed |= timings.saved.turns.remove(&key).is_some();
+            changed |= timings.saved.completed_at.remove(&key).is_some();
+            changed |= timings.saved.response_started_at.remove(&key).is_some();
         }
         for key in thought_keys {
             changed |= timings.saved.thoughts.remove(&key).is_some();
@@ -525,7 +592,7 @@ impl AcpThread {
         self.push_notice(
             acp_v2::Notice::new(
                 acp_v2::NoticeSeverity::Warning,
-                "Could not save conversation durations",
+                "Could not save conversation metadata",
             )
             .description(error.to_string()),
             cx,

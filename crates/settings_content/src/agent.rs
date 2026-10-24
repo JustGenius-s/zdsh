@@ -278,7 +278,7 @@ pub struct AgentSettingsContent {
     /// Maximum content width in pixels for the agent panel. Content will be
     /// centered when the panel is wider than this value.
     ///
-    /// Default: 850
+    /// Default: 904
     pub max_content_width: Option<crate::PixelSetting>,
     /// The default model to use when creating new chats and for other features when a specific model is not specified.
     pub default_model: Option<LanguageModelSelection>,

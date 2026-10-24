@@ -594,6 +594,7 @@ pub struct ThreadView {
     branch_chip_hovered: bool,
     copied_response_index: Option<usize>,
     copied_response_reset: Option<Task<()>>,
+    forking_response_index: Option<usize>,
     pub plan_expanded: bool,
     pub queue_expanded: bool,
     pub editor_expanded: bool,
@@ -1140,6 +1141,7 @@ impl ThreadView {
             branch_chip_hovered: false,
             copied_response_index: None,
             copied_response_reset: None,
+            forking_response_index: None,
             plan_expanded: false,
             queue_expanded: true,
             editor_expanded: false,
@@ -1431,7 +1433,9 @@ impl ThreadView {
         let Some(native_thread) = self.as_native_thread(cx) else {
             return;
         };
-        if self.thread.read(cx).status() != ThreadStatus::Idle {
+        if self.thread.read(cx).status() != ThreadStatus::Idle
+            || self.forking_response_index.is_some()
+        {
             return;
         }
         let next_prompt = self
@@ -1472,6 +1476,8 @@ impl ThreadView {
                     .clone()
             })
             .unwrap_or_default();
+        self.forking_response_index = Some(entry_index);
+        cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result: Result<()> = async {
                 let mut snapshot = snapshot.await;
@@ -1513,14 +1519,16 @@ impl ThreadView {
                 })??;
                 Ok(())
             }.await;
-            if let Err(error) = result {
-                log::error!("Failed to fork conversation: {error:#}");
-                this.update_in(cx, |_, window, cx| {
+            this.update_in(cx, |this, window, cx| {
+                this.forking_response_index = None;
+                cx.notify();
+                if let Err(error) = result {
+                    log::error!("Failed to fork conversation: {error:#}");
                     if window.root::<KitRoot>().flatten().is_some() {
                         window.push_notification(Notification::error(format!("Could not fork conversation: {error}")), cx);
                     }
-                }).log_err();
-            }
+                }
+            }).log_err();
         }).detach();
     }
 
@@ -6762,20 +6770,14 @@ impl ThreadView {
             return None;
         }
 
-        let start_index = (0..entry_index)
+        entries
+            .get(..=entry_index)?
+            .iter()
             .rev()
-            .find(|&i| matches!(entries.get(i), Some(AgentThreadEntry::UserMessage(_))))
-            .map(|i| i + 1)
-            .unwrap_or(0);
-
-        let end_index = (entry_index + 1..entries.len())
-            .find(|&i| matches!(entries.get(i), Some(AgentThreadEntry::UserMessage(_))))
-            .map(|i| i - 1)
-            .unwrap_or(entries.len() - 1);
-
-        let parts: Vec<String> = (start_index..=end_index)
-            .filter_map(|i| entries.get(i))
-            .filter_map(|entry| {
+            .take_while(|entry| {
+                !matches!(entry, AgentThreadEntry::UserMessage(message) if !message.indented)
+            })
+            .find_map(|entry| {
                 if let AgentThreadEntry::AssistantMessage(message) = entry {
                     let text: String = message
                         .chunks
@@ -6799,10 +6801,6 @@ impl ThreadView {
                     None
                 }
             })
-            .collect();
-
-        let text = parts.join("\n\n");
-        if text.is_empty() { None } else { Some(text) }
     }
 
     fn sandbox_not_applied_warning(
