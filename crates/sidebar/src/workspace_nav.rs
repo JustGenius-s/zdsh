@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     mem,
+    rc::Rc,
     time::Duration,
 };
 
@@ -8,12 +9,13 @@ use action_log::DiffStats;
 use agent_ui::{AgentPanel, ThreadId};
 use db::kvp::KeyValueStore;
 use gpui::{
-    Anchor, Animation, AnimationExt as _, AnyElement, App, Context, DismissEvent, Entity, EntityId,
-    Focusable as _, Hsla, IntoElement, MouseButton, ParentElement, Render, SharedString, Styled,
-    Subscription, Task, WeakEntity, Window, div, ease_out_quint, prelude::*, px, rgb,
+    Anchor, Animation, AnimationExt as _, AnyElement, App, Axis, Context, CursorStyle,
+    DismissEvent, DragMoveEvent, Entity, EntityId, Focusable as _, Hsla, IntoElement, MouseButton,
+    MouseUpEvent, ParentElement, Pixels, Render, SharedString, Styled, Subscription, Task,
+    WeakEntity, Window, canvas, div, ease_out_quint, prelude::*, px, rgb,
 };
 use gpui_icons::IconName;
-use gpui_kit::base::Popover;
+use gpui_kit::base::{HandleEdge, Popover, ResizeHandleState, resize_handle};
 use gpui_kit::component::{
     Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -25,6 +27,7 @@ use gpui_kit::component::{
 };
 use project::{ProjectPath, git_store::GitStore};
 use project_panel::ProjectPanel;
+use serde::{Deserialize, Serialize};
 use theme::{ActiveTheme, Appearance, UiTextSize, UiTextTone, UiTypography};
 use ui::{Color, rems_from_px};
 use util::ResultExt as _;
@@ -46,6 +49,9 @@ const GROUP_LABEL_PADDING_END: f32 = 7.;
 const HEADER_HEIGHT: f32 = ROW_MIN_HEIGHT;
 const NAV_WIDTH: f32 = 272.;
 const FILES_WIDTH: f32 = 264.;
+const PANEL_MIN_WIDTH: f32 = 200.;
+const PANEL_MAX_WIDTH: f32 = 600.;
+const CENTER_MIN_WIDTH: f32 = 240.;
 const FILES_ENTER_DURATION: Duration = Duration::from_millis(240);
 /// How many threads the sidebar lists before a More row, as many as Cursor's sidebar does.
 const THREADS_SHOWN: usize = 8;
@@ -70,6 +76,10 @@ pub struct WorkspaceNav {
     /// right edge.
     project_files: Option<Entity<ProjectPanel>>,
     files: FilesState,
+    panel_widths: PanelWidths,
+    width_storage_key: Option<String>,
+    width_save_task: Task<()>,
+    resizing_panel: Option<PanelResize>,
     /// Counts openings of the file tree, so each one replays its entrance.
     files_openings: usize,
     collapsed_sections: Vec<Section>,
@@ -99,6 +109,31 @@ enum FilesState {
     Floating,
     /// Takes a column of its own and stays open.
     Pinned,
+}
+
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct PanelWidths {
+    navigation: Option<f32>,
+    files: Option<f32>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NavigationPanel {
+    Navigation,
+    Files,
+}
+
+struct DraggedNavigationPanel {
+    owner: EntityId,
+    panel: NavigationPanel,
+}
+
+struct PanelResize {
+    panel: NavigationPanel,
+    initial_pointer_x: Pixels,
+    initial_width: Pixels,
+    changed: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -159,15 +194,19 @@ impl WorkspaceNav {
         let git_store = workspace.project().read(cx).git_store().clone();
         let left_dock = workspace.left_dock().clone();
         let group = workspace.project_group_key(cx);
-        let pin_storage_key = serde_json::to_string(&(group.path_list().paths(), group.host()))
-            .log_err()
+        let storage_key =
+            serde_json::to_string(&(group.path_list().paths(), group.host())).log_err();
+        let pin_storage_key = storage_key
+            .as_ref()
             .map(|key| format!("workspace-nav-pinned-threads:{key}"));
+        let width_storage_key = storage_key.map(|key| format!("workspace-nav-panel-widths:{key}"));
         let nav = cx.new(|cx| {
             Self::new(
                 &workspace_handle,
                 &git_store,
                 &left_dock,
                 pin_storage_key,
+                width_storage_key,
                 window,
                 cx,
             )
@@ -190,6 +229,7 @@ impl WorkspaceNav {
         git_store: &Entity<GitStore>,
         left_dock: &Entity<Dock>,
         pin_storage_key: Option<String>,
+        width_storage_key: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -198,25 +238,46 @@ impl WorkspaceNav {
             .and_then(|key| KeyValueStore::global(cx).read_kvp(key).log_err().flatten())
             .and_then(|value| serde_json::from_str(&value).log_err())
             .unwrap_or_default();
+        let panel_widths = width_storage_key
+            .as_ref()
+            .and_then(|key| KeyValueStore::global(cx).read_kvp(key).log_err().flatten())
+            .and_then(|value| serde_json::from_str(&value).log_err())
+            .unwrap_or_default();
         let rename_input = cx.new(|cx| InputState::new(window, cx));
         let subscriptions = vec![
-            cx.observe(workspace, |_, _, cx| cx.notify()),
+            cx.observe(workspace, |this, workspace, cx| {
+                this.sync_panel_widths(&workspace, cx);
+                cx.notify();
+            }),
             cx.subscribe(git_store, |_, _, _, cx| cx.notify()),
             cx.observe_in(left_dock, window, Self::take_project_files_from_dock),
+            cx.observe_window_bounds(window, |_, _, cx| cx.notify()),
+            cx.observe_window_activation(window, |this, window, cx| {
+                if !window.is_window_active() {
+                    this.finish_panel_resize(cx);
+                }
+            }),
             cx.subscribe_in(&rename_input, window, |this, _, event, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                     this.finish_thread_rename(window, cx);
                 }
             }),
         ];
-        cx.on_release(|this, _| mem::replace(&mut this.pin_save_task, Task::ready(())).detach())
-            .detach();
+        cx.on_release(|this, _| {
+            mem::replace(&mut this.pin_save_task, Task::ready(())).detach();
+            mem::replace(&mut this.width_save_task, Task::ready(())).detach();
+        })
+        .detach();
         Self {
             workspace: workspace.downgrade(),
             threads: None,
             needed_attention: false,
             project_files: None,
             files: FilesState::Closed,
+            panel_widths,
+            width_storage_key,
+            width_save_task: Task::ready(()),
+            resizing_panel: None,
             files_openings: 0,
             collapsed_sections: Vec::new(),
             thread_order: ThreadOrder::Updated,
@@ -236,6 +297,196 @@ impl WorkspaceNav {
             _project_files_subscription: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    fn panel_width_limits(window: &Window) -> (Pixels, Pixels) {
+        let scale = window.rem_size();
+        let available_width = window.viewport_size().width
+            - window.client_inset().unwrap_or_default() * 2.
+            - rems_from_px(4_f32).to_pixels(scale);
+        // Each side keeps half the space left around a usable center, even when both are open.
+        let maximum = ((available_width - rems_from_px(CENTER_MIN_WIDTH).to_pixels(scale)) / 2.)
+            .max(px(0.))
+            .min(rems_from_px(PANEL_MAX_WIDTH).to_pixels(scale));
+        let minimum = rems_from_px(PANEL_MIN_WIDTH).to_pixels(scale).min(maximum);
+        (minimum, maximum)
+    }
+
+    fn sync_panel_widths(&mut self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) {
+        let group = workspace.read(cx).project_group_key(cx);
+        let Some(key) = serde_json::to_string(&(group.path_list().paths(), group.host())).log_err()
+        else {
+            return;
+        };
+        let key = format!("workspace-nav-panel-widths:{key}");
+        if self.width_storage_key.as_ref() == Some(&key) {
+            return;
+        }
+        // Restored projects can gain their worktree paths after the navigation is installed.
+        self.finish_panel_resize(cx);
+        self.panel_widths = KeyValueStore::global(cx)
+            .read_kvp(&key)
+            .log_err()
+            .flatten()
+            .and_then(|value| serde_json::from_str(&value).log_err())
+            .unwrap_or_default();
+        self.width_storage_key = Some(key);
+    }
+
+    fn panel_width(&self, panel: NavigationPanel, window: &Window) -> Pixels {
+        let (preferred, default) = match panel {
+            NavigationPanel::Navigation => (self.panel_widths.navigation, NAV_WIDTH),
+            NavigationPanel::Files => (self.panel_widths.files, FILES_WIDTH),
+        };
+        let preferred = preferred
+            .filter(|width| width.is_finite())
+            .unwrap_or(default)
+            .clamp(PANEL_MIN_WIDTH, PANEL_MAX_WIDTH);
+        let (minimum, maximum) = Self::panel_width_limits(window);
+        rems_from_px(preferred)
+            .to_pixels(window.rem_size())
+            .clamp(minimum, maximum)
+    }
+
+    fn render_resize_handle(
+        &self,
+        panel: NavigationPanel,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let sidebar = cx.weak_entity();
+        let edge = match panel {
+            NavigationPanel::Navigation => HandleEdge::Trailing,
+            NavigationPanel::Files => HandleEdge::Leading,
+        };
+        resize_handle("panel-width-handle", Axis::Horizontal)
+            .inside(edge)
+            .with_appearance(Rc::new(move |handle, _, cx| {
+                let (length, opacity) = match handle.state() {
+                    // Returning None would restore the base handle's default divider.
+                    ResizeHandleState::Idle => return Some(gpui::Empty.into_any_element()),
+                    ResizeHandleState::Hovered => (20., 0.35),
+                    ResizeHandleState::Pressed => (28., 0.6),
+                    ResizeHandleState::Dragging => (44., 0.9),
+                };
+                Some(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .w(px(1.))
+                        .h_full()
+                        .child(
+                            div()
+                                .flex_none()
+                                .w(px(2.))
+                                .h(px(length))
+                                .max_h_full()
+                                .rounded_full()
+                                .bg(cx.theme().colors().icon_muted)
+                                .opacity(opacity)
+                                // Keep the grip inside the hit area, clear of the content border.
+                                .ml(match edge {
+                                    HandleEdge::Leading => px(2.),
+                                    HandleEdge::Trailing => px(-3.),
+                                }),
+                        )
+                        .into_any_element(),
+                )
+            }))
+            .on_drag(
+                DraggedNavigationPanel {
+                    owner: cx.entity_id(),
+                    panel,
+                },
+                move |drag, _, window, cx| {
+                    cx.stop_propagation();
+                    sidebar
+                        .update(cx, |this, cx| {
+                            this.finish_panel_resize(cx);
+                            this.resizing_panel = Some(PanelResize {
+                                panel: drag.panel,
+                                initial_pointer_x: window.mouse_position().x,
+                                initial_width: this.panel_width(drag.panel, window),
+                                changed: false,
+                            });
+                            cx.notify();
+                        })
+                        .log_err();
+                    cx.new(|_| gpui::Empty)
+                },
+            )
+    }
+
+    fn resize_panel(
+        &mut self,
+        event: &DragMoveEvent<Rc<DraggedNavigationPanel>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let drag = event.drag(cx);
+        if drag.owner != cx.entity_id() {
+            return;
+        }
+        let current_width = self.panel_width(drag.panel, window);
+        let Some(resize) = &mut self.resizing_panel else {
+            return;
+        };
+        if resize.panel != drag.panel {
+            return;
+        }
+        cx.set_active_drag_cursor_style(CursorStyle::ResizeLeftRight, window);
+        let delta = event.event.position.x - resize.initial_pointer_x;
+        let width = resize.initial_width
+            + match resize.panel {
+                NavigationPanel::Navigation => delta,
+                NavigationPanel::Files => -delta,
+            };
+        let (minimum, maximum) = Self::panel_width_limits(window);
+        let width = width.clamp(minimum, maximum);
+        if width == current_width {
+            return;
+        }
+        let width = (width / rems_from_px(1_f32).to_pixels(window.rem_size()))
+            .clamp(PANEL_MIN_WIDTH, PANEL_MAX_WIDTH);
+        let preferred = match resize.panel {
+            NavigationPanel::Navigation => &mut self.panel_widths.navigation,
+            NavigationPanel::Files => &mut self.panel_widths.files,
+        };
+        if *preferred != Some(width) {
+            *preferred = Some(width);
+            resize.changed = true;
+            cx.notify();
+        }
+    }
+
+    fn finish_panel_resize(&mut self, cx: &mut Context<Self>) {
+        if !self
+            .resizing_panel
+            .take()
+            .is_some_and(|resize| resize.changed)
+        {
+            return;
+        }
+        let Some(key) = self.width_storage_key.clone() else {
+            return;
+        };
+        let Some(value) = serde_json::to_string(&self.panel_widths).log_err() else {
+            return;
+        };
+        let previous = mem::replace(&mut self.width_save_task, Task::ready(()));
+        let database = KeyValueStore::global(cx);
+        let workspace = self.workspace.clone();
+        self.width_save_task = cx.spawn(async move |_, cx| {
+            previous.await;
+            if let Err(error) = database.write_kvp(key, value).await {
+                log::error!("Saving sidebar widths: {error:#}");
+                workspace
+                    .update(cx, |workspace, cx| {
+                        workspace.show_error(format!("Could not save sidebar widths: {error}"), cx)
+                    })
+                    .log_err();
+            }
+        });
     }
 
     fn connect_panes(&mut self, workspace: &Entity<Workspace>, cx: &mut Context<Self>) {
@@ -506,6 +757,7 @@ impl WorkspaceNav {
         &self,
         project_files: Entity<ProjectPanel>,
         workspace: &Entity<Workspace>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = cx.theme().colors();
@@ -516,13 +768,16 @@ impl WorkspaceNav {
             .display_name(&Default::default());
         v_flex()
             .id("workspace-project-files")
-            .w(rems_from_px(FILES_WIDTH))
+            .relative()
+            .w(self.panel_width(NavigationPanel::Files, window))
             .h_full()
             .flex_none()
+            .overflow_hidden()
             .pt(rems_from_px(LIST_INSET))
             .bg(colors.panel_background)
             .border_l_1()
             .border_color(colors.border_variant)
+            .on_drag_move(cx.listener(Self::resize_panel))
             .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
                 this.close_project_files(window, cx)
             }))
@@ -585,6 +840,7 @@ impl WorkspaceNav {
                 ),
             )
             .child(div().flex_1().min_h_0().child(project_files))
+            .child(self.render_resize_handle(NavigationPanel::Files, cx))
             .into_any_element()
     }
 
@@ -601,7 +857,7 @@ impl WorkspaceNav {
         let project_files = (self.files != FilesState::Closed)
             .then(|| self.connect_project_files(window, cx))
             .flatten()
-            .map(|project_files| self.render_project_files(project_files, &workspace, cx));
+            .map(|project_files| self.render_project_files(project_files, &workspace, window, cx));
         match project_files {
             Some(project_files) if self.files == FilesState::Floating => div()
                 .flex_none()
@@ -2107,18 +2363,28 @@ impl WorkspaceNav {
 }
 
 impl Render for WorkspaceNav {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.resizing_panel.is_some() && !cx.has_active_drag() {
+            self.finish_panel_resize(cx);
+        }
         self.connect_thread_list(cx);
         let Some(workspace) = self.workspace.upgrade() else {
             return div().into_any_element();
         };
         self.connect_panes(&workspace, cx);
+        let finish_resize = cx.listener(|this, _: &MouseUpEvent, _, cx| {
+            this.finish_panel_resize(cx);
+        });
         v_flex()
+            .id("workspace-navigation")
+            .relative()
             .ui_text(UiTextSize::Body, UiTextTone::Secondary, cx)
-            .w(rems_from_px(NAV_WIDTH))
+            .w(self.panel_width(NavigationPanel::Navigation, window))
             .h_full()
             .flex_none()
+            .overflow_hidden()
             .pt(rems_from_px(LIST_INSET))
+            .on_drag_move(cx.listener(Self::resize_panel))
             .child(self.render_header(&workspace, cx))
             .child(
                 v_flex()
@@ -2136,6 +2402,21 @@ impl Render for WorkspaceNav {
                     .child(self.render_archived(&workspace, cx)),
             )
             .child(self.render_footer(&workspace, cx))
+            .child(self.render_resize_handle(NavigationPanel::Navigation, cx))
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| {
+                        // Releasing outside either panel still commits the completed resize.
+                        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                            if phase.capture() {
+                                finish_resize(event, window, cx);
+                            }
+                        });
+                    },
+                )
+                .absolute(),
+            )
             .into_any_element()
     }
 }

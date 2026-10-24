@@ -8984,6 +8984,7 @@ impl Workspace {
                     }),
                 )
                 .w_full()
+                .flex_shrink_0()
                 .child(item)
                 .into_any_element(),
         )
@@ -9014,7 +9015,9 @@ impl Workspace {
             .when(is_a11y_active, |this| {
                 this.track_focus(&self.region_focus_handles.editor)
             })
-            .size_full()
+            .h_full()
+            .flex_1()
+            .min_w_0()
             .when_some(background, |this, background| this.bg(background))
             .child(center)
     }
@@ -9796,7 +9799,10 @@ impl Render for Workspace {
             })
             .child(
                 div()
-                    .size_full()
+                    // Fill only the space below the title bar, even with tall child content.
+                    .w_full()
+                    .min_w_0()
+                    .min_h_0()
                     .relative()
                     .flex_1()
                     .flex()
@@ -9805,6 +9811,7 @@ impl Render for Workspace {
                         self.with_entrance(
                             h_flex()
                                 .flex_1()
+                                .min_w_0()
                                 .min_h_0()
                                 .w_full()
                                 .items_stretch()
@@ -9821,6 +9828,8 @@ impl Render for Workspace {
                                         .relative()
                                         .flex_1()
                                         .min_w_0()
+                                        .min_h_0()
+                                        .mr_1()
                                         .mb_1()
                                         // Room for the block's edge, which is drawn over its content.
                                         .p_px()
@@ -10186,7 +10195,9 @@ impl Render for Workspace {
                                                 })
                                                 .child(
                                                     div()
-                                                        .size_full()
+                                                        .h_full()
+                                                        .flex_1()
+                                                        .min_w_0()
                                                         .debug_selector(|| {
                                                             "zoomed_centered_layout_content".into()
                                                         })
