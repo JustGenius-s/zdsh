@@ -7,6 +7,8 @@ use crate::{ActiveTheme, theme_settings};
 pub enum UiTextSize {
     /// Navigation, list entries, buttons, and ordinary labels.
     Body,
+    /// Dense tool cards, command previews, and their actions.
+    Compact,
     /// Supplementary descriptions and compact metadata.
     Caption,
 }
@@ -16,6 +18,7 @@ impl UiTextSize {
     pub fn font_size(self) -> Rems {
         rems(match self {
             Self::Body => 14. / 16.,
+            Self::Compact => 13. / 16.,
             Self::Caption => 12. / 16.,
         })
     }
@@ -24,6 +27,7 @@ impl UiTextSize {
     pub fn line_height(self) -> Rems {
         rems(match self {
             Self::Body => 20. / 16.,
+            Self::Compact => 18. / 16.,
             Self::Caption => 16. / 16.,
         })
     }

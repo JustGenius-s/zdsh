@@ -20,9 +20,7 @@ impl ThreadView {
         let telemetry = ActionLogTelemetry::from(thread);
         let plan = thread.plan().filter(|plan| !plan.is_empty());
 
-        let awaiting_permission = self
-            .render_main_agent_awaiting_permission(window, cx)
-            .or_else(|| self.render_subagents_awaiting_permission(cx));
+        let awaiting_permission = self.render_main_agent_awaiting_permission(window, cx);
         let generic_permissions = self.render_generic_permissions(cx);
 
         // Collapsed edits live in the composer's Changes chip; the activity bar
@@ -42,7 +40,9 @@ impl ThreadView {
 
         let mut sections = Vec::new();
         sections.extend(generic_permissions);
-        sections.extend(awaiting_permission);
+        if awaiting_permission.is_none() {
+            sections.extend(self.render_subagents_awaiting_permission(cx));
+        }
         if let Some(plan) = plan {
             sections.push(
                 v_flex()
@@ -78,27 +78,37 @@ impl ThreadView {
             );
         }
 
-        if sections.is_empty() {
+        if sections.is_empty() && awaiting_permission.is_none() {
             return None;
         }
 
         let (background, border) = composer_surface(cx);
-        let card = v_flex()
-            .w_full()
-            .rounded(px(16.))
-            .border_1()
-            .border_color(border)
-            .bg(background)
-            .overflow_hidden()
-            .children(sections.into_iter().enumerate().map(|(index, section)| {
-                div()
-                    .when(index > 0, |this| this.border_t_1().border_color(border))
-                    .child(section)
-            }));
+        let card = (!sections.is_empty()).then(|| {
+            v_flex()
+                .w_full()
+                .rounded(px(16.))
+                .border_1()
+                .border_color(border)
+                .bg(background)
+                .overflow_hidden()
+                .children(sections.into_iter().enumerate().map(|(index, section)| {
+                    div()
+                        .when(index > 0, |this| this.border_t_1().border_color(border))
+                        .child(section)
+                }))
+        });
 
         Some(
-            composer_column(card, AgentSettings::get_global(cx).max_content_width)
-                .into_any_element(),
+            composer_column(
+                gpui_kit::base::v_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_2()
+                    .children(card)
+                    .children(awaiting_permission),
+                AgentSettings::get_global(cx).max_content_width,
+            )
+            .into_any_element(),
         )
     }
 

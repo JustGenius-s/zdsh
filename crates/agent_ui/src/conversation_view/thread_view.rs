@@ -58,6 +58,7 @@ use language_model::{
 };
 use project::ResolvedPath;
 use settings::{update_settings_file, update_settings_file_with_completion};
+use theme::{UiTextSize, UiTextTone, UiTypography};
 use ui::{ButtonLike, Checkbox, SplitButton, SplitButtonStyle, Tab, ToggleState};
 use url::Url;
 use util::markdown::source_position_from_fragment;
@@ -630,6 +631,7 @@ pub struct ThreadView {
     _model_menu_subscription: Option<Subscription>,
     /// The permissions menu, or the confirmation that replaces it when switching to full access.
     permissions_menu: Option<Entity<PopupMenu>>,
+    permissions_menu_owner: Option<PermissionsMenuOwner>,
     _permissions_menu_subscription: Option<Subscription>,
     pub fast_mode_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub project: WeakEntity<Project>,
@@ -697,6 +699,12 @@ enum ToolCallLayout {
     Grouped,
     Embedded,
     Floating,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum PermissionsMenuOwner {
+    Composer,
+    Approval(acp_v2::ToolCallId, ToolCallLayout),
 }
 
 impl ToolCallLayout {
@@ -830,7 +838,10 @@ impl ThreadView {
             this.sync_debug_state(cx);
             cx.notify();
         }));
-        subscriptions.push(cx.observe(&conversation, |_, _, cx| cx.notify()));
+        subscriptions.push(cx.observe(&conversation, |this, _, cx| {
+            this.close_stale_approval_permissions_menu(cx);
+            cx.notify();
+        }));
 
         let has_slash_completions = session_capabilities.read().has_slash_completions();
         let placeholder = placeholder_text(agent_display_name.as_ref(), has_slash_completions);
@@ -1161,6 +1172,7 @@ impl ThreadView {
             model_menu: None,
             _model_menu_subscription: None,
             permissions_menu: None,
+            permissions_menu_owner: None,
             _permissions_menu_subscription: None,
             fast_mode_menu_handle: PopoverMenuHandle::default(),
             project,
@@ -1199,6 +1211,12 @@ impl ThreadView {
                     let scroll_top = list_state.logical_scroll_top();
                     thread_view
                         .update(cx, |this, cx| {
+                            if matches!(
+                                this.permissions_menu_owner,
+                                Some(PermissionsMenuOwner::Approval(..))
+                            ) {
+                                this.close_permissions_menu(cx);
+                            }
                             if transcript::is_scrolled_up(&list_state)
                                 != this.transcript_scrolled_up
                                 || this.conversation_navigation.top_entry != scroll_top.item_ix
@@ -3455,6 +3473,13 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(
+            outcome.option_kind,
+            acp_v2::PermissionOptionKind::AllowOnce | acp_v2::PermissionOptionKind::AllowAlways
+        ) && self.permission_allow_blocked(&session_id, request_id, cx)
+        {
+            return;
+        }
         self.conversation.update(cx, |conversation, cx| {
             conversation.authorize_permission_request(session_id, request_id, outcome, cx);
         });
@@ -3486,21 +3511,64 @@ impl ThreadView {
     /// unacknowledged surprising-Unicode warning, so the keyboard allow
     /// shortcuts must be ignored (mirroring the disabled allow buttons).
     fn pending_allow_blocked_by_confusables(&self, cx: &Context<Self>) -> bool {
-        let session_id = self.thread.read(cx).session_id().clone();
-        let Some((_, tool_call_id, _)) = self
-            .conversation
-            .read(cx)
-            .pending_tool_call(&session_id, cx)
+        let Some((session_id, _, request_id)) = self.pending_tool_call_target(cx) else {
+            return false;
+        };
+        self.permission_allow_blocked(&session_id, request_id, cx)
+    }
+
+    fn permission_allow_blocked(
+        &self,
+        session_id: &acp_v2::SessionId,
+        request_id: PermissionRequestId,
+        cx: &App,
+    ) -> bool {
+        let conversation = self.conversation.read(cx);
+        let Some(tool_call_id) = conversation
+            .permission_request(session_id, request_id, cx)
+            .and_then(PermissionRequest::legacy_tool_call_id)
         else {
             return false;
         };
-        self.thread.read(cx).entries().iter().any(|entry| {
-            matches!(
-                entry,
-                AgentThreadEntry::ToolCall(call)
-                    if call.id == tool_call_id && self.sandbox_confusables_block_allow(call, cx)
-            )
-        })
+        conversation
+            .threads
+            .get(session_id)
+            .and_then(|thread| thread.read(cx).tool_call(tool_call_id))
+            .is_some_and(|(_, call)| {
+                if self.thread.read(cx).session_id() == session_id {
+                    self.sandbox_confusables_block_allow(call, cx)
+                } else {
+                    // Tool ids are only session-local; another view's acknowledgement
+                    // cannot authorize this request. Review it in that thread's card.
+                    Self::confusable_warning_enabled(cx)
+                        && call
+                            .sandbox_authorization_details
+                            .as_ref()
+                            .is_some_and(|details| {
+                                !Self::sandbox_confusable_findings(details).is_empty()
+                            })
+                }
+            })
+    }
+
+    fn pending_tool_call_target(
+        &self,
+        cx: &App,
+    ) -> Option<(acp_v2::SessionId, acp_v2::ToolCallId, PermissionRequestId)> {
+        let session_id = self.thread.read(cx).session_id();
+        let conversation = self.conversation.read(cx);
+        // Shortcuts must act on the card in this thread, even if another thread
+        // entered the shared permission queue first.
+        let (session_id, request) = conversation
+            .pending_permission_request_for_session(session_id, cx)
+            .filter(|request| request.legacy_tool_call_id().is_some())
+            .map(|request| (session_id.clone(), request))
+            .or_else(|| conversation.pending_permission_request(session_id, cx))?;
+        Some((
+            session_id,
+            request.legacy_tool_call_id()?.clone(),
+            request.id,
+        ))
     }
 
     pub fn reject_once(&mut self, _: &RejectOnce, window: &mut Window, cx: &mut Context<Self>) {
@@ -3513,18 +3581,14 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<()> {
-        let session_id = self.thread.read(cx).session_id().clone();
-        self.conversation.update(cx, |conversation, cx| {
-            conversation.authorize_pending_tool_call(&session_id, kind, cx)
-        })?;
-        if self.should_be_following {
-            self.workspace
-                .update(cx, |workspace, cx| {
-                    workspace.follow(CollaboratorId::Agent, window, cx);
-                })
-                .ok();
-        }
-        cx.notify();
+        let (session_id, _, request_id) = self.pending_tool_call_target(cx)?;
+        let request = self
+            .conversation
+            .read(cx)
+            .permission_request(&session_id, request_id, cx)?;
+        let option = permission_option_for_action(request.legacy_options()?, kind)?;
+        let outcome = SelectedPermissionOutcome::new(option.option_id.clone(), option.kind.clone());
+        self.authorize_permission_request(session_id, request_id, outcome, window, cx);
         Some(())
     }
 
@@ -3868,6 +3932,9 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<()> {
+        if is_allow && self.permission_allow_blocked(&session_id, request_id, cx) {
+            return None;
+        }
         self.conversation.update(cx, |conversation, cx| {
             conversation.authorize_with_granularity(session_id, request_id, is_allow, cx)
         })?;
@@ -4350,6 +4417,21 @@ impl ThreadView {
         )
     }
 
+    fn has_pending_command_approval(&self, cx: &App) -> bool {
+        if self.is_subagent() {
+            return false;
+        }
+        let thread = self.thread.read(cx);
+        self.conversation
+            .read(cx)
+            .pending_tool_call_for_session(thread.session_id(), cx)
+            .and_then(|tool_call_id| thread.tool_call(&tool_call_id))
+            .is_some_and(|(_, call)| {
+                matches!(call.kind(), acp_v2::ToolKind::Execute)
+                    && call.terminals().next().is_none()
+            })
+    }
+
     pub(crate) fn render_main_agent_awaiting_permission(
         &self,
         window: &Window,
@@ -4388,6 +4470,37 @@ impl ThreadView {
             cx,
         );
 
+        if self.has_pending_command_approval(cx) {
+            return Some(
+                gpui_kit::base::v_flex()
+                    .w_full()
+                    .min_w_0()
+                    .pt(rems(0.5))
+                    .child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .when(pending_count > 1, |stack| {
+                                stack.child(
+                                    div()
+                                        .absolute()
+                                        .top(rems(-7. / 16.))
+                                        .left(relative(0.02))
+                                        .w(relative(0.96))
+                                        .h(rems(1.5))
+                                        .rounded(rems(0.5))
+                                        .border_1()
+                                        .border_color(KitTheme::global(cx).border)
+                                        .bg(cx.theme().colors().editor_background)
+                                        .opacity(0.6),
+                                )
+                            })
+                            .child(div().relative().child(card)),
+                    )
+                    .into_any_element(),
+            );
+        }
+
         let label: SharedString = if pending_count > 1 {
             format!("Awaiting Confirmation ({pending_count})").into()
         } else {
@@ -4419,7 +4532,19 @@ impl ThreadView {
                     })),
             );
 
-        Some(v_flex().child(header).child(card).into_any())
+        let (background, border) = composer::composer_surface(cx);
+        Some(
+            v_flex()
+                .w_full()
+                .rounded(px(16.))
+                .border_1()
+                .border_color(border)
+                .bg(background)
+                .overflow_hidden()
+                .child(header)
+                .child(card)
+                .into_any(),
+        )
     }
 
     fn clear_queue(&mut self, cx: &mut Context<Self>) {
@@ -4610,6 +4735,11 @@ impl ThreadView {
     /// The thread's permissions, chosen from a menu that also shows what the
     /// sandbox lets the thread do.
     pub fn render_permissions_control(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.has_pending_command_approval(cx)
+            && self.permissions_menu_owner != Some(PermissionsMenuOwner::Composer)
+        {
+            return None;
+        }
         let thread = self.as_native_thread(cx)?;
         let permissions = thread.read(cx).permissions();
         let details = self.sandbox_details(&thread, permissions, cx);
@@ -4620,7 +4750,9 @@ impl ThreadView {
         } else {
             IconName::Lock
         };
-        let menu = self.permissions_menu.clone();
+        let menu = (self.permissions_menu_owner == Some(PermissionsMenuOwner::Composer))
+            .then(|| self.permissions_menu.clone())
+            .flatten();
 
         Some(
             h_flex()
@@ -4634,8 +4766,14 @@ impl ThreadView {
                         .open(menu.is_some())
                         .on_open_change(cx.listener(|this, open: &bool, window, cx| {
                             if *open {
-                                this.open_permissions_menu(window, cx);
-                            } else {
+                                this.open_permissions_menu(
+                                    PermissionsMenuOwner::Composer,
+                                    window,
+                                    cx,
+                                );
+                            } else if this.permissions_menu_owner
+                                == Some(PermissionsMenuOwner::Composer)
+                            {
                                 this.close_permissions_menu(cx);
                             }
                         }))
@@ -4662,8 +4800,86 @@ impl ThreadView {
         )
     }
 
-    fn open_permissions_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn render_approval_permissions_control(
+        &self,
+        tool_call_id: &acp_v2::ToolCallId,
+        layout: ToolCallLayout,
+        compact: bool,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        self.thread
+            .read(cx)
+            .permission_request_for_tool(tool_call_id)?;
+        let thread = self.as_native_thread(cx)?;
+        let permissions = thread.read(cx).permissions();
+        let label = <&'static str>::from(permissions);
+        let owner = PermissionsMenuOwner::Approval(tool_call_id.clone(), layout);
+        let menu = (self.permissions_menu_owner.as_ref() == Some(&owner))
+            .then(|| self.permissions_menu.clone())
+            .flatten();
+        let element_id = SharedString::from(format!(
+            "approval-permissions-{}-{}",
+            tool_call_id.0,
+            layout.id_str()
+        ));
+
+        Some(
+            Popover::new(element_id)
+                .appearance(false)
+                .overlay_closable(false)
+                .anchor(gpui::Anchor::BottomLeft)
+                .offset(px(6.))
+                .open(menu.is_some())
+                .on_open_change(cx.listener(move |this, open: &bool, window, cx| {
+                    if *open {
+                        this.open_permissions_menu(owner.clone(), window, cx);
+                    } else if this.permissions_menu_owner.as_ref() == Some(&owner) {
+                        this.close_permissions_menu(cx);
+                    }
+                }))
+                .trigger(
+                    KitButton::new("approval-permissions-trigger")
+                        .ghost()
+                        .small()
+                        .h(rems(1.25))
+                        .py_0()
+                        .px_1()
+                        .flex_shrink_0()
+                        .accessibility_label(format!("Command permissions: {label}"))
+                        .tooltip(format!("Command permissions: {label}"))
+                        .when(compact, |button| {
+                            button.icon(
+                                KitIcon::empty()
+                                    .path(IconName::Settings.path())
+                                    .with_size(KitSize::XSmall),
+                            )
+                        })
+                        .when(!compact, |button| {
+                            button.child(
+                                div()
+                                    .ui_text(UiTextSize::Compact, UiTextTone::Muted, cx)
+                                    .child(label),
+                            )
+                        })
+                        .dropdown_caret(true),
+                )
+                .content(move |_, _, _| match &menu {
+                    Some(menu) => menu.clone().into_any_element(),
+                    None => div().into_any_element(),
+                })
+                .into_any_element(),
+        )
+    }
+
+    fn open_permissions_menu(
+        &mut self,
+        owner: PermissionsMenuOwner,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.permissions_menu.is_some() {
+            self.permissions_menu_owner = Some(owner);
+            cx.notify();
             return;
         }
         let Some(thread) = self.as_native_thread(cx) else {
@@ -4684,6 +4900,7 @@ impl ThreadView {
                 &this,
             )
         });
+        self.permissions_menu_owner = Some(owner);
         self.show_permissions_menu(menu, window, cx);
     }
 
@@ -4711,8 +4928,21 @@ impl ThreadView {
 
     fn close_permissions_menu(&mut self, cx: &mut Context<Self>) {
         self._permissions_menu_subscription = None;
+        self.permissions_menu_owner = None;
         if self.permissions_menu.take().is_some() {
             cx.notify();
+        }
+    }
+
+    fn close_stale_approval_permissions_menu(&mut self, cx: &mut Context<Self>) {
+        if let Some(PermissionsMenuOwner::Approval(tool_call_id, _)) = &self.permissions_menu_owner
+            && self
+                .thread
+                .read(cx)
+                .permission_request_for_tool(tool_call_id)
+                .is_none()
+        {
+            self.close_permissions_menu(cx);
         }
     }
 
@@ -6688,7 +6918,7 @@ impl ThreadView {
             Vec::new()
         };
 
-        let write_section = has_write.then(|| {
+        let write_section = (has_write && !compact).then(|| {
             let summary = if details.allow_fs_write_all {
                 "unrestricted except Git metadata".to_string()
             } else {
@@ -6782,8 +7012,7 @@ impl ThreadView {
                 .px_2()
                 .py_1()
                 .gap_1p5()
-                .text_size(theme_settings::ThemeSettings::get_global(cx).ui_font_size(cx) * 0.75)
-                .text_color(KitTheme::global(cx).muted_foreground)
+                .ui_text(UiTextSize::Caption, UiTextTone::Muted, cx)
                 .child(
                     KitIcon::empty()
                         .path(IconName::Warning.path())
@@ -6791,17 +7020,6 @@ impl ThreadView {
                         .with_size(KitSize::XSmall),
                 )
                 .child("Runs without the OS sandbox")
-                .when(compact && !has_windows_fs_warning, |this| {
-                    let url = zed_urls::sandboxing_docs(None, cx);
-                    this.child(
-                        KitButton::new("sandbox-authorization-docs-link")
-                            .ghost()
-                            .xsmall()
-                            .icon(KitIcon::empty().path(IconName::ArrowUpRight.path()))
-                            .tooltip("View Sandboxing Docs")
-                            .on_click(move |_, _, cx| cx.open_url(&url)),
-                    )
-                })
         });
 
         v_flex()
@@ -6820,23 +7038,20 @@ impl ThreadView {
             })
             .children(write_section)
             .children(unsandboxed_section)
-            .when(
-                !has_windows_fs_warning && !(compact && details.unsandboxed),
-                |this| {
-                    // The Windows-drive warning banner carries its own docs link, so
-                    // skip the default one that every other sandbox prompt appends.
-                    this.child(
-                        h_flex()
-                            .px_1()
-                            .py_0p5()
-                            .child(self.render_sandbox_docs_link(
-                                "sandbox-authorization-docs-link",
-                                None,
-                                cx,
-                            )),
-                    )
-                },
-            )
+            .when(!compact && !has_windows_fs_warning, |this| {
+                // The Windows-drive warning banner carries its own docs link, so
+                // skip the default one that every other sandbox prompt appends.
+                this.child(
+                    h_flex()
+                        .px_1()
+                        .py_0p5()
+                        .child(self.render_sandbox_docs_link(
+                            "sandbox-authorization-docs-link",
+                            None,
+                            cx,
+                        )),
+                )
+            })
             .into_any_element()
     }
 
@@ -8669,6 +8884,9 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.pending_allow_blocked_by_confusables(cx) {
+            return;
+        }
         let menu_handle = self.permission_dropdown_handle.clone();
         window.defer(cx, move |window, cx| {
             menu_handle.toggle(window, cx);

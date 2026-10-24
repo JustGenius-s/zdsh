@@ -1096,13 +1096,11 @@ impl ThreadView {
         tool_call_id: &acp_v2::ToolCallId,
         cx: &App,
     ) -> bool {
-        self.conversation
-            .read(cx)
-            .pending_tool_call(active_session_id, cx)
-            .map_or(false, |(pending_session_id, pending_tool_call_id, _)| {
-                self.thread.read(cx).session_id() == &pending_session_id
-                    && tool_call_id == &pending_tool_call_id
-            })
+        self.pending_tool_call_target(cx).is_some_and(
+            |(pending_session_id, pending_tool_call_id, _)| {
+                active_session_id == &pending_session_id && tool_call_id == &pending_tool_call_id
+            },
+        )
     }
 
     /// Renders the card of an edit, a command that hasn't started a terminal yet, or any other
@@ -1170,6 +1168,48 @@ impl ThreadView {
                 cx,
             )
             .compact(is_terminal_tool && needs_confirmation)
+            .when(
+                is_terminal_tool && needs_confirmation && layout == ToolCallLayout::Floating,
+                |header| {
+                    let pending_count = self
+                        .conversation
+                        .read(cx)
+                        .pending_tool_call_count_for_session(active_session_id, cx);
+                    let scroll_icon = if self
+                        .list_state
+                        .item_is_above_viewport(entry_ix)
+                        .unwrap_or(false)
+                    {
+                        IconName::ArrowUp
+                    } else {
+                        IconName::ArrowDown
+                    };
+                    header
+                        .when(pending_count > 1, |header| {
+                            header.meta(
+                                div()
+                                    .ui_text(UiTextSize::Caption, UiTextTone::Muted, cx)
+                                    .child(format!("{pending_count} pending")),
+                            )
+                        })
+                        .action(
+                            KitButton::new("command-approval-scroll-to")
+                                .ghost()
+                                .xsmall()
+                                .icon(kit_icon(scroll_icon).with_size(KitSize::XSmall))
+                                .text_color(UiTextTone::Muted.color(cx))
+                                .accessibility_label("Show command in conversation")
+                                .tooltip("Show command in conversation")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.list_state.scroll_to(ListOffset {
+                                        item_ix: entry_ix,
+                                        offset_in_item: px(0.),
+                                    });
+                                    cx.notify();
+                                })),
+                        )
+                },
+            )
             .when(has_location && !is_terminal_tool, |header| {
                 header.hover_action(
                     PillButton::new(("open-tool-call-location", entry_ix))
@@ -1324,6 +1364,7 @@ impl ThreadView {
                     request,
                     entry_ix,
                     focus_handle,
+                    layout,
                     self.sandbox_confusables_block_allow(tool_call, cx),
                     cx,
                 )
@@ -1348,11 +1389,9 @@ impl ThreadView {
                     .pt_1p5()
                     .pb_1()
                     .gap_1()
-                    .text_size(rems(0.75))
-                    .line_height(relative(1.42))
-                    .text_color(KitTheme::global(cx).muted_foreground)
+                    .ui_text(UiTextSize::Caption, UiTextTone::Muted, cx)
                     .when(!details.reason.is_empty(), |strip| {
-                        strip.child(format!("Agent request: {}", details.reason))
+                        strip.child(details.reason.clone())
                     })
                     .when_some(details.auto_review.clone(), |strip, review| {
                         strip.child(format!("Approval required: {review}"))
@@ -1360,6 +1399,7 @@ impl ThreadView {
             });
         let card_with_reason = v_flex()
             .w_full()
+            .min_w_0()
             .rounded(rems(0.5))
             .when(reason.is_some(), |this| {
                 this.bg(KitTheme::global(cx).secondary.opacity(0.3))
@@ -1367,28 +1407,37 @@ impl ThreadView {
             .map(|this| {
                 if layout == ToolCallLayout::Floating {
                     // The buttons stay in view while a long request scrolls.
-                    this.child(
-                        div()
-                            .id(("floating-tool-call-body", entry_ix))
-                            .max_h_40()
-                            .overflow_y_scroll()
-                            .child(card),
-                    )
-                    .children(permission_buttons.map(|buttons| {
+                    let body = div()
+                        .id(("floating-tool-call-body", entry_ix))
+                        .max_h_40()
+                        .overflow_y_scroll()
+                        .child(card);
+                    let footer = permission_buttons.map(|buttons| {
                         div()
                             .w_full()
-                            .when(!is_terminal_tool, |footer| footer.p_1p5())
-                            .border_t_1()
+                            .when(!is_terminal_tool, |footer| footer.p_1p5().border_t_1())
                             .border_color(KitTheme::global(cx).border)
                             .child(buttons)
-                    }))
+                    });
+                    if is_terminal_tool {
+                        this.child(ToolCard::approval_surface(cx).child(body).children(footer))
+                    } else {
+                        this.child(body).children(footer)
+                    }
                 } else {
                     this.child(
                         card.when_some(permission_buttons, |card, buttons| card.footer(buttons)),
                     )
                 }
             })
-            .children(reason);
+            .children(reason.map(|reason| {
+                div()
+                    .id(("tool-call-approval-reason", entry_ix))
+                    .when(layout == ToolCallLayout::Floating, |reason| {
+                        reason.max_h(rems(4.5)).overflow_y_scroll()
+                    })
+                    .child(reason)
+            }));
         v_flex()
             .w_full()
             .when_some(layout.row_gap(), |this, gap| this.px(TEXT_INSET).pt(gap))
@@ -1449,8 +1498,12 @@ impl ThreadView {
                     }
                 }
                 None => {
-                    let command = command_text(tool_call.label.read(cx));
-                    command_title(&command, cx).into_any_element()
+                    if matches!(tool_call.status(), ToolCallStatus::WaitingForConfirmation) {
+                        div().child("Run command").into_any_element()
+                    } else {
+                        let command = command_text(tool_call.label.read(cx));
+                        command_title(&command, cx).into_any_element()
+                    }
                 }
             }
         } else {
@@ -1584,19 +1637,28 @@ impl ThreadView {
     ) -> Div {
         let mut style =
             MarkdownStyle::themed(MarkdownFont::Agent, window, cx).with_agent_buffer_font(cx);
-        let font_size = ThemeSettings::get_global(cx).ui_font_size(cx);
+        let font_size = UiTextSize::Compact.font_size().to_pixels(window.rem_size());
+        let line_height = UiTextSize::Compact
+            .line_height()
+            .to_pixels(window.rem_size());
         style.height_is_multiple_of_line_height = false;
         style.paragraph_spacing = px(0.);
-        style.base_text_style.font_size = (font_size * 0.8125).into();
-        style.paragraph_line_height = (font_size * 1.125).into();
-        style.inline_code.font_size = Some((font_size * 0.8125).into());
-        style.inline_code.line_height = Some(relative(18. / 13.));
+        style.base_text_style.font_size = font_size.into();
+        style.base_text_style.line_height = line_height.into();
+        style.base_text_style.color = UiTextTone::Secondary.color(cx);
+        style.paragraph_line_height = line_height.into();
+        style.inline_code.font_size = Some(font_size.into());
+        style.inline_code.line_height = Some(line_height.into());
         style.inline_code.background_color = None;
-        style.code_block.text.font_size = Some((font_size * 0.8125).into());
-        style.code_block.text.line_height = Some(relative(18. / 13.));
+        style.code_block.text.font_size = Some(font_size.into());
+        style.code_block.text.line_height = Some(line_height.into());
         style.code_block.padding = gpui::EdgesRefinement::default();
         style.code_block.margin = gpui::EdgesRefinement::default();
+        // The themed code block retains a 1px border even with the renderer border disabled.
+        // Remove its layout inset so the command shares the prompt's first-line baseline.
+        style.code_block.border_widths = gpui::EdgesRefinement::default();
         style.code_block.background = None;
+        let prompt_style = style.base_text_style.clone();
         // Soft-wrap the command instead of horizontally scrolling it: the card is
         // narrow, and in scroll mode a long command wraps anyway but its wrapped
         // lines don't pick up the code block's left padding. Wrap mode lays the
@@ -1615,16 +1677,19 @@ impl ThreadView {
             });
 
         gpui_kit::base::h_flex()
+            .w_full()
+            .min_w_0()
+            .font(prompt_style.font())
+            .text_size(font_size)
+            .line_height(line_height)
             .items_start()
             .gap_1()
             .px_2p5()
             .py_1p5()
             .child(
                 div()
-                    .text_size(font_size * 0.8125)
-                    .line_height(relative(18. / 13.))
-                    .font_family(KitTheme::global(cx).mono_font_family.clone())
-                    .text_color(KitTheme::global(cx).muted_foreground)
+                    .flex_none()
+                    .text_color(UiTextTone::Muted.color(cx))
                     .child("$"),
             )
             .child(div().flex_1().min_w_0().child(markdown_element))
@@ -1908,6 +1973,7 @@ impl ThreadView {
                 request,
                 entry_ix,
                 focus_handle,
+                layout,
                 allow_disabled,
                 cx,
             )
@@ -2019,6 +2085,7 @@ impl ThreadView {
         request: &PermissionRequest,
         entry_ix: usize,
         focus_handle: &FocusHandle,
+        layout: ToolCallLayout,
         // When true, the "allow" choices are disabled (e.g. an unacknowledged
         // surprising-Unicode warning is showing). "Deny"/"Retry" stay enabled.
         allow_disabled: bool,
@@ -2048,6 +2115,8 @@ impl ThreadView {
                 options,
                 entry_ix,
                 focus_handle,
+                tool_call_id,
+                layout,
                 allow_disabled,
                 cx,
             );
@@ -2102,6 +2171,8 @@ impl ThreadView {
         options: &PermissionOptions,
         entry_ix: usize,
         focus_handle: &FocusHandle,
+        tool_call_id: &acp_v2::ToolCallId,
+        layout: ToolCallLayout,
         allow_disabled: bool,
         cx: &Context<Self>,
     ) -> Div {
@@ -2112,16 +2183,24 @@ impl ThreadView {
             .map(|bounds| bounds.size.width)
             .unwrap_or(font_size * 50.);
         let show_shortcuts = is_first && available_width >= font_size * 35.;
-        let button = |id, label: &'static str| {
+        let button = |id, label: &str| {
             KitButton::new(id)
                 .ghost()
                 .small()
                 .h(font_size * 1.25)
+                .flex_shrink_0()
+                .py_0()
                 .rounded(font_size * 0.25)
                 .px_1p5()
-                .accessibility_label(label)
+                .accessibility_label(label.to_owned())
                 .when(!label.is_empty(), |button| {
-                    button.child(div().text_size(font_size * 0.8125).child(label))
+                    button.child(
+                        div()
+                            .font(theme::theme_settings(cx).ui_font(cx).clone())
+                            .text_size(UiTextSize::Compact.font_size())
+                            .line_height(UiTextSize::Compact.line_height())
+                            .child(label.to_owned()),
+                    )
                 })
         };
         let patterns = match options {
@@ -2173,26 +2252,55 @@ impl ThreadView {
                 _ => None,
             }
         };
-        let permanent_tooltip = if patterns.is_empty() {
+        let selected_labels = if patterns.is_empty() {
             permanent_choices
                 .iter()
                 .map(|(label, _)| label.to_string())
                 .collect::<Vec<_>>()
-                .join("\n")
         } else if let Some(PermissionSelection::SelectedPatterns(selected)) = self
             .conversation
             .read(cx)
             .permission_selections
             .get(&request_id)
         {
-            selected
+            patterns
                 .iter()
-                .filter_map(|index| patterns.get(*index))
-                .map(|pattern| pattern.display_name.as_str())
+                .enumerate()
+                .filter(|(index, _)| selected.contains(index))
+                .map(|(_, pattern)| pattern.display_name.clone())
                 .collect::<Vec<_>>()
-                .join("\n")
         } else {
+            Vec::new()
+        };
+        let permanent_label = if available_width < font_size * 47.5 || permanent_outcome.is_none() {
+            "Always Run".to_owned()
+        } else if let Some(first) = selected_labels.first() {
+            if patterns.is_empty() {
+                first.clone()
+            } else if selected_labels.len() == 1 {
+                format!("Always Run '{first}'")
+            } else {
+                format!("Always Run '{first}' + {}", selected_labels.len() - 1)
+            }
+        } else {
+            "Always Run".to_owned()
+        };
+        let permanent_tooltip = if selected_labels.is_empty() {
             "Choose commands to always allow".to_owned()
+        } else {
+            format!(
+                "{}:\n{}",
+                if permanent_outcome.is_some() {
+                    "Will allow"
+                } else {
+                    "Choose a permission scope"
+                },
+                selected_labels
+                    .iter()
+                    .map(|label| format!("• {label}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
         };
         let conversation = self.conversation.downgrade();
         let view = cx.weak_entity();
@@ -2229,7 +2337,7 @@ impl ThreadView {
                             }
                             return menu;
                         }
-                        menu = menu.label("Always run matching commands");
+                        menu = menu.label("Choose allowlist entries");
                         for (index, pattern) in patterns.iter().enumerate() {
                             let conversation = conversation.clone();
                             let keyboard_conversation = conversation.clone();
@@ -2285,8 +2393,21 @@ impl ThreadView {
             gpui_kit::base::h_flex()
                 .min_w_0()
                 .child(
-                    button(("always-run", entry_ix), "Always Run")
+                    button(("always-run", entry_ix), "")
                         .secondary()
+                        .flex_shrink_1()
+                        .min_w_0()
+                        .max_w(available_width * 0.5)
+                        .accessibility_label(permanent_label.clone())
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .font(theme::theme_settings(cx).ui_font(cx).clone())
+                                .text_size(UiTextSize::Compact.font_size())
+                                .line_height(UiTextSize::Compact.line_height())
+                                .child(permanent_label),
+                        )
                         .rounded_tr(px(0.))
                         .rounded_br(px(0.))
                         .tooltip(permanent_tooltip)
@@ -2305,12 +2426,15 @@ impl ThreadView {
                 )
                 .child(popup)
         });
-        gpui_kit::base::h_flex()
-            .w_full()
+        let actions = gpui_kit::base::h_flex()
+            .min_w_0()
+            .flex_1()
             .justify_end()
-            .gap_1p5()
-            .pt_1()
-            .pb_2()
+            .gap(if available_width < font_size * 47.5 {
+                rems(0.25)
+            } else {
+                rems(0.375)
+            })
             .pr_2()
             .children(reject_once.map(|option| {
                 let session_id = session_id.clone();
@@ -2353,7 +2477,24 @@ impl ThreadView {
                             cx,
                         );
                     }))
-            }))
+            }));
+        gpui_kit::base::h_flex()
+            .w_full()
+            .min_w_0()
+            .justify_between()
+            .gap_2()
+            .pt_1()
+            .pb_2()
+            .children(
+                self.render_approval_permissions_control(
+                    tool_call_id,
+                    layout,
+                    available_width < font_size * 25.,
+                    cx,
+                )
+                .map(|mode| div().pl_1().flex_shrink_0().child(mode)),
+            )
+            .child(actions)
     }
 
     fn render_permission_buttons_with_dropdown(
@@ -3592,10 +3733,12 @@ impl RenderOnce for ToolCardHeader {
             .gap_1p5()
             .text_size(ThemeSettings::get_global(cx).agent_ui_font_size(cx))
             .when(self.compact, |this| {
-                let font_size = ThemeSettings::get_global(cx).ui_font_size(cx);
-                this.min_h(font_size * 1.75).text_size(font_size * 0.875)
+                this.min_h(rems(1.75))
+                    .ui_text(UiTextSize::Body, UiTextTone::Secondary, cx)
             })
-            .text_color(theme.muted_foreground)
+            .when(!self.compact, |this| {
+                this.text_color(theme.muted_foreground)
+            })
             .when(self.on_click.is_some(), |this| {
                 this.cursor_pointer()
                     .hover(|style| style.bg(hover_background))
@@ -3655,6 +3798,12 @@ pub(super) struct ToolCard {
 }
 
 impl ToolCard {
+    fn approval_surface(cx: &App) -> Div {
+        transcript_card(cx)
+            .rounded(rems(0.5))
+            .border_color(KitTheme::global(cx).foreground.opacity(0.2))
+    }
+
     pub(super) fn new(id: impl Into<ElementId>, header: impl IntoElement) -> Self {
         Self {
             id: id.into(),
@@ -3717,13 +3866,13 @@ impl RenderOnce for ToolCard {
 
         let card = if self.bare {
             v_flex().w_full()
+        } else if command_approval {
+            Self::approval_surface(cx)
         } else {
-            transcript_card(cx)
-                .border_color(border)
-                .when(command_approval, |card| card.rounded(rems(0.5)))
-                .when(dashed, |this| this.border_dashed())
+            transcript_card(cx).border_color(border)
         };
         card.id(self.id)
+            .when(dashed && !self.bare, |this| this.border_dashed())
             .child(self.header)
             .children(self.sections.into_iter().map(section))
             .children(self.footer.map(|footer| {

@@ -562,6 +562,7 @@ impl Conversation {
         Some(())
     }
 
+    #[cfg(test)]
     pub fn authorize_pending_tool_call(
         &mut self,
         session_id: &acp_v2::SessionId,

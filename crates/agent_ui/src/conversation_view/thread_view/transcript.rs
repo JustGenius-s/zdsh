@@ -904,7 +904,7 @@ impl ThreadView {
             .flatten();
 
         let status_label = if confirmation {
-            Some("Awaiting Confirmation…")
+            (!self.has_pending_command_approval(cx)).then_some("Pending approval")
         } else if self.show_planning_next_move(cx) {
             Some("Planning Next Move…")
         } else {
