@@ -22,7 +22,6 @@ use cli::FORCE_CLI_MODE_ENV_VAR_NAME;
 use client::{Client, ProxySettings, RefreshLlmTokenListener, UserStore, parse_zed_link};
 use collections::HashMap;
 use db::kvp::{GlobalKeyValueStore, KeyValueStore};
-use editor::Editor;
 use extension::ExtensionHostProxy;
 use fs::{Fs, RealFs};
 use futures::{FutureExt, StreamExt, channel::oneshot};
@@ -1258,9 +1257,19 @@ pub(crate) async fn restore_or_create_workspace(
         for multi_workspace in multi_workspaces {
             let result = match &multi_workspace.active_workspace.location {
                 SerializedWorkspaceLocation::Local => {
-                    restore_multiworkspace(multi_workspace, app_state.clone(), cx)
-                        .await
-                        .map(|_| ())
+                    async {
+                        let window =
+                            restore_multiworkspace(multi_workspace, app_state.clone(), cx).await?;
+                        window
+                            .update(cx, |multi_workspace, window, cx| {
+                                multi_workspace.workspace().update(cx, |workspace, cx| {
+                                    zed::restore_startup_welcome_page(workspace, window, cx)
+                                })
+                            })?
+                            .await?;
+                        anyhow::Ok(())
+                    }
+                    .await
                 }
                 SerializedWorkspaceLocation::Remote(connection_options) => {
                     let mut connection_options = connection_options.clone();
@@ -1368,16 +1377,7 @@ pub(crate) async fn restore_or_create_workspace(
                     Default::default(),
                     app_state.clone(),
                     cx,
-                    |workspace, window, cx| {
-                        let restore_on_startup =
-                            WorkspaceSettings::get_global(cx).restore_on_startup;
-                        match restore_on_startup {
-                            workspace::RestoreOnStartupBehavior::Launchpad => {}
-                            _ => {
-                                Editor::new_file(workspace, &Default::default(), window, cx);
-                            }
-                        }
-                    },
+                    zed::initialize_startup_workspace,
                 )
             })
             .await?;
@@ -1388,15 +1388,7 @@ pub(crate) async fn restore_or_create_workspace(
                 Default::default(),
                 app_state,
                 cx,
-                |workspace, window, cx| {
-                    let restore_on_startup = WorkspaceSettings::get_global(cx).restore_on_startup;
-                    match restore_on_startup {
-                        workspace::RestoreOnStartupBehavior::Launchpad => {}
-                        _ => {
-                            Editor::new_file(workspace, &Default::default(), window, cx);
-                        }
-                    }
-                },
+                zed::initialize_startup_workspace,
             )
         })
         .await?;

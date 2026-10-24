@@ -421,47 +421,57 @@ impl TitleBar {
                 .min_w_0()
                 .gap(px(6.))
                 .justify_center()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .when(!pills.is_empty(), |row| {
                     row.child(
                         h_flex()
+                            .id("project-pill-track")
                             .p(px(PILL_TRACK_PADDING))
                             .gap(px(2.))
                             .rounded(px(8.))
                             .bg(colors.element_background)
                             .border_1()
                             .border_color(colors.border_variant)
+                            // Only controls consume mouse events; the flexible gutter must
+                            // reach Kit's title-bar drag and native double-click handlers.
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(|_, _, cx| cx.stop_propagation())
                             .children(pills),
                     )
                 })
                 .child(
-                    KitButton::new("new-project")
-                        .ghost()
-                        .icon(gpui_kit::assets::IconName::Plus)
-                        .label("New")
-                        .dropdown_menu(|menu, window, _| {
-                            let menu = workspace::style_menu(menu, window);
-                            menu.menu_with_icon(
-                                "Open Folder…",
-                                workspace::menu_icon(MenuIcon::FolderOpen),
-                                Box::new(workspace::Open::default()),
-                            )
-                            .menu_with_icon(
-                                "Clone Repository…",
-                                workspace::menu_icon(MenuIcon::CloudArrowDown),
-                                Box::new(git::Clone),
-                            )
-                            .menu_with_icon(
-                                "Connect to SSH Host…",
-                                workspace::menu_icon(MenuIcon::Server),
-                                Box::new(zed_actions::OpenRemote::default()),
-                            )
-                            .menu_with_icon(
-                                "Open in Dev Container…",
-                                workspace::menu_icon(MenuIcon::Package),
-                                Box::new(zed_actions::OpenDevContainer),
-                            )
-                        }),
+                    div()
+                        .id("new-project-control")
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            KitButton::new("new-project")
+                                .ghost()
+                                .icon(gpui_kit::assets::IconName::Plus)
+                                .label("New")
+                                .dropdown_menu(|menu, window, _| {
+                                    let menu = workspace::style_menu(menu, window);
+                                    menu.menu_with_icon(
+                                        "Open Folder…",
+                                        workspace::menu_icon(MenuIcon::FolderOpen),
+                                        Box::new(workspace::Open::default()),
+                                    )
+                                    .menu_with_icon(
+                                        "Clone Repository…",
+                                        workspace::menu_icon(MenuIcon::CloudArrowDown),
+                                        Box::new(git::Clone),
+                                    )
+                                    .menu_with_icon(
+                                        "Connect to SSH Host…",
+                                        workspace::menu_icon(MenuIcon::Server),
+                                        Box::new(zed_actions::OpenRemote::default()),
+                                    )
+                                    .menu_with_icon(
+                                        "Open in Dev Container…",
+                                        workspace::menu_icon(MenuIcon::Package),
+                                        Box::new(zed_actions::OpenDevContainer),
+                                    )
+                                }),
+                        ),
                 )
                 .into_any_element(),
         )

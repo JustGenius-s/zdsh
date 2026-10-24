@@ -16,7 +16,7 @@ use gpui_icons::IconName;
 use gpui_kit::base::Popover;
 use gpui_kit::component::{
     Selectable as _, Sizable as _,
-    button::Button,
+    button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
@@ -942,6 +942,8 @@ impl WorkspaceNav {
         cx: &Context<Self>,
     ) -> AnyElement {
         let thread_id = thread.thread_id;
+        let selected = active_thread_id == Some(thread_id);
+        let group: SharedString = format!("thread-row-{}", thread_id.to_key_string()).into();
         let nav = cx.weak_entity();
         let menu_thread = thread.clone();
         let title = thread.title.clone();
@@ -974,12 +976,19 @@ impl WorkspaceNav {
                 .text_color(cx.theme().colors().icon_muted)
                 .into_any_element()
         } else {
-            thread.status.into_any_element()
+            div()
+                .when(thread.status == StatusDot::Unread, |status| {
+                    status
+                        .opacity(if selected { 1. } else { 0.88 })
+                        .group_hover(group.clone(), |style| style.opacity(1.))
+                })
+                .child(thread.status)
+                .into_any_element()
         };
         let end = if thread.status == StatusDot::WaitingForConfirmation {
             Some(
                 div()
-                    .text_color(cx.theme().status().warning)
+                    .text_color(StatusDot::WaitingForConfirmation.color(cx))
                     .child("Approve"),
             )
         } else {
@@ -1021,9 +1030,14 @@ impl WorkspaceNav {
             leading,
             title_element,
         )
+        .group(group)
         .when_some(end, |row, end| row.end(end))
-        .actions_on_hover(actions)
-        .selected(active_thread_id == Some(thread_id))
+        .actions_on_hover(
+            actions,
+            usize::from(!thread.archived || self.pinned_threads.contains(&thread_id))
+                + usize::from(thread.can_archive),
+        )
+        .selected(selected)
         .tooltip(move |window, cx| KitTooltip::new(title.clone()).build(window, cx))
         .context_menu(move |menu, window, cx| {
             Self::thread_menu(nav.clone(), menu_thread.clone(), menu, window, cx)
@@ -1614,10 +1628,11 @@ impl WorkspaceNav {
                             })
                             .log_err();
                     }),
+                1,
             )
         })
         .when_some(item_id, |row, item_id| {
-            row.actions_on_hover(self.tab_pin_button(item_id, cx))
+            row.actions_on_hover(self.tab_pin_button(item_id, cx), 1)
         })
         .tooltip(move |window, cx| KitTooltip::new(full_path.clone()).build(window, cx))
         .on_click(move |_, window, cx| match &action {
@@ -1796,7 +1811,7 @@ impl WorkspaceNav {
             let mut hidden = false;
             for (depth, (key, name)) in folders.iter().enumerate() {
                 if seen_folders.insert(key.clone()) {
-                    rows.push(self.render_change_folder(key.clone(), name.clone(), depth, cx));
+                    rows.push(self.render_change_folder(key.clone(), name.clone(), depth + 1, cx));
                 }
                 if self.collapsed_change_folders.contains(key) {
                     hidden = true;
@@ -1804,7 +1819,7 @@ impl WorkspaceNav {
                 }
             }
             if !hidden {
-                row.depth = folders.len();
+                row.depth = folders.len() + 1;
                 rows.push(
                     self.render_file_row("nav-change", row, active_path, cx)
                         .into_any_element(),
@@ -1972,7 +1987,7 @@ impl WorkspaceNav {
                     dot,
                     fading_label(title),
                 )
-                .actions_on_hover(self.tab_pin_button(item.item_id(), cx))
+                .actions_on_hover(self.tab_pin_button(item.item_id(), cx), 1)
                 .tooltip(move |window, cx| KitTooltip::new(tooltip.clone()).build(window, cx))
                 .selected(is_active)
                 .on_click(move |_, window, cx| {
@@ -2000,10 +2015,6 @@ impl WorkspaceNav {
             })
             .unwrap_or_else(|| "No Branch".to_string())
             .into();
-        let change_count = repository
-            .as_ref()
-            .map(|repository| repository.read(cx).status_summary().count)
-            .unwrap_or_default();
         let colors = cx.theme().colors();
         let weak_workspace = self.workspace.clone();
         let branch_workspace = self.workspace.clone();
@@ -2012,36 +2023,45 @@ impl WorkspaceNav {
             .w_full()
             .pt(rems_from_px(6_f32))
             .pb(rems_from_px(LIST_INSET))
+            .pl(rems_from_px(LIST_INSET))
             .pr(rems_from_px(LIST_INSET + GROUP_LABEL_PADDING_END))
-            .border_t_1()
-            .border_color(colors.border_variant)
             .child(
                 div().flex_1().min_w_0().child(
                     Popover::new("workspace-branches")
                         .anchor(Anchor::BottomLeft)
                         .w_full()
                         .trigger(
-                            SidebarRow::new(
-                                "workspace-branch",
-                                glyph(IconName::GitBranch).text_color(colors.text_muted),
-                                div()
-                                    .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
-                                    .w_full()
-                                    .child(fading_label(branch)),
-                            )
-                            .when(change_count > 0, |row| {
-                                row.end(
-                                    div()
-                                        .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
-                                        .child(change_count.to_string()),
+                            Button::new("workspace-branch")
+                                .custom(workspace::ghost_button_style(cx))
+                                .small()
+                                .w_full()
+                                .h(rems_from_px(ROW_MIN_HEIGHT))
+                                .px(rems_from_px(6_f32))
+                                .rounded_lg()
+                                .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
+                                .accessibility_label(format!("Switch Branch: {branch}"))
+                                .child(
+                                    h_flex()
+                                        .w_full()
+                                        .min_w_0()
+                                        .gap(rems_from_px(6_f32))
+                                        .child(
+                                            div()
+                                                .size(rems_from_px(20_f32))
+                                                .flex_none()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(
+                                                    glyph(IconName::GitBranch)
+                                                        .text_color(colors.text_muted),
+                                                ),
+                                        )
+                                        .child(
+                                            div().flex_1().min_w_0().child(fading_label(branch)),
+                                        ),
                                 )
-                            })
-                            .tooltip(|window, cx| {
-                                KitTooltip::new("Switch Branch")
-                                    .action(&zed_actions::git::Switch, None)
-                                    .build(window, cx)
-                            })
-                            .on_click(|_, _, _| {}),
+                                .tooltip("Switch Branch"),
                         )
                         .content(move |_, window, cx| {
                             let popover = cx.weak_entity();

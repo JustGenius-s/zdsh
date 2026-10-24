@@ -1,10 +1,11 @@
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
 use file_icons::FileIcons;
 use gpui::{
-    AnyElement, AnyView, App, AvailableSpace, Bounds, ClickEvent, Context, ElementId, Hsla, Role,
-    SharedString, TextAlign, Window, canvas, div, point, prelude::*, px, rems, size,
+    Animation, AnimationExt as _, AnyElement, AnyView, App, AvailableSpace, Bounds, ClickEvent,
+    Context, ElementId, Hsla, Role, SharedString, TextAlign, Window, canvas, div, point,
+    prelude::*, px, rems, rgb, size,
 };
 use gpui_icons::Icon;
 use gpui_kit::component::{
@@ -15,7 +16,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::img;
 use icons::IconName;
-use theme::{ActiveTheme, UiTextSize, UiTextTone, UiTypography};
+use theme::{ActiveTheme, Appearance, UiTextSize, UiTextTone, UiTypography};
 use ui::rems_from_px;
 use util::ResultExt as _;
 
@@ -52,7 +53,7 @@ pub(crate) struct SidebarRow {
     leading_on_hover: Option<AnyElement>,
     title: AnyElement,
     end: Option<AnyElement>,
-    actions_on_hover: Option<AnyElement>,
+    actions_on_hover: Option<(AnyElement, f32)>,
     end_padding: f32,
     indent: usize,
     context_menu: Option<Box<RowContextMenu>>,
@@ -106,8 +107,15 @@ impl SidebarRow {
         self
     }
 
-    pub(crate) fn actions_on_hover(mut self, actions: impl IntoElement) -> Self {
-        self.actions_on_hover = Some(actions.into_any_element());
+    pub(crate) fn actions_on_hover(
+        mut self,
+        actions: impl IntoElement,
+        button_count: usize,
+    ) -> Self {
+        if button_count > 0 {
+            let width = button_count as f32 * 24. + button_count.saturating_sub(1) as f32 * 2.;
+            self.actions_on_hover = Some((actions.into_any_element(), width));
+        }
         self
     }
 
@@ -182,17 +190,18 @@ impl RenderOnce for SidebarRow {
         let group = self.group;
         let context_menu = self.context_menu;
 
-        let hover_state = self
-            .leading_on_hover
-            .is_some()
+        let hover_state = (self.leading_on_hover.is_some() || self.actions_on_hover.is_some())
             .then(|| window.use_keyed_state((self.id.clone(), "row-hover"), cx, |_, _| false));
+        let hovered = hover_state.as_ref().is_some_and(|state| *state.read(cx));
         let leading = match (self.leading_on_hover, hover_state.as_ref()) {
             (Some(leading_on_hover), Some(hovered)) if *hovered.read(cx) => leading_on_hover,
             _ => self.leading,
         };
         let observe_hover = hover_state.is_some() || self.on_hover.is_some();
         let end = self.end;
-        let has_end = end.is_some() || self.actions_on_hover.is_some();
+        let has_end = end.is_some();
+        let actions = self.actions_on_hover.filter(|_| hovered);
+        let action_width = actions.as_ref().map(|(_, width)| *width);
         let colors = cx.theme().colors();
 
         let row = div()
@@ -261,23 +270,28 @@ impl RenderOnce for SidebarRow {
                         h_flex()
                             .flex_1()
                             .min_w_0()
+                            .min_h(rems_from_px(24_f32))
+                            .relative()
                             .overflow_hidden()
-                            .child(self.title),
+                            .when_some(action_width, |title, width| {
+                                // Anonymous group-hover styles resolve after layout. Compute the
+                                // title's inset from row state so its fade clears the buttons.
+                                title.pr(rems_from_px(width + ROW_GAP))
+                            })
+                            .child(self.title)
+                            .when_some(actions, |title, (actions, _)| {
+                                title.child(
+                                    h_flex()
+                                        .absolute()
+                                        .right_0()
+                                        .top_0()
+                                        .bottom_0()
+                                        .child(actions),
+                                )
+                            }),
                     )
                     .when(has_end, |row| {
-                        row.child(
-                            h_flex()
-                                .flex_none()
-                                .gap(rems_from_px(6_f32))
-                                .children(end)
-                                .children(self.actions_on_hover.map(|actions| {
-                                    h_flex()
-                                        .flex_none()
-                                        .invisible()
-                                        .group_hover(group, |style| style.visible())
-                                        .child(actions)
-                                })),
-                        )
+                        row.child(h_flex().flex_none().gap(rems_from_px(6_f32)).children(end))
                     })
                     .when(observe_hover, |this| {
                         this.on_hover(move |hovered, window, cx| {
@@ -443,55 +457,44 @@ pub(crate) enum StatusDot {
 }
 
 impl StatusDot {
-    fn glyph(self, cx: &App) -> (gpui_icons::IconName, gpui_icons::Variant, Hsla) {
-        let colors = cx.theme().colors();
+    fn quaternary(cx: &App) -> Hsla {
+        cx.theme()
+            .colors()
+            .text
+            .opacity(match cx.theme().appearance() {
+                Appearance::Dark => 0.28,
+                Appearance::Light => 0.52,
+            })
+    }
+
+    pub(crate) fn color(self, cx: &App) -> Hsla {
+        let (warning, error, accent) = match cx.theme().appearance() {
+            Appearance::Dark => (0xf1b467, 0xe34671, 0x81a1c1),
+            Appearance::Light => (0xa46700, 0xce405b, 0x2778c1),
+        };
         match self {
-            StatusDot::Running => (
-                gpui_icons::IconName::Loading,
-                gpui_icons::Variant::Outline,
-                colors.text_muted,
-            ),
-            StatusDot::WaitingForConfirmation => (
-                gpui_icons::IconName::Circle,
-                gpui_icons::Variant::Filled,
-                cx.theme().status().warning,
-            ),
-            StatusDot::Error => (
-                gpui_icons::IconName::Circle,
-                gpui_icons::Variant::Filled,
-                cx.theme().status().error,
-            ),
-            StatusDot::Unread => (
-                gpui_icons::IconName::Circle,
-                gpui_icons::Variant::Filled,
-                colors.text_accent,
-            ),
-            StatusDot::Draft => (
-                gpui_icons::IconName::Circle,
-                gpui_icons::Variant::Outline,
-                colors.text.opacity(0.28),
-            ),
-            StatusDot::Read => (
-                gpui_icons::IconName::Circle,
-                gpui_icons::Variant::Filled,
-                colors.text.opacity(0.24),
-            ),
+            Self::Running => UiTextTone::Secondary.color(cx),
+            Self::WaitingForConfirmation => rgb(warning).into(),
+            Self::Error => rgb(error).into(),
+            Self::Unread => rgb(accent).into(),
+            Self::Draft | Self::Read => Self::quaternary(cx),
         }
     }
 
     /// The status as a menu item's icon, as large and in the color the sidebar draws it.
     pub(crate) fn menu_icon(self, cx: &App) -> KitIcon {
-        let (name, variant, color) = self.glyph(cx);
-        workspace::menu_icon_in_box(
-            KitIcon::empty().path(name.path_with_variant(variant)),
-            self.size(),
-        )
-        .text_color(color)
+        let data: &[u8] = match self {
+            Self::Running => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10.5 10.5"><g fill="currentColor"><circle cx="5.25" cy="1.25" r="1.125"/><circle cx="1.25" cy="5.25" r="1.125"/><circle cx="5.25" cy="5.25" r="1.125"/><circle cx="9.25" cy="5.25" r="1.125"/><circle cx="1.25" cy="9.25" r="1.125"/><circle cx="9.25" cy="9.25" r="1.125"/></g></svg>"#,
+            Self::Draft => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 6.4 6.4"><circle cx="3.2" cy="3.2" r="2.7" fill="none" stroke="currentColor" stroke-width="1"/></svg>"#,
+            _ => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 6.4 6.4"><circle cx="3.2" cy="3.2" r="3.2" fill="currentColor"/></svg>"#,
+        };
+        workspace::menu_icon_in_box(KitIcon::empty().data(data), self.size())
+            .text_color(self.color(cx))
     }
 
     fn size(self) -> f32 {
         if self == StatusDot::Running {
-            GLYPH_SIZE
+            10.8
         } else {
             STATUS_DOT
         }
@@ -500,14 +503,59 @@ impl StatusDot {
 
 impl RenderOnce for StatusDot {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let (name, variant, color) = self.glyph(cx);
-        Icon::empty()
+        let color = self.color(cx);
+        if self == Self::Running {
+            const FRAMES: [u16; 8] = [189, 220, 90, 78, 45, 291, 306, 433];
+            return div()
+                .id("thread-status-icon")
+                .relative()
+                .size(rems_from_px(10.8_f32))
+                .role(Role::Label)
+                .aria_label("In progress")
+                .with_animation(
+                    "thread-status-grid",
+                    Animation::new(Duration::from_millis(1400))
+                        .repeat_synced()
+                        .with_max_fps(1000. / 175.),
+                    move |grid, delta| {
+                        let frame = (delta * FRAMES.len() as f32) as usize;
+                        let mask = FRAMES.get(frame).copied().unwrap_or(189);
+                        grid.children((0..9).filter_map(move |cell| {
+                            (mask & (1 << (8 - cell)) != 0).then(|| {
+                                // Cursor's 10.5-unit SVG grid has 2.25-unit dots, 4 units apart.
+                                let scale = 10.8 / 10.5;
+                                div()
+                                    .absolute()
+                                    .left(rems_from_px((0.125 + (cell % 3) as f32 * 4.) * scale))
+                                    .top(rems_from_px((0.125 + (cell / 3) as f32 * 4.) * scale))
+                                    .size(rems_from_px(2.25 * scale))
+                                    .rounded_full()
+                                    .bg(color)
+                            })
+                        }))
+                    },
+                )
+                .into_any_element();
+        }
+        let label = match self {
+            Self::WaitingForConfirmation => "Needs attention",
+            Self::Error => "Error",
+            Self::Unread => "Completed, unread",
+            Self::Draft => "Draft",
+            Self::Read => "Completed",
+            Self::Running => "In progress",
+        };
+        div()
             .id("thread-status-icon")
-            .path(name.path_with_variant(variant))
-            .text_color(color)
-            .size(rems_from_px(self.size()))
-            .glyph_scale(1.)
-            .spinning(self == StatusDot::Running)
+            .size(rems_from_px(STATUS_DOT))
+            .rounded_full()
+            .role(Role::Label)
+            .aria_label(label)
+            .when(self == Self::Draft, |dot| {
+                dot.border_1().border_color(color)
+            })
+            .when(self != Self::Draft, |dot| dot.bg(color))
+            .into_any_element()
     }
 }
 

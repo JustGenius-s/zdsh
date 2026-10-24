@@ -2374,7 +2374,7 @@ fn filter_disabled_ai_bindings(bindings: Vec<KeyBinding>, cx: &App) -> Vec<KeyBi
 ///
 /// For `EmptyTab` this opens an empty buffer. For `Launchpad` the window is left
 /// without any items so the pane falls back to displaying the Launchpad.
-fn initialize_new_window(
+pub(crate) fn initialize_new_window(
     workspace: &mut Workspace,
     window: &mut Window,
     cx: &mut Context<Workspace>,
@@ -2392,6 +2392,59 @@ fn initialize_new_window(
     });
     let editor = cx.new(|cx| Editor::for_buffer(buffer, Some(project), window, cx));
     workspace.add_item_to_active_pane(Box::new(editor), None, true, window, cx);
+}
+
+pub(crate) fn initialize_startup_workspace(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    // A restore mode with nothing left to restore should show the start page.
+    if WorkspaceSettings::get_global(cx).restore_on_startup
+        == workspace::RestoreOnStartupBehavior::EmptyTab
+    {
+        Editor::new_file(workspace, &Default::default(), window, cx);
+    }
+}
+
+pub(crate) fn restore_startup_welcome_page(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Task<anyhow::Result<()>> {
+    let project = workspace.project().read(cx);
+    if project.is_remote() || project.worktrees(cx).next().is_some() {
+        return Task::ready(Ok(()));
+    }
+    let [pane] = workspace.panes() else {
+        return Task::ready(Ok(()));
+    };
+    let pane = pane.clone();
+    let pane_state = pane.read(cx);
+    if pane_state.items_len() != 1 || pane_state.pinned_count() > 0 {
+        return Task::ready(Ok(()));
+    }
+    let Some(item) = pane_state.active_item() else {
+        return Task::ready(Ok(()));
+    };
+    let Some(editor) = item.downcast::<Editor>() else {
+        return Task::ready(Ok(()));
+    };
+    let editor = editor.read(cx);
+    if item.is_dirty(cx)
+        || !editor.is_empty(cx)
+        || editor
+            .buffer()
+            .read(cx)
+            .as_singleton()
+            .is_none_or(|buffer| buffer.read(cx).file().is_some())
+    {
+        return Task::ready(Ok(()));
+    }
+    // Older startup fallbacks persisted a pristine scratch tab even without a project.
+    pane.update(cx, |pane, cx| {
+        pane.close_item_by_id(item.item_id(), workspace::SaveIntent::Close, window, cx)
+    })
 }
 
 pub fn open_new_ssh_project_from_project(

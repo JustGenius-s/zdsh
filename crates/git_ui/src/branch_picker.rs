@@ -11,10 +11,19 @@ use gpui::{
     InteractiveElement, IntoElement, Modifiers, ModifiersChangedEvent, ParentElement, PromptLevel,
     Render, SharedString, Styled, Subscription, Task, TaskExt, WeakEntity, Window, actions, rems,
 };
+use gpui_icons::IconName as SidebarIconName;
+use gpui_kit::component::{
+    IndexPath, Sizable as _,
+    button::{Button as KitButton, ButtonVariants as _},
+    list::{List as KitList, ListDelegate, ListEvent, ListItem as KitListItem, ListState},
+    menu::{DropdownMenu as _, PopupMenuItem},
+    tooltip::Tooltip as KitTooltip,
+};
 use picker::{Picker, PickerDelegate, PickerEditorPosition};
 use project::git_store::{Repository, RepositoryEvent};
 use project::project_settings::ProjectSettings;
 use settings::Settings;
+use theme::{UiTextSize, UiTextTone, UiTypography};
 
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -107,6 +116,389 @@ pub fn popover(
         list.focus_handle(cx).focus(window, cx);
         list
     })
+}
+
+pub fn sidebar_popover(
+    workspace: WeakEntity<Workspace>,
+    repository: Option<Entity<Repository>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<SidebarBranchPicker> {
+    cx.new(|cx| SidebarBranchPicker::new(workspace, repository, window, cx))
+}
+
+fn sidebar_branch_icon(icon: SidebarIconName, cx: &App) -> gpui_icons::Icon {
+    gpui_icons::Icon::new(icon)
+        .size(ui::rems_from_px(15.2_f32))
+        .glyph_scale(1.)
+        .text_color(cx.theme().colors().icon_muted)
+}
+
+pub struct SidebarBranchPicker {
+    branches: Entity<BranchList>,
+    list: Entity<ListState<SidebarBranchDelegate>>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl SidebarBranchPicker {
+    fn new(
+        workspace: WeakEntity<Workspace>,
+        repository: Option<Entity<Repository>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let branches = cx.new(|cx| {
+            BranchList::new(
+                workspace,
+                repository,
+                BranchListStyle::Popover,
+                ui::rems_from_px(280_f32),
+                window,
+                cx,
+            )
+        });
+        let picker = branches.read(cx).picker.clone();
+        let list = cx.new(|cx| {
+            ListState::new(
+                SidebarBranchDelegate {
+                    picker: picker.clone(),
+                    query: String::new(),
+                },
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+        let focus_handle = list.focus_handle(cx);
+        branches.update(cx, |branches, _| {
+            branches.picker_focus_handle = focus_handle.clone();
+        });
+        picker.update(cx, |picker, _| picker.delegate.focus_handle = focus_handle);
+        let observed_list = list.clone();
+        let subscriptions = vec![
+            cx.subscribe(&branches, |_, _, _: &DismissEvent, cx| {
+                cx.emit(DismissEvent)
+            }),
+            cx.subscribe(&list, |_, _, event, cx| {
+                if matches!(event, ListEvent::Cancel) {
+                    cx.emit(DismissEvent);
+                }
+            }),
+            cx.observe_in(&picker, window, move |_, picker, window, cx| {
+                let (index, query) = {
+                    let picker = picker.read(cx);
+                    (
+                        (!picker.delegate.matches.is_empty())
+                            .then(|| IndexPath::new(picker.delegate.selected_index)),
+                        picker.query(cx),
+                    )
+                };
+                observed_list.update(cx, |list, cx| {
+                    if list.delegate().query != query {
+                        list.set_query(&query, window, cx);
+                    }
+                    list.set_selected_index(index, window, cx);
+                    cx.notify();
+                });
+                cx.notify();
+            }),
+        ];
+        Self {
+            branches,
+            list,
+            _subscriptions: subscriptions,
+        }
+    }
+}
+
+impl Focusable for SidebarBranchPicker {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.list.focus_handle(cx)
+    }
+}
+
+impl EventEmitter<DismissEvent> for SidebarBranchPicker {}
+
+impl Render for SidebarBranchPicker {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let picker = &self.branches.read(cx).picker;
+        let delegate = &picker.read(cx).delegate;
+        let filter = delegate.branch_filter;
+        let row_count = delegate.matches.len().clamp(1, 9);
+        let placeholder = match delegate.state {
+            PickerState::CreateRemote(_) => "Enter a name for this remote…",
+            _ => "Switch or create a branch…",
+        };
+        let error = delegate.branch_list_error.clone();
+        let branches = self.branches.clone();
+        let colors = cx.theme().colors();
+        gpui_kit::component::v_flex()
+            .key_context("GitBranchSelector")
+            .w(ui::rems_from_px(280_f32))
+            .min_w(ui::rems_from_px(236_f32))
+            .rounded(ui::rems_from_px(8_f32))
+            .bg(colors.elevated_surface_background)
+            .border_1()
+            .border_color(colors.border_variant)
+            .ui_text(UiTextSize::Body, UiTextTone::Secondary, cx)
+            .child(
+                gpui_kit::component::h_flex()
+                    .justify_between()
+                    .px(ui::rems_from_px(10_f32))
+                    .h(ui::rems_from_px(32_f32))
+                    .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
+                    .child("Switch Branch")
+                    .child(
+                        KitButton::new("branch-filter")
+                            .ghost()
+                            .small()
+                            .size_6()
+                            .p_0()
+                            .child(sidebar_branch_icon(SidebarIconName::ListFilter, cx))
+                            .tooltip("Filter Branches")
+                            .dropdown_menu(move |menu, window, _| {
+                                [BranchFilter::All, BranchFilter::Local, BranchFilter::Remote]
+                                    .into_iter()
+                                    .fold(workspace::style_menu(menu, window), |menu, choice| {
+                                        let branches = branches.clone();
+                                        menu.item(
+                                            PopupMenuItem::new(choice.label())
+                                                .icon(workspace::menu_icon(match choice {
+                                                    BranchFilter::All => SidebarIconName::GitBranch,
+                                                    BranchFilter::Local => SidebarIconName::Folder,
+                                                    BranchFilter::Remote => SidebarIconName::Cloud,
+                                                }))
+                                                .checked(filter == choice)
+                                                .on_click(move |_, window, cx| {
+                                                    branches.update(cx, |branches, cx| {
+                                                        branches
+                                                            .set_branch_filter(choice, window, cx)
+                                                    });
+                                                }),
+                                        )
+                                    })
+                            }),
+                    ),
+            )
+            .when_some(error, |picker, error| {
+                picker.child(
+                    div()
+                        .px(ui::rems_from_px(10_f32))
+                        .py(ui::rems_from_px(4_f32))
+                        .ui_text(UiTextSize::Caption, UiTextTone::Muted, cx)
+                        .child(format!("Some branches could not be loaded: {error}")),
+                )
+            })
+            .child(
+                KitList::new(&self.list)
+                    .small()
+                    .search_placeholder(placeholder)
+                    .h(ui::rems_from_px(row_count as f32 * 32. + 36.)),
+            )
+            .on_modifiers_changed(cx.listener(|this, event, window, cx| {
+                this.branches.update(cx, |branches, cx| {
+                    branches.handle_modifiers_changed(event, window, cx)
+                });
+            }))
+            .on_action(cx.listener(|this, action: &DeleteBranch, window, cx| {
+                this.branches.update(cx, |branches, cx| {
+                    branches.handle_delete(action, window, cx)
+                });
+            }))
+            .on_action(cx.listener(|this, action: &ForceDeleteBranch, window, cx| {
+                this.branches.update(cx, |branches, cx| {
+                    branches.handle_force_delete(action, window, cx)
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ShowAllBranches, window, cx| {
+                this.branches.update(cx, |branches, cx| {
+                    branches.set_branch_filter(BranchFilter::All, window, cx)
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ShowLocalBranches, window, cx| {
+                this.branches.update(cx, |branches, cx| {
+                    branches.set_branch_filter(BranchFilter::Local, window, cx)
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ShowRemoteBranches, window, cx| {
+                this.branches.update(cx, |branches, cx| {
+                    branches.set_branch_filter(BranchFilter::Remote, window, cx)
+                });
+            }))
+            .on_action(cx.listener(|this, _: &CycleBranchFilter, window, cx| {
+                this.branches
+                    .update(cx, |branches, cx| branches.cycle_branch_filter(window, cx));
+            }))
+    }
+}
+
+struct SidebarBranchDelegate {
+    picker: Entity<Picker<BranchListDelegate>>,
+    query: String,
+}
+
+impl ListDelegate for SidebarBranchDelegate {
+    type Item = KitListItem;
+
+    fn items_count(&self, _: usize, cx: &App) -> usize {
+        self.picker.read(cx).delegate.matches.len()
+    }
+
+    fn perform_search(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Task<()> {
+        self.query = query.to_string();
+        self.picker
+            .update(cx, |picker, cx| picker.set_query(query, window, cx));
+        Task::ready(())
+    }
+
+    fn set_selected_index(
+        &mut self,
+        index: Option<IndexPath>,
+        _: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) {
+        if let Some(index) = index {
+            self.picker
+                .update(cx, |picker, _| picker.delegate.selected_index = index.row);
+        }
+    }
+
+    fn confirm(&mut self, secondary: bool, window: &mut Window, cx: &mut Context<ListState<Self>>) {
+        self.picker.update(cx, |picker, cx| {
+            picker.delegate.confirm(secondary, window, cx)
+        });
+    }
+
+    fn render_item(
+        &mut self,
+        index: IndexPath,
+        _: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let delegate = &self.picker.read(cx).delegate;
+        let entry = delegate.matches.get(index.row)?;
+        let selected = delegate.selected_index == index.row;
+        let (title, icon, current, can_delete) = match entry {
+            Entry::Branch { branch, .. } => (
+                branch.name().to_string(),
+                if branch.is_remote() {
+                    SidebarIconName::Cloud
+                } else {
+                    SidebarIconName::GitBranch
+                },
+                branch.is_head,
+                !branch.is_head,
+            ),
+            Entry::NewBranch { name } => (
+                format!("Create Branch: {name}"),
+                SidebarIconName::Plus,
+                false,
+                false,
+            ),
+            Entry::NewUrl { .. } => (
+                "Create Remote Repository".into(),
+                SidebarIconName::Plus,
+                false,
+                false,
+            ),
+            Entry::NewRemoteName { name, .. } => (
+                format!("Create Remote: {name}"),
+                SidebarIconName::Plus,
+                false,
+                false,
+            ),
+        };
+        let tooltip: SharedString = title.clone().into();
+        let picker = self.picker.clone();
+        let group: SharedString = format!("sidebar-branch-{}", index.row).into();
+        Some(
+            KitListItem::new(index.row)
+                .h(ui::rems_from_px(32_f32))
+                .px(ui::rems_from_px(6_f32))
+                .rounded(ui::rems_from_px(6_f32))
+                .accessibility_label(title.clone())
+                .child(
+                    gpui_kit::component::h_flex()
+                        .id(("branch-entry", index.row))
+                        .group(group.clone())
+                        .w_full()
+                        .min_w_0()
+                        .gap(ui::rems_from_px(6_f32))
+                        .ui_text(
+                            UiTextSize::Body,
+                            if selected || current {
+                                UiTextTone::Primary
+                            } else {
+                                UiTextTone::Secondary
+                            },
+                            cx,
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(ui::rems_from_px(20_f32))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(sidebar_branch_icon(icon, cx)),
+                        )
+                        .child(div().flex_1().min_w_0().text_ellipsis().child(title))
+                        .when(current, |row| {
+                            row.child(sidebar_branch_icon(SidebarIconName::Check, cx))
+                        })
+                        .when(can_delete, |row| {
+                            row.child(
+                                KitButton::new("delete-branch")
+                                    .ghost()
+                                    .small()
+                                    .size_6()
+                                    .p_0()
+                                    .child(sidebar_branch_icon(SidebarIconName::Trash, cx))
+                                    .tooltip("Delete Branch (Alt: force)")
+                                    .invisible()
+                                    .group_hover(group, |style| style.visible())
+                                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .on_click(move |_, window, cx| {
+                                        cx.stop_propagation();
+                                        picker.update(cx, |picker, cx| {
+                                            picker.delegate.delete_at(
+                                                index.row,
+                                                picker.delegate.modifiers.alt,
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }),
+                            )
+                        })
+                        .tooltip(move |window, cx| {
+                            KitTooltip::new(tooltip.clone()).build(window, cx)
+                        }),
+                ),
+        )
+    }
+
+    fn render_empty(
+        &mut self,
+        _: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> impl IntoElement {
+        div()
+            .p(ui::rems_from_px(10_f32))
+            .ui_text(UiTextSize::Body, UiTextTone::Muted, cx)
+            .child(if self.picker.read(cx).delegate.repo.is_none() {
+                "No repository"
+            } else {
+                "No matching branches"
+            })
+    }
 }
 
 pub fn select_popover(

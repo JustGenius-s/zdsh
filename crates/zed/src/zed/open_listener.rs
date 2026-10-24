@@ -5,7 +5,6 @@ use anyhow::{Context as _, Result, anyhow};
 use cli::{CliRequest, CliResponse, CliResponseSink};
 use cli::{IpcHandshake, ipc};
 use client::{ZedLink, parse_zed_link};
-use editor::Editor;
 use fs::Fs;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures::channel::{mpsc, oneshot};
@@ -866,10 +865,8 @@ async fn open_workspaces(
                 env,
                 ..Default::default()
             };
-            workspace::open_new(open_options, app_state, cx, |workspace, window, cx| {
-                Editor::new_file(workspace, &Default::default(), window, cx)
-            })
-            .detach_and_log_err(cx);
+            workspace::open_new(open_options, app_state, cx, super::initialize_new_window)
+                .detach_and_log_err(cx);
         });
         return Ok(());
     }

@@ -77,14 +77,7 @@ pub fn init(cx: &mut App) {
 
     git_ui_core::set_branch_picker_builder(
         |workspace, repository, window, cx| {
-            let picker = git_picker::popover(
-                workspace,
-                repository,
-                git_picker::GitPickerTab::Branches,
-                gpui::rems(34.),
-                window,
-                cx,
-            );
+            let picker = branch_picker::sidebar_popover(workspace, repository, window, cx);
             cx.new(|cx| git_ui_core::GitPickerPopover::new(picker, cx))
         },
         cx,
